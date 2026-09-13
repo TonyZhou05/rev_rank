@@ -1,0 +1,283 @@
+[
+  {
+    "domain": "carmax.com",
+    "url": "https://www.carmax.com/car/70108828",
+    "page_type": "listing",
+    "checked_at": "2026-09-13T02:48:28.285824+00:00",
+    "requests": [
+      {
+        "url": "https://www.carmax.com/robots.txt",
+        "http_status": 200,
+        "bytes": 1456
+      },
+      {
+        "url": "https://www.carmax.com/car/70108828",
+        "http_status": 403,
+        "bytes": 0
+      }
+    ],
+    "status": "blocked",
+    "message": "Source denied access or rate-limited the request; no bypass attempted.",
+    "elapsed_seconds": 0.39
+  },
+  {
+    "domain": "carvana.com",
+    "url": "https://www.carvana.com/vehicle/4711856?refSource=home",
+    "page_type": "listing",
+    "checked_at": "2026-09-13T02:48:28.676764+00:00",
+    "requests": [
+      {
+        "url": "https://www.carvana.com/robots.txt",
+        "http_status": 200,
+        "bytes": 636
+      },
+      {
+        "url": "https://www.carvana.com/vehicle/4711856?refSource=home",
+        "http_status": 403,
+        "bytes": 0
+      }
+    ],
+    "status": "blocked",
+    "message": "Source denied access or rate-limited the request; no bypass attempted.",
+    "elapsed_seconds": 0.55
+  },
+  {
+    "domain": "cargurus.com",
+    "url": "https://www.cargurus.com/Cars/inventorylisting/viewDetailsFilterViewInventoryListing.action",
+    "page_type": "inventory",
+    "checked_at": "2026-09-13T02:48:29.225035+00:00",
+    "requests": [
+      {
+        "url": "https://www.cargurus.com/robots.txt",
+        "http_status": 200,
+        "bytes": 11593
+      }
+    ],
+    "status": "blocked",
+    "message": "robots.txt disallows this listing path; paste listing text instead.",
+    "elapsed_seconds": 0.18
+  },
+  {
+    "domain": "cars.com",
+    "url": "https://www.cars.com/shopping/",
+    "page_type": "inventory",
+    "checked_at": "2026-09-13T02:48:29.406987+00:00",
+    "requests": [
+      {
+        "url": "https://www.cars.com/robots.txt",
+        "http_status": 403,
+        "bytes": 0
+      }
+    ],
+    "status": "blocked",
+    "message": "robots.txt could not be checked; collection is blocked conservatively.",
+    "elapsed_seconds": 0.1
+  },
+  {
+    "domain": "carfax.com",
+    "url": "https://www.carfax.com/cars-for-sale",
+    "page_type": "inventory",
+    "checked_at": "2026-09-13T02:48:30.771655+00:00",
+    "requests": [
+      {
+        "url": "https://www.carfax.com/robots.txt",
+        "http_status": 200,
+        "bytes": 1344
+      },
+      {
+        "url": "https://www.carfax.com/cars-for-sale",
+        "http_status": 403,
+        "bytes": 0
+      }
+    ],
+    "status": "blocked",
+    "message": "Source denied access or rate-limited the request; no bypass attempted.",
+    "elapsed_seconds": 0.34
+  },
+  {
+    "domain": "edmunds.com",
+    "url": "https://www.edmunds.com/used-cars-for-sale/",
+    "page_type": "inventory",
+    "checked_at": "2026-09-13T02:48:34.244904+00:00",
+    "requests": [
+      {
+        "url": "https://www.edmunds.com/robots.txt",
+        "http_status": 200,
+        "bytes": 6306
+      },
+      {
+        "url": "https://www.edmunds.com/used-cars-for-sale/",
+        "http_status": 403,
+        "bytes": 0
+      }
+    ],
+    "status": "blocked",
+    "message": "Source denied access or rate-limited the request; no bypass attempted.",
+    "elapsed_seconds": 0.28
+  },
+  {
+    "domain": "autotrader.com",
+    "url": "https://www.autotrader.com/cars-for-sale",
+    "page_type": "inventory",
+    "checked_at": "2026-09-13T02:49:15.475528+00:00",
+    "requests": [
+      {
+        "url": "https://www.autotrader.com/robots.txt",
+        "http_status": 200,
+        "bytes": 18639
+      },
+      {
+        "url": "https://www.autotrader.com/cars-for-sale",
+        "http_status": 200,
+        "bytes": 558745
+      }
+    ],
+    "status": "reachable",
+    "message": "Entry page fetched, but no matching individual listing link found. Listing import remains unvalidated.",
+    "discovered_listing_url": null,
+    "elapsed_seconds": 0.75
+  },
+  {
+    "domain": "truecar.com",
+    "url": "https://www.truecar.com/used-cars-for-sale/listings/",
+    "page_type": "inventory",
+    "checked_at": "2026-09-13T02:49:16.226084+00:00",
+    "requests": [
+      {
+        "url": "https://www.truecar.com/robots.txt",
+        "http_status": 200,
+        "bytes": 1172
+      },
+      {
+        "url": "https://www.truecar.com/used-cars-for-sale/listings/",
+        "http_status": 200,
+        "bytes": 985623
+      },
+      {
+        "url": "https://www.truecar.com/robots.txt",
+        "http_status": 200,
+        "bytes": 1172
+      },
+      {
+        "url": "https://www.truecar.com/used-cars-for-sale/listing/1C6JJTAG8LL117141/2020-jeep-gladiator/?position=0&returnTo=%2Fused-cars-for-sale%2Flistings%2F&sourceType=marketplace&sponsored=true",
+        "http_status": 200,
+        "bytes": 480076
+      }
+    ],
+    "status": "partial",
+    "message": "Automated extraction only; field accuracy not independently verified.",
+    "discovered_listing_url": "https://www.truecar.com/used-cars-for-sale/listing/1C6JJTAG8LL117141/2020-jeep-gladiator/?position=0&returnTo=%2Fused-cars-for-sale%2Flistings%2F&sourceType=marketplace&sponsored=true",
+    "extracted_fields": [
+      "make",
+      "model",
+      "year",
+      "price",
+      "currency",
+      "mileage"
+    ],
+    "warnings": [
+      "Multiple structured products found; fields may conflict. Review that this page describes one vehicle.",
+      "Conflicting transmission: Automatic versus 8 Speed Automatic (850re); first value retained for review.",
+      "Missing location; confirm with the seller or enter it manually.",
+      "Missing history; confirm with the seller or enter it manually.",
+      "Mileage unit is unconfirmed; mi is only the editor default. Mileage calculations are withheld until confirmed.",
+      "Generation/variant matching is unverified; no external specifications were inferred.",
+      "Extracted listing text and seller disclosures are not independent vehicle-history verification.",
+      "Source page content is not retained; only extracted fields and short evidence references enter a saved report."
+    ],
+    "elapsed_seconds": 5.66
+  },
+  {
+    "domain": "kbb.com",
+    "url": "https://www.kbb.com/cars-for-sale/",
+    "page_type": "inventory",
+    "checked_at": "2026-09-13T02:49:21.889995+00:00",
+    "requests": [
+      {
+        "url": "https://www.kbb.com/robots.txt",
+        "http_status": 200,
+        "bytes": 4581
+      },
+      {
+        "url": "https://www.kbb.com/cars-for-sale/",
+        "http_status": 301,
+        "bytes": 0
+      },
+      {
+        "url": "https://www.kbb.com/robots.txt",
+        "http_status": 200,
+        "bytes": 4581
+      },
+      {
+        "url": "https://www.kbb.com/cars-for-sale/all/",
+        "http_status": 308,
+        "bytes": 0
+      },
+      {
+        "url": "https://www.kbb.com/robots.txt",
+        "http_status": 200,
+        "bytes": 4581
+      },
+      {
+        "url": "https://www.kbb.com/cars-for-sale/all",
+        "http_status": 200,
+        "bytes": 1306275
+      },
+      {
+        "url": "https://www.kbb.com/robots.txt",
+        "http_status": 200,
+        "bytes": 4581
+      },
+      {
+        "url": "https://www.kbb.com/cars-for-sale/vehicle/789754790?allListingType=all&clickType=spotlight",
+        "http_status": 200,
+        "bytes": 566357
+      }
+    ],
+    "status": "partial",
+    "message": "Automated extraction only; field accuracy not independently verified.",
+    "discovered_listing_url": "https://www.kbb.com/cars-for-sale/vehicle/789754790?allListingType=all&clickType=spotlight",
+    "extracted_fields": [
+      "price",
+      "currency",
+      "mileage"
+    ],
+    "warnings": [
+      "Conflicting price: 2065.0 versus 23955.0; first value retained for review.",
+      "Conflicting price: 2065.0 versus 23780.0; first value retained for review.",
+      "Missing make; confirm with the seller or enter it manually.",
+      "Missing model; confirm with the seller or enter it manually.",
+      "Missing year; confirm with the seller or enter it manually.",
+      "Missing transmission; confirm with the seller or enter it manually.",
+      "Missing location; confirm with the seller or enter it manually.",
+      "Missing history; confirm with the seller or enter it manually.",
+      "Currency is unknown; a bare $ does not establish USD or CAD. Price comparisons are withheld.",
+      "Generation/variant matching is unverified; no external specifications were inferred.",
+      "Extracted listing text and seller disclosures are not independent vehicle-history verification.",
+      "Source page content is not retained; only extracted fields and short evidence references enter a saved report."
+    ],
+    "elapsed_seconds": 1.41
+  },
+  {
+    "domain": "autolist.com",
+    "url": "https://www.autolist.com/",
+    "page_type": "homepage",
+    "checked_at": "2026-09-13T02:49:23.301256+00:00",
+    "requests": [
+      {
+        "url": "https://www.autolist.com/robots.txt",
+        "http_status": 200,
+        "bytes": 68
+      },
+      {
+        "url": "https://www.autolist.com/",
+        "http_status": 200,
+        "bytes": 218811
+      }
+    ],
+    "status": "reachable",
+    "message": "Entry page fetched, but no matching individual listing link found. Listing import remains unvalidated.",
+    "discovered_listing_url": null,
+    "elapsed_seconds": 0.34
+  }
+]

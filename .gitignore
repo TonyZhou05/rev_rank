@@ -1,0 +1,20 @@
+# Local credentials and user reports
+.env
+.env.*
+!.env.example
+.local/
+*.sqlite3
+*.db
+# Dependencies and builds
+.venv/
+node_modules/
+frontend/dist/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+*.tsbuildinfo
+.DS_Store
+# Local test and browser outputs
+artifacts/
