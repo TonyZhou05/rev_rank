@@ -46,7 +46,6 @@ export function ConstraintPanel({ preferences, onChange, onApply, busy, mode, na
   const titleId = useId();
   const editButtonRef = useRef<HTMLButtonElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
-  const sheetRef = useRef<HTMLDivElement>(null);
 
   const atDefaults = preferencesEqual(preferences, defaultPreferences);
   const dirty = mode === 'report' && applied != null && !preferencesEqual(preferences, applied);
@@ -180,10 +179,12 @@ export function ConstraintPanel({ preferences, onChange, onApply, busy, mode, na
     <div className={`constraint-actions${narrow ? ' sticky' : ''}`}>
       {mode === 'report'
         ? <button type="button" className="primary-button" disabled={busy} onClick={() => { onApply(); setOpen(false); }}>Apply to report</button>
-        : <button type="button" className="secondary-button" disabled={busy} onClick={() => setOpen(false)}>Save for report</button>}
+        : narrow
+          ? <button type="button" className="secondary-button" disabled={busy} onClick={() => setOpen(false)}>Save for report</button>
+          : null}
       <button type="button" className="text-button" disabled={busy} onClick={clearAll}>Clear all</button>
     </div>
-    {mode === 'review' && <p className="constraint-note muted-note">Generate comparison uses these chips — this only confirms them.</p>}
+    {mode === 'review' && <p className="constraint-note muted-note">Generate comparison uses these chips.</p>}
     <p className="constraint-note"><CircleAlert size={13}/> We won’t invent fair-price or fit scores from these chips.</p>
   </>;
 
@@ -202,7 +203,7 @@ export function ConstraintPanel({ preferences, onChange, onApply, busy, mode, na
     </div>
     {open && <div className="constraint-sheet" role="dialog" aria-modal="true" aria-labelledby={titleId}>
       <div className="constraint-sheet-backdrop" onClick={closeSheet}/>
-      <div className="constraint-sheet-card" ref={sheetRef}>
+      <div className="constraint-sheet-card">
         <div className="constraint-sheet-top">
           <button type="button" className="secondary-button" ref={closeButtonRef} onClick={closeSheet}>Close</button>
         </div>
