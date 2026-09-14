@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { Check, CircleAlert, Sparkles } from 'lucide-react';
+import { Check, CircleAlert, LoaderCircle, Sparkles } from 'lucide-react';
 import { allSame, comparable, delta, isCrossModel, metric, mileageValue, msrpNeoVinKind, msrpOrigin, msrpPctDelta, msrpValue, mustHaveMetrics, numberIn, pctOfMsrp, pctOfMsrpText, priceValue, sharedAnnual, tradeOff, type DeltaKind } from './compare';
 import { ConstraintPanel } from './ConstraintPanel';
 import { SourceTable } from './Review';
@@ -384,13 +384,15 @@ function AIComparison({ ai, cars }: { ai: AIAnalysis; cars: Candidate[] }) {
         {favored && <span className="favors">Favors {carName(favored)}</span>}
       </div>;
     })}</div>}
-    <details className="review-more">
-      <summary>Sources ({ai.sources.length})</summary>
-      <ol className="source-list">{ai.sources.map((s, i) => {
-        const url = safeUrl(s.url);
-        return <li key={s.id} id={`source-${i + 1}`}><strong>{url ? <a href={url} target="_blank" rel="noopener noreferrer">{s.label}</a> : s.label}</strong><span>{s.detail}</span></li>;
-      })}</ol>
-    </details>
+    {ai.sources.length === 0
+      ? <p className="honest-empty" role="status"><CircleAlert size={14}/> No clickable sources for this run — we don’t invent citations.</p>
+      : <details className="review-more">
+          <summary>Sources ({ai.sources.length})</summary>
+          <ol className="source-list">{ai.sources.map((s, i) => {
+            const url = safeUrl(s.url);
+            return <li key={s.id} id={`source-${i + 1}`}><strong>{url ? <a href={url} target="_blank" rel="noopener noreferrer">{s.label}</a> : s.label}</strong><span>{s.detail}</span></li>;
+          })}</ol>
+        </details>}
     <p className="ai-meta">{ai.message} Model: {ai.model}.</p>
     {ai.dropped_claims > 0 && <p className="dropped-claims" role="status">
       <CircleAlert size={14}/> {ai.dropped_claims} claim{ai.dropped_claims === 1 ? '' : 's'} held back — not enough evidence.
@@ -406,11 +408,14 @@ function ComingModule({ title, body, caveats }: { title: string; body: string; c
   </section>;
 }
 
-export function ReportView({ report, preferences, setPreferences, onApply, busy, narrow, onBack, onReset }: {
+export function ReportView({ report, preferences, setPreferences, onApply, onCancelCompare, compareError, buildSlow, busy, narrow, onBack, onReset }: {
   report: Report;
   preferences: Preferences;
   setPreferences: (p: Preferences) => void;
   onApply: () => void;
+  onCancelCompare?: () => void;
+  compareError?: string | null;
+  buildSlow?: boolean;
   busy?: boolean;
   narrow?: boolean;
   onBack: () => void;
@@ -422,6 +427,11 @@ export function ReportView({ report, preferences, setPreferences, onApply, busy,
   const warnings = [...new Set(report.warnings)];
   const depCaveats = warnings.filter(w => /depreciat|resale|ownership|years kept|mileage when/i.test(w));
   const condCaveats = warnings.filter(w => /condition|feature|history|accident|title|option/i.test(w));
+  const synthetic = cars.length > 0 && cars.every(c => c.source_kind === 'synthetic' || c.retrieval_method === 'synthetic');
+  const hasObs = cars.some(c => (c.observations?.length ?? 0) > 0);
+  const marketEmpty = !report.market.comparables?.length
+    || /unavailable|not available|disabled|no market|synthetic/i.test(report.market.message || '')
+    || report.market.status === 'unavailable';
   return <section className="workspace report-layout">
     <div className="report-wrap">
     <div className="report-toolbar">
@@ -429,6 +439,23 @@ export function ReportView({ report, preferences, setPreferences, onApply, busy,
       <button className="secondary-button" onClick={() => window.print()}>Print report</button>
       <button className="primary-button" onClick={onReset}>New comparison</button>
     </div>
+    {compareError && !busy && <div className="compare-empty" role="alert">
+      <strong><CircleAlert size={16}/> Re-rank didn’t finish</strong>
+      <p>{compareError}</p>
+      <div className="compare-empty-actions">
+        <button type="button" className="primary-button" onClick={onApply}>Retry Apply</button>
+      </div>
+    </div>}
+    {busy && <div className="compare-building" role="status">
+      <LoaderCircle className="spin" size={16}/>
+      <div>
+        <strong>{buildSlow ? 'Still applying constraints…' : 'Building report…'}</strong>
+        <p>{buildSlow
+          ? 'Taking longer than usual. Cancel and retry anytime — your draft stays intact.'
+          : 'Rebuilding the cited comparison with your constraints.'}</p>
+      </div>
+      {onCancelCompare && <button type="button" className="secondary-button" onClick={onCancelCompare}>Cancel</button>}
+    </div>}
     <article className="report">
       <div className="report-head">
         <div>
@@ -471,10 +498,30 @@ export function ReportView({ report, preferences, setPreferences, onApply, busy,
           <h3>What stands out</h3>
           {report.findings.map(f => <div className="finding" key={f.title}><strong>{f.title}</strong><p>{f.detail}</p></div>)}
         </div>
-        {cars.filter(c => c.observations?.length).map(c => <div className="report-section" key={c.id}>
-          <h3>Sources: {carName(c)}</h3><SourceTable candidate={c}/>
-        </div>)}
-        <div className="report-section market-block"><h3>Market evidence</h3><p>{report.market.message}</p></div>
+        {hasObs
+          ? cars.filter(c => c.observations?.length).map(c => <div className="report-section" key={c.id}>
+              <h3>Sources: {carName(c)}</h3><SourceTable candidate={c}/>
+            </div>)
+          : <div className="report-section">
+              <h3>Sources</h3>
+              <p className="honest-empty" role="status">
+                <CircleAlert size={14}/>
+                {synthetic
+                  ? 'Synthetic examples have no listing source URLs — we don’t invent citations.'
+                  : 'No source observations were returned for these cars.'}
+              </p>
+            </div>}
+        <div className="report-section market-block">
+          <h3>Market evidence</h3>
+          {marketEmpty
+            ? <p className="honest-empty" role="status">
+                <CircleAlert size={14}/>
+                {synthetic
+                  ? 'Market evidence is unavailable for synthetic examples — not live market observations.'
+                  : (report.market.message || 'Market evidence is unavailable for this comparison.')}
+              </p>
+            : <p>{report.market.message}</p>}
+        </div>
         <div className="report-section">
           <h3>Caveats</h3>
           <ul className="notes">{[...new Set(report.warnings)].map(w => <li key={w}>{w}</li>)}</ul>

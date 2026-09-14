@@ -162,10 +162,13 @@ interface ReviewProps {
   preferences: Preferences;
   setPreferences: (p: Preferences) => void;
   updateCandidate: Edit; removeCandidate: (id: string) => void; generateReport: () => void; onAddMore: () => void; busy: boolean;
+  onCancelCompare?: () => void;
+  compareError?: string | null;
+  buildSlow?: boolean;
   narrow?: boolean;
 }
 
-export function Review({ candidates, preferences, setPreferences, updateCandidate, removeCandidate, generateReport, onAddMore, busy, narrow }: ReviewProps) {
+export function Review({ candidates, preferences, setPreferences, updateCandidate, removeCandidate, generateReport, onCancelCompare, compareError, buildSlow, onAddMore, busy, narrow }: ReviewProps) {
   const open = candidates.reduce((total, c) => total + attentionItems(c).length, 0);
   return <section className="workspace review-layout">
     <div className="panel main-panel">
@@ -174,6 +177,23 @@ export function Review({ candidates, preferences, setPreferences, updateCandidat
         <span className="count-badge">{candidates.length} of 3</span>
       </div>
       <p className="muted">Highlighted fields need a decision. Badges show where each value came from; your edits are marked “You”.</p>
+      {compareError && !busy && <div className="compare-empty" role="alert">
+        <strong><CircleAlert size={16}/> Report didn’t finish</strong>
+        <p>{compareError}</p>
+        <div className="compare-empty-actions">
+          <button type="button" className="primary-button" onClick={generateReport} disabled={candidates.length < 2}>Retry</button>
+        </div>
+      </div>}
+      {busy && <div className="compare-building" role="status">
+        <LoaderCircle className="spin" size={16}/>
+        <div>
+          <strong>{buildSlow ? 'Still building the report…' : 'Building report…'}</strong>
+          <p>{buildSlow
+            ? 'This is taking longer than usual. You can cancel and retry — your draft stays intact.'
+            : 'Comparing reviewed details. This can take up to about a minute.'}</p>
+        </div>
+        {onCancelCompare && <button type="button" className="secondary-button" onClick={onCancelCompare}>Cancel</button>}
+      </div>}
       <div className="candidate-list">{candidates.map((candidate, i) =>
         <ReviewCard key={candidate.id} candidate={candidate} index={i} onEdit={updateCandidate} onRemove={() => removeCandidate(candidate.id)}/>)}</div>
       {candidates.length < 3 && <button className="add-button" onClick={onAddMore}>+ Add {candidates.length < 2 ? 'another' : 'a third'} car</button>}

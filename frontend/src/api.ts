@@ -27,9 +27,14 @@ export const apiLog = {
   update(id: number, patch: Partial<ApiLogEntry>) { log = log.map(e => e.id === id ? { ...e, ...patch } : e); publish(); },
 };
 
-async function request<T>(path: string, body?: unknown, timeoutMs?: number): Promise<T> {
+async function request<T>(path: string, body?: unknown, timeoutMs?: number, external?: AbortSignal): Promise<T> {
   const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), timeoutMs ?? (body ? 120_000 : 20_000));
+  const onExternal = () => controller.abort();
+  if (external) {
+    if (external.aborted) controller.abort();
+    else external.addEventListener('abort', onExternal, { once: true });
+  }
+  const timer = window.setTimeout(() => controller.abort('timeout'), timeoutMs ?? (body ? 120_000 : 20_000));
   const started = performance.now();
   const entry = apiLog.add({ method: body === undefined ? 'GET' : 'POST', endpoint: `/api${path}`, request: body, status: 'pending' });
   try {
@@ -58,11 +63,21 @@ async function request<T>(path: string, body?: unknown, timeoutMs?: number): Pro
     }
     return data as T;
   } catch (error) {
-    if (error instanceof DOMException && error.name === 'AbortError') throw new Error('The request timed out. Your draft is intact. Please try again; check saved reports before regenerating a report.');
+    const aborted = (error instanceof DOMException && error.name === 'AbortError')
+      || (error instanceof Error && error.name === 'AbortError');
+    if (aborted) {
+      const timedOut = controller.signal.reason === 'timeout' || !external?.aborted;
+      throw new Error(timedOut
+        ? 'Building the report timed out. Your draft is intact — retry when ready.'
+        : 'Report build cancelled. Your draft is intact.');
+    }
     if (!(error instanceof ApiError)) apiLog.update(entry, { status: 'network error', ms: Math.round(performance.now() - started), note: error instanceof Error ? error.message : String(error) });
     if (error instanceof TypeError) throw new Error('Could not reach the RevRank API. Check your connection and that the backend is running on port 8000.');
     throw error;
-  } finally { window.clearTimeout(timer); }
+  } finally {
+    window.clearTimeout(timer);
+    if (external) external.removeEventListener('abort', onExternal);
+  }
 }
 
 export const api = {
@@ -70,8 +85,9 @@ export const api = {
   sources: () => request<SourceInfo>('/sources'),
   demo: () => request<{ candidates: Candidate[] }>('/demo'),
   import: (body: ImportRequest) => request<ImportResult>('/import', body),
-  // The AI analysis runs a multi-step tool loop server-side; allow it more time than an import.
-  compare: (candidates: Candidate[], preferences: Preferences) => request<Report>('/compare', { candidates, preferences }, 240_000),
+  // AI tool loop can be slow; 90s soft-fails into a retry empty state rather than an endless spinner.
+  compare: (candidates: Candidate[], preferences: Preferences, signal?: AbortSignal) =>
+    request<Report>('/compare', { candidates, preferences }, 90_000, signal),
   reports: () => request<{ reports: ReportSummary[] }>('/reports'),
   report: (id: string) => request<Report>(`/reports/${encodeURIComponent(id)}`),
 };
