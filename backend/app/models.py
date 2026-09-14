@@ -246,6 +246,22 @@ class AIAnalysis(Model):
     dropped_claims: int = 0
 
 
+class NHTSARecall(Model):
+    campaign_number: Short = ""
+    component: Short = ""
+    summary: Annotated[str, StringConstraints(max_length=1000)] = ""
+    report_date: Short | None = None
+    url: Annotated[str, StringConstraints(max_length=2048)] | None = None
+
+
+class NHTSAComplaint(Model):
+    odi_number: Short = ""
+    component: Short = ""
+    summary: Annotated[str, StringConstraints(max_length=1000)] = ""
+    date_filed: Short | None = None
+    url: Annotated[str, StringConstraints(max_length=2048)] | None = None
+
+
 class NHTSASafetyData(Model):
     """Model-year safety data (not VIN-specific); scope label always present."""
     scope: str = "Model-Year Safety Data (not VIN-specific)"
@@ -258,6 +274,9 @@ class NHTSASafetyData(Model):
     frontal_rating: str | None = None
     side_rating: str | None = None
     rollover_rating: str | None = None
+    vehicle_url: Annotated[str, StringConstraints(max_length=2048)] | None = None
+    recalls: Annotated[list[NHTSARecall], Field(max_length=10)] = Field(default_factory=list)
+    complaints: Annotated[list[NHTSAComplaint], Field(max_length=10)] = Field(default_factory=list)
 
 
 class Report(Model):

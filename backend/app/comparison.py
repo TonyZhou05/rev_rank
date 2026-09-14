@@ -5,10 +5,14 @@ from urllib.parse import quote
 from uuid import uuid4
 
 from .config import Settings
-from .models import Candidate, Evidence, Finding, Market, Metric, NHTSASafetyData, Preferences, Questions, Report, now, value_text
+from .models import (Candidate, Evidence, Finding, Market, Metric, NHTSAComplaint, NHTSARecall, NHTSASafetyData,
+                     Preferences, Questions, Report, now, value_text)
 from .vehicle_data import ProviderError, get_json
 
 NHTSA = "https://api.nhtsa.gov"
+NHTSA_RECALL_PAGE = "https://www.nhtsa.gov/recalls?nhtsaId={campaign}"
+NHTSA_VEHICLE_PAGE = "https://www.nhtsa.gov/vehicle/{vehicle_id}"
+NHTSA_ITEM_LIMIT = 5
 _NHTSA_CACHE: dict = {}
 
 
@@ -22,6 +26,48 @@ def _nhtsa(url: str, params: dict, limit: int = 5_000_000):
     return _NHTSA_CACHE[key]
 
 
+def _nhtsa_field(row: dict, *names: str) -> str:
+    """NHTSA returns PascalCase keys for recalls and camelCase keys for complaints."""
+    for name in names:
+        value = row.get(name)
+        if value not in (None, ""):
+            return str(value).strip()
+    return ""
+
+
+def _recall_items(rows: list[dict]) -> list[NHTSARecall]:
+    items = []
+    for row in rows[:NHTSA_ITEM_LIMIT]:
+        campaign = re.sub(r"[^A-Z0-9]", "", _nhtsa_field(row, "NHTSACampaignNumber", "nhtsaCampaignNumber").upper())[:20]
+        if not campaign:
+            continue
+        items.append(NHTSARecall(
+            campaign_number=campaign,
+            component=_nhtsa_field(row, "Component", "component")[:160],
+            summary=_nhtsa_field(row, "Summary", "summary")[:300],
+            report_date=_nhtsa_field(row, "ReportReceivedDate", "reportReceivedDate")[:40] or None,
+            url=NHTSA_RECALL_PAGE.format(campaign=campaign),
+        ))
+    return items
+
+
+def _complaint_items(rows: list[dict]) -> list[NHTSAComplaint]:
+    """NHTSA publishes no stable permalink per ODI number, so `url` stays null and the
+    UI links complaints through `vehicle_url` instead."""
+    items = []
+    for row in rows[:NHTSA_ITEM_LIMIT]:
+        odi = re.sub(r"[^0-9]", "", _nhtsa_field(row, "odiNumber", "ODINumber"))[:12]
+        if not odi:
+            continue
+        items.append(NHTSAComplaint(
+            odi_number=odi,
+            component=_nhtsa_field(row, "components", "Component", "component")[:160],
+            summary=_nhtsa_field(row, "summary", "Summary")[:300],
+            date_filed=_nhtsa_field(row, "dateComplaintFiled", "DateComplaintFiled")[:40] or None,
+        ))
+    return items
+
+
 def fetch_nhtsa_safety(year: int, make: str, model: str) -> NHTSASafetyData | None:
     """Fetch NHTSA model-year safety data (recalls, complaints, ratings).
 
@@ -29,21 +75,23 @@ def fetch_nhtsa_safety(year: int, make: str, model: str) -> NHTSASafetyData | No
     VIN-level recall status is OUT OF SCOPE.
     """
     try:
-        # Recalls count
+        # Recalls
         recalls_data = _nhtsa(f"{NHTSA}/recalls/recallsByVehicle", {"make": make, "model": model, "modelYear": year})
-        recalls_count = len([r for r in (recalls_data.get("results") or []) if isinstance(r, dict)])
+        recall_rows = [r for r in (recalls_data.get("results") or []) if isinstance(r, dict)]
 
-        # Complaints count
+        # Complaints
         complaints_data = _nhtsa(f"{NHTSA}/complaints/complaintsByVehicle", {"make": make, "model": model, "modelYear": year})
-        complaints_count = len([r for r in (complaints_data.get("results") or []) if isinstance(r, dict)])
+        complaint_rows = [r for r in (complaints_data.get("results") or []) if isinstance(r, dict)]
 
         # Safety ratings
         path = f"{NHTSA}/SafetyRatings/modelyear/{int(year)}/make/{quote(make, safe='')}/model/{quote(model, safe='')}"
         variants = [v for v in (_nhtsa(path, {}).get("Results") or []) if isinstance(v, dict) and str(v.get("VehicleId", "")).isdigit()]
 
-        overall_rating = frontal_rating = side_rating = rollover_rating = None
+        overall_rating = frontal_rating = side_rating = rollover_rating = vehicle_url = None
         if variants:
-            row = (_nhtsa(f"{NHTSA}/SafetyRatings/VehicleId/{int(variants[0]['VehicleId'])}", {}).get("Results") or [{}])[0]
+            vehicle_id = int(variants[0]["VehicleId"])
+            vehicle_url = NHTSA_VEHICLE_PAGE.format(vehicle_id=vehicle_id)
+            row = (_nhtsa(f"{NHTSA}/SafetyRatings/VehicleId/{vehicle_id}", {}).get("Results") or [{}])[0]
             overall_rating = str(row.get("OverallRating")) if row.get("OverallRating") else None
             frontal_rating = str(row.get("OverallFrontCrashRating")) if row.get("OverallFrontCrashRating") else None
             side_rating = str(row.get("OverallSideCrashRating")) if row.get("OverallSideCrashRating") else None
@@ -51,9 +99,11 @@ def fetch_nhtsa_safety(year: int, make: str, model: str) -> NHTSASafetyData | No
 
         return NHTSASafetyData(
             year=year, make=make, model=model,
-            recalls_count=recalls_count, complaints_count=complaints_count,
+            recalls_count=len(recall_rows), complaints_count=len(complaint_rows),
             overall_rating=overall_rating, frontal_rating=frontal_rating,
-            side_rating=side_rating, rollover_rating=rollover_rating
+            side_rating=side_rating, rollover_rating=rollover_rating,
+            vehicle_url=vehicle_url,
+            recalls=_recall_items(recall_rows), complaints=_complaint_items(complaint_rows)
         )
     except (ProviderError, Exception):
         return None
