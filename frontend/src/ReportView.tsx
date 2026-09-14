@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Check, CircleAlert, Sparkles } from 'lucide-react';
 import { allSame, comparable, delta, isCrossModel, metric, mileageValue, msrpPctDelta, msrpValue, mustHaveMetrics, numberIn, pctOfMsrp, pctOfMsrpText, priceValue, sharedAnnual, tradeOff, type DeltaKind } from './compare';
 import { SourceTable } from './Review';
@@ -177,18 +177,50 @@ function ValueCards({ cars }: { cars: Candidate[] }) {
   </div>;
 }
 
+// Below this width a third and fourth column crowd the row labels off the screen, so the table
+// shows the benchmark plus one comparison car. The `compare-narrow` class carries the same
+// decision into CSS, so the breakpoint lives here only.
+const NARROW_COMPARE = '(max-width: 768px)';
+
+const mediaQuery = (query: string) =>
+  typeof window === 'undefined' || typeof window.matchMedia !== 'function' ? null : window.matchMedia(query);
+
+function useNarrowViewport(query: string): boolean {
+  const [narrow, setNarrow] = useState(() => mediaQuery(query)?.matches ?? false);
+  useEffect(() => {
+    const mql = mediaQuery(query);
+    if (!mql) return;
+    setNarrow(mql.matches);
+    const onChange = (event: MediaQueryListEvent) => setNarrow(event.matches);
+    mql.addEventListener('change', onChange);
+    return () => mql.removeEventListener('change', onChange);
+  }, [query]);
+  return narrow;
+}
+
 function CompareTable({ report }: { report: Report }) {
   const cars = report.candidates;
   const crossModel = report.cross_model ?? isCrossModel(cars);
+  const narrow = useNarrowViewport(NARROW_COMPARE);
   const [benchId, setBenchId] = useState(cars[0]?.id);
+  const [focusId, setFocusId] = useState<string | null>(null);
   const [diffOnly, setDiffOnly] = useState(true);
   const bench = cars.find(c => c.id === benchId) ?? cars[0];
+  const others = cars.filter(c => c.id !== bench.id);
+  // The car shown next to the benchmark on a narrow screen. Picking it as the benchmark drops it
+  // out of `others`, and the first remaining car takes over.
+  const focus = others.find(c => c.id === focusId) ?? others[0] ?? null;
   // The benchmark leads; the others keep their order. Indexes stay tied to report.candidates.
   const order = [cars.indexOf(bench), ...cars.map((_, i) => i).filter(i => cars[i] !== bench)];
+  const columns = narrow && focus ? [order[0], cars.indexOf(focus)] : order;
+  const benchColumn = columns[0];
   const rows = rowsFor(report, bench, crossModel);
-  const shown = rows.filter(row => row.always || !diffOnly || !allSame(cars.map((c, i) => row.text(c, i))));
+  // "Differences only" hides rows that read the same across the columns on screen.
+  const shown = rows.filter(row => row.always || !diffOnly || !allSame(columns.map(i => row.text(cars[i], i))));
   const hidden = rows.length - shown.length;
-  return <>
+  // A picker only earns its space when more than one car can take the comparison column.
+  const pickable = narrow && others.length > 1 ? focus : null;
+  return <div className={narrow ? 'compare compare-narrow' : 'compare'}>
     {crossModel && <>
       <p className="cross-model-note" role="note">
         <CircleAlert size={15}/>
@@ -206,19 +238,28 @@ function CompareTable({ report }: { report: Report }) {
       </div>
       <label className="diff-toggle"><input type="checkbox" checked={diffOnly} onChange={e => setDiffOnly(e.target.checked)}/> Differences only</label>
     </div>
+    {pickable && <div className="compare-controls compare-focus">
+      <span className="control-label" id="compare-focus-label">Show one car against {carName(bench)}</span>
+      <div className="segmented" role="radiogroup" aria-labelledby="compare-focus-label">
+        {others.map(c => <button key={c.id} type="button" role="radio" aria-checked={c.id === pickable.id} className={c.id === pickable.id ? 'on' : ''}
+          onClick={() => setFocusId(c.id)}>{carName(c)}</button>)}
+      </div>
+    </div>}
     <div className="table-scroll"><table className="compare-table">
-      <thead><tr><th/>{order.map(i => <th key={cars[i].id} className={i === order[0] ? 'bench-col' : ''}>
-        {carName(cars[i])}<small>{i === order[0] ? 'benchmark' : 'vs benchmark'}</small></th>)}</tr></thead>
+      <thead><tr><th/>{columns.map(i => <th key={cars[i].id} className={i === benchColumn ? 'bench-col' : ''}>
+        {carName(cars[i])}<small>{i === benchColumn ? 'benchmark' : 'vs benchmark'}</small></th>)}</tr></thead>
       <tbody>
         {shown.map(row => {
+          // The marker still ranks the whole shortlist; it is simply not drawn when the winning
+          // car is off screen, so a hidden car is never implied to be second best.
           const best = bestIndex(cars, row);
           return <tr key={row.label}>
             <th scope="row">{row.label}{row.hint && <small>{row.hint}</small>}</th>
-            {order.map(i => {
+            {columns.map(i => {
               const c = cars[i];
-              const d = row.delta && i !== order[0] && row.rank ? delta(row.delta, row.rank(c, i), row.rank(bench, order[0]), c, bench) : null;
-              const msrpD = row.label.startsWith('% of original') && i !== order[0] ? msrpPctDelta(c, bench) : null;
-              return <td key={c.id} className={[i === best ? 'best' : '', i === order[0] ? 'bench-col' : ''].join(' ').trim()}>
+              const d = row.delta && i !== benchColumn && row.rank ? delta(row.delta, row.rank(c, i), row.rank(bench, benchColumn), c, bench) : null;
+              const msrpD = row.label.startsWith('% of original') && i !== benchColumn ? msrpPctDelta(c, bench) : null;
+              return <td key={c.id} className={[i === best ? 'best' : '', i === benchColumn ? 'bench-col' : ''].join(' ').trim()}>
                 {row.cell ? row.cell(c, i) : row.text(c, i)}
                 {d && <span className={`delta ${d.tone}`}>{d.text}</span>}
                 {msrpD && <span className={`delta ${msrpD.tone}`}>{msrpD.text}</span>}
@@ -230,13 +271,14 @@ function CompareTable({ report }: { report: Report }) {
       </tbody>
     </table></div>
     <p className="compare-note">
-      {hidden > 0 && <>{hidden} {hidden === 1 ? 'row is' : 'rows are'} the same for every car and hidden. </>}
+      {pickable && <>One comparison car at a time on a small screen: {carName(pickable)} against {carName(bench)}. Switch cars above; “lowest” and “newest” still rank all {cars.length} cars. </>}
+      {hidden > 0 && <>{hidden} {hidden === 1 ? 'row is' : 'rows are'} the same for {pickable ? 'both shown cars' : 'every car'} and hidden. </>}
       Green is better for you and amber is worse, compared with the benchmark.
       {crossModel
         ? ' Across models, prefer % of the MSRP you entered over raw asking-price gaps. Trade-offs use asking prices, not out-the-door prices.'
         : ' Trade-offs use asking prices, not out-the-door prices.'}
     </p>
-  </>;
+  </div>;
 }
 
 
