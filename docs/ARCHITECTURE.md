@@ -20,7 +20,10 @@ access, quotas, retention controls, and deployment-specific review before releas
    collected in the page: the browser sends the default ownership assumptions, and
    the report's ranking weights can be adjusted there instead.
 5. `/api/compare` validates candidates, calculates differences, checks available
-   market evidence, and generates evidence-grounded findings.
+   market evidence, and generates evidence-grounded findings. The deterministic
+   comparison and the optional model work run in worker threads under one
+   request-scoped cancel token (`backend/app/cancel.py`), so an aborted request stops
+   its own model work and a spent budget still answers with the deterministic report.
 6. A saved report preserves the candidates, preferences, result, and evidence dates.
 7. The browser can revisit, print, or export that report.
 

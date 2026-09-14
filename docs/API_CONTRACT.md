@@ -52,7 +52,8 @@ this confirms user input, NOT independent factual verification of seller claims.
 ## Endpoints
 
 - `GET /api/health` -> `{status: 'ok', llm_enabled: boolean, market_enabled: boolean, api_revision: number,
-  licensed_inventory_enabled: boolean, vin_decode_enabled: boolean, neovin_msrp_enabled: boolean, usage: {...}}`.
+  licensed_inventory_enabled: boolean, vin_decode_enabled: boolean, neovin_msrp_enabled: boolean,
+  compare_timeout_seconds: number, usage: {...}}`.
 - `GET /api/sources` -> `{sources: [{domain,name,status,reason}], live_fetch_enabled: boolean}`.
   Source status strings: `allowed | restricted | unsupported` (not "unreviewed"). Restricted/unsupported do not fetch.
   Note: Local allowlist ≠ reuse license; verify source-specific rights before integration.
@@ -66,8 +67,33 @@ this confirms user input, NOT independent factual verification of seller claims.
   per import, is skipped when an MSRP is already present, and is reported as a `licensed` attempt.
   `recovery_source: 'search'` suppresses it, like every other MarketCheck call.
 - `POST /api/compare` body `{candidates: Candidate[2..3], preferences: Preferences}` -> Report.
+  Cancellable and time-bounded; see "Compare cancellation and timeout" below.
 - `GET /api/reports` -> `{reports: [{id,title,created_at,analysis_mode}]}`.
 - `GET /api/reports/{id}` -> Report; not found 404.
+
+### Compare cancellation and timeout
+
+Every response carries `X-RevRank-Request-Id` (16 hex characters, one per call, exposed through CORS).
+It is the only identifier the server logs for a compare, so a client retry is distinguishable from
+the attempt it replaced. It is not a report id and is not persisted.
+
+One request-scoped budget covers both compare phases: `REVRANK_COMPARE_TIMEOUT_SECONDS`, 85s by
+default, just under the page's own 90s compare limit. `GET /api/health` reports the configured value.
+
+- **Client abort.** When the page aborts the fetch, the server notices the disconnect within about
+  250ms and stops the work: no further model turn, tool call or provider request starts, an in-flight
+  model stream is closed rather than waited out, and no report is saved. The status is `499`
+  (`{detail}`), which the aborted client never reads.
+- **Budget spent.** The deterministic comparison, metrics, evidence and NHTSA data are returned as
+  usual with `200`, `analysis_mode: 'rules'`, and `ai_analysis.status: 'unavailable'` whose `message`
+  says the analysis stopped at the server time limit. Nothing is inferred from the unfinished run.
+  A partial run that already validated findings keeps them with `ai_analysis.status: 'partial'` and
+  says so in `message`. The report is saved like any other.
+- **Budget spent before the comparison exists.** `503` with `{detail}`; nothing invented, safe to retry.
+- Optional NHTSA model-year enrichment is skipped (`nhtsa_data` omits that candidate) rather than
+  spending the whole budget before the analysis; the deterministic comparison is unaffected.
+- Concurrent compares share no cancellation state, model client or connection: each call owns its
+  token and works on its own copy of the report.
 
 ### ImportResponse
 

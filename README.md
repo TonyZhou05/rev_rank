@@ -61,6 +61,10 @@ editing `.env`. Re-run the checks with `.venv/bin/python scripts/check_sources.p
   statement is kept only if it cites tool results from that run and every number in it
   appears in them; unsupported statements are dropped and counted. Small local models
   (for example 3B) mostly fail these checks, so use a capable hosted model.
+- One `POST /api/compare` is bounded by `REVRANK_COMPARE_TIMEOUT_SECONDS` (85s, just under the
+  page's own 90s limit) and stops within about 250ms of the page aborting the request. A spent
+  budget still returns the deterministic comparison, with the AI path reported unavailable rather
+  than invented. Each call is logged under one `X-RevRank-Request-Id`, also returned as a header.
 - Pasted URLs may lack `https://` or include surrounding text. VINs in URLs (TrueCar,
   Edmunds, Carfax, Autolist) are read with check-digit validation. Listing ids are read
   for CarMax, Carvana, Autotrader, KBB, Cars.com and CarGurus (`#listing=`).
