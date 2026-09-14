@@ -37,8 +37,7 @@ system; do not expose it publicly. Reports may include private user-supplied det
 
 1. Load the clearly labeled synthetic examples, or paste two listing descriptions.
 2. Review and correct prices, units, configuration, and missing information.
-3. Set your budget, priorities, and must-have features.
-4. Generate a report, inspect the evidence, and save/export/print it.
+3. Generate a report, inspect the evidence, and save/export/print it.
 
 `samples/` contains labeled synthetic text examples for exercising imports.
 They are not real listings or market observations.

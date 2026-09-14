@@ -303,7 +303,7 @@ function RankingSection({ report }: { report: Report }) {
         <p className="eyebrow">DETERMINISTIC · YOUR WEIGHTS</p>
         <h3>Your ranking</h3>
       </div>
-      <p className="muted ranking-lede">Ordered by must-have flags first, then a transparent fit score from your priorities. Missing inputs are omitted — never invented.</p>
+      <p className="muted ranking-lede">Ordered by must-have flags first, then a transparent fit score you can reweight below. Missing inputs are omitted — never invented.</p>
     </div>
     {result.notes.map(n => <p className="ranking-note" key={n}><CircleAlert size={14}/> {n}</p>)}
     <div className="rank-weights">

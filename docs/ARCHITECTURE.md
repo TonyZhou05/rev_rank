@@ -16,7 +16,9 @@ access, quotas, retention controls, and deployment-specific review before releas
 2. The backend checks source policy before any live page access.
 3. Structured data and conservative text extraction produce a candidate with
    field-level evidence and warnings; an optional configured LLM can assist.
-4. The buyer reviews and edits extracted details, then sets comparison preferences.
+4. The buyer reviews and edits extracted details. Comparison preferences are not
+   collected in the page: the browser sends the default ownership assumptions, and
+   the report's ranking weights can be adjusted there instead.
 5. `/api/compare` validates candidates, calculates differences, checks available
    market evidence, and generates evidence-grounded findings.
 6. A saved report preserves the candidates, preferences, result, and evidence dates.
