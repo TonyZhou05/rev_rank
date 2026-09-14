@@ -427,12 +427,16 @@ export function ReportView({ report, preferences, setPreferences, onApply, onCan
   const warnings = [...new Set(report.warnings)];
   const depCaveats = warnings.filter(w => /depreciat|resale|ownership|years kept|mileage when/i.test(w));
   const condCaveats = warnings.filter(w => /condition|feature|history|accident|title|option/i.test(w));
+  const lifted = new Set([...depCaveats, ...condCaveats]);
+  const remainingCaveats = warnings.filter(w => !lifted.has(w));
   const synthetic = cars.length > 0 && cars.every(c => c.source_kind === 'synthetic' || c.retrieval_method === 'synthetic');
   const hasObs = cars.some(c => (c.observations?.length ?? 0) > 0);
   const marketEmpty = !report.market.comparables?.length
     || /unavailable|not available|disabled|no market|synthetic/i.test(report.market.message || '')
     || report.market.status === 'unavailable';
+  const panel = <ConstraintPanel mode="report" preferences={preferences} onChange={setPreferences} onApply={onApply} busy={busy} narrow={narrow} applied={report.preferences}/>;
   return <section className="workspace report-layout">
+    {narrow && panel}
     <div className="report-wrap">
     <div className="report-toolbar">
       <button className="secondary-button" onClick={onBack}>← Edit cars</button>
@@ -524,11 +528,13 @@ export function ReportView({ report, preferences, setPreferences, onApply, onCan
         </div>
         <div className="report-section">
           <h3>Caveats</h3>
-          <ul className="notes">{[...new Set(report.warnings)].map(w => <li key={w}>{w}</li>)}</ul>
+          {remainingCaveats.length
+            ? <ul className="notes">{remainingCaveats.map(w => <li key={w}>{w}</li>)}</ul>
+            : <p className="muted">Other caveats already shown under Depreciation / Condition above.</p>}
         </div>
       </details>
     </article>
     </div>
-    <ConstraintPanel mode="report" preferences={preferences} onChange={setPreferences} onApply={onApply} busy={busy} narrow={narrow}/>
+    {!narrow && panel}
   </section>;
 }

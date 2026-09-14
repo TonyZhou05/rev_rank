@@ -126,29 +126,6 @@
 @media print{.value-cards{break-inside:avoid}.cross-model-note{border:1px solid #ccc}}
 
 .msrp-cta,.value-msrp.muted-cta{color:#8a5d07;font-weight:600}
-.ranking-block{margin:0 0 8px}
-.ranking-head{display:flex;flex-wrap:wrap;gap:12px 24px;align-items:end;margin-bottom:12px}
-.ranking-head h3{margin:0}
-.ranking-lede{max-width:42rem;margin:0}
-.ranking-note{display:flex;gap:8px;align-items:flex-start;margin:0 0 8px;font-size:12.5px;color:#5c4a1e}
-.rank-weights{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin:0 0 14px;padding:12px;border-radius:12px;background:#f7f9fb;border:1px solid #e3e9ef}
-.rank-weight{display:flex;flex-direction:column;gap:6px;font:600 12px Manrope;color:#44566b}
-.rank-weight em{font-style:normal;color:#688022;margin-left:6px}
-.rank-weight input[type=range]{width:100%;accent-color:#8cae2c}
-.rank-cards{list-style:none;margin:0;padding:0;display:grid;gap:10px}
-.rank-card{padding:14px;border-radius:12px;border:1px solid #e3e9ef;background:#fff}
-.rank-card.flagged{border-color:#f0d9a8;background:#fffdf6}
-.rank-card-top{display:flex;gap:12px;align-items:flex-start}
-.rank-place{flex:none;width:36px;height:36px;border-radius:10px;display:grid;place-items:center;background:#1f2d3a;color:#fff;font:800 14px Manrope}
-.rank-fit{margin:2px 0 0;font:700 13px Manrope;color:#3f6d1f}
-.rank-knock{margin:8px 0 0;font-size:12.5px;color:#8a5d07}
-.rank-why{margin:8px 0 0;font-size:12.5px;color:#44566b}
-.rank-breakdown{margin-top:8px;font-size:12.5px}
-.rank-breakdown ul{list-style:none;margin:8px 0 0;padding:0}
-.rank-breakdown li{display:flex;justify-content:space-between;gap:12px;padding:4px 0;border-top:1px solid #eef1f4}
-.rank-breakdown li.omitted{color:#9aa6b3;justify-content:flex-start}
-.rank-sensitivity{margin:12px 0 0;padding:10px 12px;border-radius:10px;background:#eef5ff;border:1px solid #d5e3f7;color:#355275;font-size:13px}
-@media print{.rank-weights{display:none}}
 
 .dom-first{display:block;margin-top:2px;font:500 10px 'DM Mono',monospace;color:#9aa6b3}
 .nhtsa-scope{display:flex;gap:8px;align-items:flex-start;margin:0 0 12px;padding:10px 12px;border-radius:10px;background:#fff7e8;border:1px solid #f0d9a8;color:#5c4a1e;font-size:12.5px;line-height:1.45}
@@ -216,3 +193,12 @@
 .compare-building{background:#f4f8e8;border:1px solid #d5e6a8;color:#3f5518}
 .compare-building .secondary-button{margin-left:auto}
 .honest-empty{display:flex;gap:8px;align-items:flex-start;margin:0;font-size:13px;color:#73570c}
+
+.constraint-dirty{display:flex;gap:7px;align-items:center;margin:0 0 12px;padding:10px 12px;background:#fff4d5;border:1px solid #ead59a;border-radius:8px;color:#73570c;font-size:12px;font-weight:600}
+.constraint-dirty-inline{margin:4px 0 0;font-size:11px;color:#73570c;font-weight:600}
+.constraint-sheet-top{display:flex;justify-content:flex-end;margin-bottom:8px}
+.muted-note{margin-top:4px!important}
+.constraint-mobile{margin:0 0 16px}
+@media(max-width:900px){
+  .constraint-mobile{position:sticky;top:0;z-index:5}
+}
