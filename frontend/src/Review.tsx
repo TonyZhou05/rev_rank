@@ -117,11 +117,11 @@ function ReviewCard({ candidate, index, onEdit, onRemove }: { candidate: Candida
         </label>
         <label className="field">
           <span className="field-label">Original MSRP <Badge candidate={candidate} field="msrp"/>
-            <span className="field-optional">{msrpOrigin(candidate) === 'Factory MSRP · NeoVIN' ? 'Factory MSRP · NeoVIN' : (msrpOrigin(candidate) ?? 'you enter')}</span></span>
+            {!decodedMsrp && <span className="field-optional">{msrpOrigin(candidate) ?? 'you enter'}</span>}</span>
           <input type="number" value={candidate.msrp ?? ''} placeholder="Optional — never invented"
                  onChange={e => onEdit(candidate.id, 'msrp', e.target.value)}/>
           <span className="field-hint">{decodedMsrp
-            ? <>{msrpNeoVinKind(candidate) ?? 'VIN decode'}. Factory sticker as built, not the listing price. Change it if you know better.</>
+            ? <>{msrpNeoVinKind(candidate) ?? 'Factory sticker'}. Factory sticker as built, not the listing price. Change it if you know better.</>
             : 'Used for % of original MSRP in the report. Leave blank if you do not know it.'}</span>
         </label>
       </div>
