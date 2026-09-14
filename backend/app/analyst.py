@@ -10,9 +10,11 @@ from datetime import datetime
 from itertools import combinations
 import json
 import re
+from threading import Lock
 import time
 from urllib.parse import quote
 
+from .cancel import DISCONNECTED, Cancelled, CancelToken, budget
 from .comparison import usable
 from .config import Settings
 from .llm import LLMUnavailable, chat
@@ -24,6 +26,9 @@ FACT_FIELDS = ("year", "make", "model", "trim", "price", "currency", "mileage", 
                "engine", "drivetrain", "body", "fuel_type", "location", "features", "history")
 NHTSA = "https://api.nhtsa.gov"
 MAX_TURNS, MAX_TOOL_CALLS, BUDGET_SECONDS = 24, 60, 170
+# Left of the request's hard wall so the loop stops itself and reports what it validated.
+RESERVE_SECONDS = 3
+STOPPED_EARLY = "Analysis stopped at the server time limit, so it covers less than a full run."
 PROMPT_VERSION = "analyst-tools-v2"
 LIMITS = {"verdict": 1, "strength": 3, "risk": 3, "comparison": 5, "question": 2}
 NUMBER = re.compile(r"(?<![A-Za-z])\d[\d,]*(?:\.\d+)?")
@@ -87,20 +92,27 @@ def numbers(text: str) -> set[float]:
 
 
 _NHTSA_CACHE: dict = {}
+_CACHE_LOCK = Lock()
 
 
-def nhtsa(url: str, params: dict, limit: int = 5_000_000):
+def nhtsa(url: str, params: dict, limit: int = 5_000_000, timeout: float = 10):
     key = (url, tuple(sorted(params.items())))
-    if key not in _NHTSA_CACHE:
+    with _CACHE_LOCK:
+        # Public model-year data, so concurrent requests may share the answer, never a client.
+        if key in _NHTSA_CACHE:
+            return _NHTSA_CACHE[key]
+    value = get_json(url, params, timeout=timeout, limit=limit)
+    with _CACHE_LOCK:
         if len(_NHTSA_CACHE) > 128:
             _NHTSA_CACHE.clear()
-        _NHTSA_CACHE[key] = get_json(url, params, timeout=10, limit=limit)
-    return _NHTSA_CACHE[key]
+        _NHTSA_CACHE[key] = value
+    return value
 
 
 class Workspace:
-    def __init__(self, report: Report):
+    def __init__(self, report: Report, token: CancelToken | None = None):
         self.report = report
+        self.token = token
         self.cars: dict[str, Candidate] = {LABELS[i]: c for i, c in enumerate(report.candidates[:3])}
         self.sources: dict[str, SourceRef] = {}
         self.tool_calls = 0
@@ -276,6 +288,9 @@ class Workspace:
         return {"ok": True}
 
     def run(self, name: str, args: dict) -> dict:
+        # No provider request is started for a request the client abandoned or already ran out of time.
+        if self.token is not None:
+            self.token.check()
         self.tool_calls += 1
         if self.tool_calls > MAX_TOOL_CALLS:
             return {"error": "Tool budget exhausted. Call finish now."}
@@ -382,25 +397,29 @@ def parse_arguments(raw) -> dict:
     return value if isinstance(value, dict) else {}
 
 
-def analyze(report: Report, settings: Settings) -> AIAnalysis:
+def analyze(report: Report, settings: Settings, token: CancelToken | None = None) -> AIAnalysis:
     if not settings.llm_enabled:
         return AIAnalysis(status="unavailable", message="AI comparison needs REVRANK_LLM_MODEL and REVRANK_LLM_API_KEY on the server.")
     if len(report.candidates) < 2:
         return AIAnalysis(status="unavailable", message="AI comparison needs at least two distinct cars.")
-    ws = Workspace(report)
+    ws = Workspace(report, token)
     labels = list(ws.cars)
     tools = tool_schemas(labels)
     messages = [{"role": "system", "content": SYSTEM},
                 {"role": "user", "content": json.dumps({"cars": {label: ws.cars[label].title for label in labels},
                                                         "buyer_preferences": ws.buyer, "buyer_preferences_id": "P.buyer"})}]
-    deadline = time.monotonic() + BUDGET_SECONDS
-    nudged = False
+    # Own budget, kept inside the request's remaining time so the loop stops before the hard wall.
+    limit = BUDGET_SECONDS if token is None else max(0.0, min(BUDGET_SECONDS, token.remaining() - RESERVE_SECONDS))
+    deadline = time.monotonic() + limit
+    nudged, stopped = False, False
     try:
         for turn in range(MAX_TURNS):
             remaining = deadline - time.monotonic()
-            if remaining < 5:
+            if remaining < 5 or (token is not None and token.cancelled):
+                # No further model turn is started; whatever passed the evidence checks still stands.
+                stopped = True
                 break
-            message = chat(settings, messages, tools, timeout=min(120, remaining))
+            message = chat(settings, messages, tools, timeout=min(120, remaining), token=token)
             calls = [c for c in (message.get("tool_calls") or []) if isinstance(c, dict) and isinstance(c.get("function"), dict)]
             if not calls:
                 if nudged or ws.findings and any(f["kind"] == "verdict" for f in ws.findings):
@@ -428,4 +447,13 @@ def analyze(report: Report, settings: Settings) -> AIAnalysis:
     except LLMUnavailable as error:
         if not ws.findings:
             return AIAnalysis(status="unavailable", message=str(error), tool_calls=ws.tool_calls)
-    return assemble(ws, settings)
+    except Cancelled:
+        # A client that walked away gets no report at all; a spent budget still reports what held up.
+        if token is not None and token.reason == DISCONNECTED:
+            raise
+        stopped = True
+    analysis = assemble(ws, settings)
+    if stopped:
+        analysis.status = "unavailable" if analysis.status == "unavailable" else "partial"
+        analysis.message = (analysis.message + " " + STOPPED_EARLY).strip()[:1000]
+    return analysis

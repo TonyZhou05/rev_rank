@@ -4,6 +4,7 @@ import re
 from urllib.parse import quote
 from uuid import uuid4
 
+from .cancel import CancelToken
 from .config import Settings
 from .models import (Candidate, Evidence, Finding, Market, Metric, NHTSAComplaint, NHTSARecall, NHTSASafetyData,
                      Preferences, Questions, Report, now, value_text)
@@ -24,6 +25,9 @@ NHTSA_DRIVE_CODES = {"FWD", "RWD", "AWD", "4WD", "4X2", "4X4"}
 NHTSA_BODY_WORDS = {"DR", "SUV", "VAN", "MINIVAN", "WAGON", "PICKUP", "TRUCK", "COUPE", "SEDAN",
                     "HATCHBACK", "CONVERTIBLE", "CROSSOVER"}
 NHTSA_ITEM_LIMIT = 5
+# Model-year safety data is optional enrichment: it is skipped rather than allowed to spend the
+# request's whole budget before the analysis that needs what is left.
+NHTSA_MIN_SECONDS = 15
 _NHTSA_CACHE: dict = {}
 
 
@@ -281,7 +285,8 @@ def requirement_match(c: Candidate, wanted: str) -> str:
     return "not established"
 
 
-def create_report(candidates: list[Candidate], prefs: Preferences, settings: Settings) -> Report:
+def create_report(candidates: list[Candidate], prefs: Preferences, settings: Settings,
+                  token: CancelToken | None = None) -> Report:
     warnings = [
         "Prices are seller asking prices, not completed transactions. No fair-value, depreciation or repair-cost estimate is supplied.",
         "Seller claims and user-confirmed inputs are not independently verified. Missing history never means clean history.",
@@ -469,6 +474,8 @@ def create_report(candidates: list[Candidate], prefs: Preferences, settings: Set
     # A5: Deterministic NHTSA model-year safety data
     nhtsa_data = {}
     for c in candidates:
+        if token is not None and (token.cancelled or token.remaining() < NHTSA_MIN_SECONDS):
+            break
         if c.year and c.make and c.model:
             safety = fetch_nhtsa_safety(c.year, c.make, c.model)
             if safety:
