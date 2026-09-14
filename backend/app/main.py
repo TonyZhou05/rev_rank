@@ -91,6 +91,10 @@ def import_listing(request: ImportRequest):
             on_page = request.vin in raw.upper()
             candidate.evidence["vin"] = Evidence(value=request.vin, status="extracted", source=(
                 "VIN shown on the listing page" if on_page else "VIN in the listing URL (check digit valid)"))
+    elif request.vin and "vin" not in candidate.evidence:
+        # No page was read, so the VIN is the buyer's own input whether or not the text repeats it.
+        candidate.evidence["vin"] = Evidence(value=request.vin, status="user_confirmed", source=(
+            "VIN you entered; also in the pasted text" if request.vin in raw.upper() else "VIN you entered"))
     candidate = assist_extraction(candidate, text, settings)
     candidate.retrieval_method = 'direct' if fetched else 'paste'
     status = import_status(candidate)

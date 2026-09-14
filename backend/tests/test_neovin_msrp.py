@@ -267,6 +267,18 @@ class TestImportEndpoint:
         assert body["candidate"]["msrp"] == 93245
         assert body["candidate"]["evidence"]["msrp"]["status"] == "extracted"
         assert any("original MSRP" in a["detail"] for a in body["attempts"])
+        # The VIN that sourced the MSRP is kept as the buyer's own input, not dropped as unknown.
+        assert body["candidate"]["evidence"]["vin"] == {
+            "value": VIN, "source": "VIN you entered", "status": "user_confirmed"}
+
+    def test_vin_the_pasted_text_states_keeps_its_own_evidence(self, monkeypatch):
+        monkeypatch.setattr(main, "settings", Settings())
+        with TestClient(main.app) as client:
+            body = client.post("/api/import", json={
+                "text": f"2017 BMW M2\nVIN: {VIN}\nPrice: $42,500 USD", "vin": VIN}).json()
+        evidence = body["candidate"]["evidence"]["vin"]
+        assert evidence["value"] == VIN and evidence["status"] == "extracted"
+        assert "pasted listing text" in evidence["source"]
 
     def test_page_vin_fills_msrp_on_a_fetched_listing(self, monkeypatch):
         monkeypatch.setattr(main, "settings", licensed())
