@@ -14,7 +14,7 @@ from threading import Lock
 import time
 from urllib.parse import quote
 
-from .cancel import DISCONNECTED, Cancelled, CancelToken, budget
+from .cancel import DISCONNECTED, Cancelled, CancelToken
 from .comparison import usable
 from .config import Settings
 from .llm import LLMUnavailable, chat

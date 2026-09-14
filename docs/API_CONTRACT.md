@@ -95,6 +95,10 @@ default, just under the page's own 90s compare limit. `GET /api/health` reports 
 - Concurrent compares share no cancellation state, model client or connection: each call owns its
   token and works on its own copy of the report.
 
+Abort detection depends on the disconnect reaching the API process, which a local run and a direct
+uvicorn deployment both do. Behind a proxy that holds the upstream connection open after the browser
+leaves, the time limit is the backstop rather than the abort.
+
 ### ImportResponse
 
 ```

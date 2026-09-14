@@ -1,6 +1,7 @@
 """Optional structured assistance. Raw model prose never becomes report evidence."""
 import json
 import re
+from typing import NoReturn
 from urllib.parse import urlsplit
 
 import httpx
@@ -49,12 +50,12 @@ def completion(settings: Settings, body: dict, timeout: float, limit: int, token
     return b"".join(chunks)
 
 
-def unavailable(token: CancelToken | None) -> LLMUnavailable:
+def unavailable(token: CancelToken | None) -> NoReturn:
     """A closed or timed-out stream reads as a transport error; report the cancel behind it."""
     if token is not None and token.cancelled:
         raise Cancelled(token.reason)
     # Never expose response bodies, provider URLs, API keys or raw exception strings.
-    return LLMUnavailable("Model response unavailable or invalid.")
+    raise LLMUnavailable("Model response unavailable or invalid.")
 
 
 def chat(settings: Settings, messages: list[dict], tools: list[dict], timeout: float,
@@ -69,7 +70,7 @@ def chat(settings: Settings, messages: list[dict], tools: list[dict], timeout: f
             raise ValueError()
         return message
     except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError):
-        raise unavailable(token) from None
+        unavailable(token)
 
 
 def request_json(settings: Settings, system: str, payload: dict, token: CancelToken | None = None,
@@ -86,7 +87,7 @@ def request_json(settings: Settings, system: str, payload: dict, token: CancelTo
             raise ValueError()
         return value
     except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError):
-        raise unavailable(token) from None
+        unavailable(token)
 
 
 def assist_extraction(candidate: Candidate, text: str, settings: Settings) -> Candidate:
