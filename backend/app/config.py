@@ -26,6 +26,9 @@ class Settings:
     # Paid-provider budgets per UTC month, enforced by usage.py before each call.
     marketcheck_monthly_calls: int = 500
     search_monthly_credits: int = 1000
+    # Hard wall for one POST /api/compare, just under the page's own 90s limit so the server
+    # answers with an honest deterministic report before the browser gives up.
+    compare_timeout_seconds: float = 85.0
 
     @property
     def marketcheck_enabled(self) -> bool:
@@ -67,4 +70,5 @@ class Settings:
             neovin_enabled=os.getenv("REVRANK_NEOVIN_ENABLED", "true").lower() != "false",
             marketcheck_monthly_calls=int(os.getenv("REVRANK_MARKETCHECK_MONTHLY_CALLS", "500")),
             search_monthly_credits=int(os.getenv("REVRANK_SEARCH_MONTHLY_CREDITS", "1000")),
+            compare_timeout_seconds=max(1.0, float(os.getenv("REVRANK_COMPARE_TIMEOUT_SECONDS", "85"))),
         )
