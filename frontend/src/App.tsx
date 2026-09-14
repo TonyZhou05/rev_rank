@@ -105,7 +105,7 @@ export default function App() {
     }));
     setReport(null);
   };
-  const cancelCompare = () => { compareAbort.current?.abort(); };
+  const cancelCompare = () => { compareAbort.current?.abort('cancel'); };
   const generateReport = async () => {
     if (candidates.length < 2) { setNotice('Import at least two candidates before generating a report.'); return; }
     compareAbort.current?.abort();
@@ -154,7 +154,7 @@ export default function App() {
 
   return <div className="app-shell">
     <header className="topbar"><a className="brand" href="/" onClick={e => { e.preventDefault(); reset(); }}><span className="brand-mark">R</span><span>RevRank</span></a><span className="top-note">Vehicle comparison workspace</span><button className="text-button" onClick={reset}><RotateCcw size={15}/> New comparison</button></header>
-    <main><fieldset className="workspace-controls" disabled={busy}>
+    <main><div className="workspace-controls" aria-busy={busy || undefined}>
       {step === 'import' && <section className="intro"><div><p className="eyebrow">COMPARE THE CARS, NOT THE HYPE</p><h1>Make the next car decision with evidence.</h1><p className="lede">Bring in the listings you’re considering. RevRank extracts the details, checks the tradeoffs, and builds a report around what matters to you.</p></div><div className="status-card"><span className="status-dot"/>Local workspace<br/><small>Your draft stays in this browser.</small></div></section>}
       <nav className="steps" aria-label="Comparison steps">{[['import','01','Import listings'],['review','02','Review details'],['report','03','Read report']].map(([key,num,label], i) => <button key={key} className={step === key ? 'step active' : 'step'} onClick={() => (key === 'review' && candidates.length === 0) ? setNotice('Import a listing first.') : setStep(key as typeof step)}><span>{num}</span>{label}{i < 2 && <ArrowRight size={15}/>}</button>)}</nav>
       {health && health.api_revision !== API_REVISION && <div className="notice" role="alert"><CircleAlert size={17}/><span>The running RevRank backend is older than this page (API revision {health.api_revision ?? 1}, expected {API_REVISION}). Its results may be wrong, for example rejecting enabled websites. Stop scripts/dev.py with Ctrl+C and start it again.</span></div>}
@@ -164,7 +164,7 @@ export default function App() {
       {step === 'review' && <Review candidates={candidates} preferences={preferences} setPreferences={setPreferences} updateCandidate={updateCandidate} removeCandidate={(id) => removeSlot(s => s.candidate?.id !== id)} generateReport={generateReport} onCancelCompare={cancelCompare} compareError={compareError} buildSlow={buildSlow} onAddMore={() => { addSlot(); setStep('import'); }} busy={busy} narrow={narrowConstraints} />}
       {step === 'report' && !report && <div className="panel main-panel"><h2>Generate an updated report</h2><p>Your inputs have changed or no report has been generated yet.</p><button className="primary-button" onClick={() => setStep(candidates.length ? 'review' : 'import')}>Return to {candidates.length ? 'review' : 'import'}</button></div>}
       {step === 'report' && report && <ReportView report={report} preferences={preferences} setPreferences={setPreferences} onApply={generateReport} onCancelCompare={cancelCompare} compareError={compareError} buildSlow={buildSlow} busy={busy} narrow={narrowConstraints} onBack={() => setStep('review')} onReset={reset} />}
-    </fieldset></main>
+    </div></main>
     <ApiInspector/>
     <footer><span>RevRank v0.1 · Evidence before certainty</span><span><FileText size={14}/> Reports are informational estimates</span></footer>
   </div>;
