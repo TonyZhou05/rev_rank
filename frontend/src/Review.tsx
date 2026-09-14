@@ -1,5 +1,5 @@
 import { ArrowRight, CircleAlert, LoaderCircle, Trash2 } from 'lucide-react';
-import type { Candidate, Preferences } from './types';
+import type { Candidate } from './types';
 import { carName, dateLabel, fieldOptions, hostOf, provenance, readableField, safeUrl, sourceLabel, unresolvedConflicts } from './utils';
 
 type Edit = (id: string, field: keyof Candidate, value: string) => void;
@@ -152,13 +152,12 @@ export function SourceTable({ candidate }: { candidate: Candidate }) {
 }
 
 interface ReviewProps {
-  candidates: Candidate[]; preferences: Preferences; setPreferences: (p: Preferences) => void;
+  candidates: Candidate[];
   updateCandidate: Edit; removeCandidate: (id: string) => void; generateReport: () => void; onAddMore: () => void; busy: boolean;
 }
 
-export function Review({ candidates, preferences, setPreferences, updateCandidate, removeCandidate, generateReport, onAddMore, busy }: ReviewProps) {
+export function Review({ candidates, updateCandidate, removeCandidate, generateReport, onAddMore, busy }: ReviewProps) {
   const open = candidates.reduce((total, c) => total + attentionItems(c).length, 0);
-  const list = (value: string) => value.split(',').map(x => x.trim()).filter(Boolean);
   return <section className="workspace review-layout">
     <div className="panel main-panel">
       <div className="panel-heading">
@@ -169,17 +168,6 @@ export function Review({ candidates, preferences, setPreferences, updateCandidat
       <div className="candidate-list">{candidates.map((candidate, i) =>
         <ReviewCard key={candidate.id} candidate={candidate} index={i} onEdit={updateCandidate} onRemove={() => removeCandidate(candidate.id)}/>)}</div>
       {candidates.length < 3 && <button className="add-button" onClick={onAddMore}>+ Add {candidates.length < 2 ? 'another' : 'a third'} car</button>}
-
-      <div className="preferences">
-        <div className="section-title"><span className="eyebrow">YOUR CONTEXT</span><h3>What should matter most?</h3></div>
-        <div className="pref-grid">
-          <label>Budget<input type="number" placeholder="No limit" value={preferences.budget ?? ''} onChange={e => setPreferences({ ...preferences, budget: e.target.value ? Number(e.target.value) : null })}/></label>
-          <label>Annual mileage<input type="number" value={preferences.annual_mileage} onChange={e => setPreferences({ ...preferences, annual_mileage: Number(e.target.value) })}/></label>
-          <label>Location<input value={preferences.location} placeholder="City or ZIP" onChange={e => setPreferences({ ...preferences, location: e.target.value })}/></label>
-        </div>
-        <label>Priorities<input value={preferences.priorities.join(', ')} placeholder="Price, safety, practicality" onChange={e => setPreferences({ ...preferences, priorities: list(e.target.value) })}/></label>
-        <label>Must-haves<input value={preferences.must_haves.join(', ')} placeholder="e.g. Apple CarPlay, AWD" onChange={e => setPreferences({ ...preferences, must_haves: list(e.target.value) })}/></label>
-      </div>
       <div className="generate-row">
         <p className="muted">{candidates.length < 2 ? 'Add at least two cars to compare.'
           : open ? `${open} highlighted item${open === 1 ? '' : 's'} still open — the report will treat them as unknown.` : 'All key details are set.'}</p>

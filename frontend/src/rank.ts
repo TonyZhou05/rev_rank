@@ -156,7 +156,7 @@ export function rankShortlist(report: Report, weightOverride?: Partial<Record<Ra
 
   const notes: string[] = [];
   if (crossModel) notes.push('Cross-model shortlist: ranking leans on fit + % of MSRP, not raw asking price.');
-  if (!report.preferences.priorities.length) notes.push('No priorities set — using default value weights. Add priorities on Review to steer the score.');
+  if (!report.preferences.priorities.length) notes.push('No priorities set — using default value weights.');
 
   // Build raw columns then normalize per factor (lower raw = better for all four).
   const base = cars.map((c, i) => ({ c, i, raw: rawFactors(report, c, i), knockouts: knockoutsFor(report, i) }));
