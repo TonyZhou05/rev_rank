@@ -9,6 +9,22 @@ import { cacheImport, cachedImport, clearDraft, loadDraft, loadRecoverySource, s
 import { derivePercentOfMsrp } from './compare';
 import { dateLabel, defaultPreferences, editCandidate, fieldOptions, freshSlot, importBody, mileage, money, readableField, recoveryBadge, restoreSlot, safeUrl, sourceLabel } from './utils';
 
+const CONSTRAINT_NARROW = '(max-width: 900px)';
+const mediaQuery = (query: string) =>
+  typeof window === 'undefined' || typeof window.matchMedia !== 'function' ? null : window.matchMedia(query);
+function useNarrowViewport(query: string): boolean {
+  const [narrow, setNarrow] = useState(() => mediaQuery(query)?.matches ?? false);
+  useEffect(() => {
+    const mql = mediaQuery(query);
+    if (!mql) return;
+    setNarrow(mql.matches);
+    const onChange = (event: MediaQueryListEvent) => setNarrow(event.matches);
+    mql.addEventListener('change', onChange);
+    return () => mql.removeEventListener('change', onChange);
+  }, [query]);
+  return narrow;
+}
+
 export default function App() {
   // Restore the browser-local draft so imported cars survive reloads and step changes.
   const [draft] = useState(loadDraft);
@@ -22,6 +38,7 @@ export default function App() {
   const [health, setHealth] = useState<Health | null>(null);
   const [recoverySource, setRecoverySource] = useState<RecoverySource>(loadRecoverySource);
   const candidates = useMemo(() => slots.map(s => s.candidate).filter((c): c is Candidate => Boolean(c)), [slots]);
+  const narrowConstraints = useNarrowViewport(CONSTRAINT_NARROW);
 
   useEffect(() => { api.health().then(setHealth).catch(() => undefined); }, []);
   useEffect(() => saveDraft({ slots, preferences }), [slots, preferences]);
@@ -123,9 +140,9 @@ export default function App() {
       {health?.search_enabled === false && !health.licensed_inventory_enabled && <div className="notice" role="status"><CircleAlert size={17}/><span>{!health.search_provider?.trim() || health.search_provider === 'none' ? 'Search recovery is unavailable: no search provider is configured.' : `Search recovery is unavailable (provider setting: ${health.search_provider}).`} For local setup, set REVRANK_SEARCH_PROVIDER to brave or tavily and REVRANK_SEARCH_API_KEY (or a licensed REVRANK_MARKETCHECK_API_KEY) in the backend’s local .env, then restart the backend and reload this page. Keep the key server-side. Paste listing text to continue without search.</span></div>}
       {notice && <div className="notice"><CircleAlert size={17}/><span>{notice}</span></div>}
       {step === 'import' && <section className="workspace"><div className="panel main-panel"><div className="panel-heading"><div><p className="eyebrow">START HERE</p><h2>Import the cars you’re considering</h2></div><button className="secondary-button" onClick={loadDemo} disabled={busy}><Sparkles size={16}/> Use examples</button></div><p className="muted">Paste a listing URL from a supported source, or paste the listing text when a website blocks automated access.</p><SourceSwitch value={recoverySource} onChange={setRecoverySource} health={health}/><div className="import-grid">{slots.map((slot, index) => <ImportCard key={slot.id} slot={slot} index={index} busy={busy} loading={loadingSlot === slot.id} canRemove={slots.length > 1 || Boolean(slot.candidate || slot.url || slot.text || slot.vin)} onChange={update => updateSlot(slot.id, update)} onImport={refresh => importSlot(slot, refresh)} onRemove={() => removeSlot(s => s.id !== slot.id)} onEditField={(field, raw) => slot.candidate && updateCandidate(slot.candidate.id, field, raw)} />)}{slots.length < 3 && <button className="add-card" onClick={addSlot}><Plus size={18}/><strong>Add a {slots.length === 1 ? 'second' : 'third'} car</strong><span>Compare up to three listings</span></button>}</div><div className="import-footer"><p className="muted">{candidates.length} of {slots.length} {slots.length === 1 ? 'car' : 'cars'} imported{candidates.length < 2 ? ' · import at least two to generate a report' : ''}</p><button className="primary-button" disabled={!candidates.length} onClick={() => setStep('review')}>Review details <ArrowRight size={16}/></button></div></div><aside className="panel side-panel"><Gauge size={21} className="amber"/><h3>What happens next</h3><ol><li>We identify the exact model, generation, mileage, and price.</li><li>You confirm anything missing or unclear.</li><li>Price, mileage, and evidence quality shape the final comparison.</li></ol><div className="side-callout"><strong>Built for uncertainty</strong><p>Seller claims and unknown history remain labeled in your report.</p></div></aside></section>}
-      {step === 'review' && <Review candidates={candidates} updateCandidate={updateCandidate} removeCandidate={(id) => removeSlot(s => s.candidate?.id !== id)} generateReport={generateReport} onAddMore={() => { addSlot(); setStep('import'); }} busy={busy} />}
+      {step === 'review' && <Review candidates={candidates} preferences={preferences} setPreferences={setPreferences} updateCandidate={updateCandidate} removeCandidate={(id) => removeSlot(s => s.candidate?.id !== id)} generateReport={generateReport} onAddMore={() => { addSlot(); setStep('import'); }} busy={busy} narrow={narrowConstraints} />}
       {step === 'report' && !report && <div className="panel main-panel"><h2>Generate an updated report</h2><p>Your inputs have changed or no report has been generated yet.</p><button className="primary-button" onClick={() => setStep(candidates.length ? 'review' : 'import')}>Return to {candidates.length ? 'review' : 'import'}</button></div>}
-      {step === 'report' && report && <ReportView report={report} onBack={() => setStep('review')} onReset={reset} />}
+      {step === 'report' && report && <ReportView report={report} preferences={preferences} setPreferences={setPreferences} onApply={generateReport} busy={busy} narrow={narrowConstraints} onBack={() => setStep('review')} onReset={reset} />}
     </fieldset></main>
     <ApiInspector/>
     <footer><span>RevRank v0.1 · Evidence before certainty</span><span><FileText size={14}/> Reports are informational estimates</span></footer>

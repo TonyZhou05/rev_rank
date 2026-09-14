@@ -1,6 +1,7 @@
 import { ArrowRight, CircleAlert, LoaderCircle, Trash2 } from 'lucide-react';
-import { msrpOrigin } from './compare';
-import type { Candidate } from './types';
+import { msrpNeoVinKind, msrpOrigin } from './compare';
+import { ConstraintPanel } from './ConstraintPanel';
+import type { Candidate, Preferences } from './types';
 import { carName, dateLabel, fieldOptions, hostOf, provenance, readableField, safeUrl, sourceLabel, unresolvedConflicts } from './utils';
 
 type Edit = (id: string, field: keyof Candidate, value: string) => void;
@@ -119,7 +120,7 @@ function ReviewCard({ candidate, index, onEdit, onRemove }: { candidate: Candida
           <input type="number" value={candidate.msrp ?? ''} placeholder="Optional — never invented"
                  onChange={e => onEdit(candidate.id, 'msrp', e.target.value)}/>
           <span className="field-hint">{decodedMsrp
-            ? 'Decoded from this VIN by MarketCheck NeoVIN: the factory sticker for the car as built, not the listing price. Change it if you know better.'
+            ? <>Factory MSRP · NeoVIN{msrpNeoVinKind(candidate) ? <> · {msrpNeoVinKind(candidate)}</> : null}. Decoded from this VIN — the factory sticker as built, not the listing price. Change it if you know better.</>
             : 'Used for % of original MSRP in the report. Leave blank if you do not know it.'}</span>
         </label>
       </div>
@@ -158,10 +159,13 @@ export function SourceTable({ candidate }: { candidate: Candidate }) {
 
 interface ReviewProps {
   candidates: Candidate[];
+  preferences: Preferences;
+  setPreferences: (p: Preferences) => void;
   updateCandidate: Edit; removeCandidate: (id: string) => void; generateReport: () => void; onAddMore: () => void; busy: boolean;
+  narrow?: boolean;
 }
 
-export function Review({ candidates, updateCandidate, removeCandidate, generateReport, onAddMore, busy }: ReviewProps) {
+export function Review({ candidates, preferences, setPreferences, updateCandidate, removeCandidate, generateReport, onAddMore, busy, narrow }: ReviewProps) {
   const open = candidates.reduce((total, c) => total + attentionItems(c).length, 0);
   return <section className="workspace review-layout">
     <div className="panel main-panel">
@@ -181,5 +185,6 @@ export function Review({ candidates, updateCandidate, removeCandidate, generateR
         </button>
       </div>
     </div>
+    <ConstraintPanel mode="review" preferences={preferences} onChange={setPreferences} onApply={generateReport} busy={busy} narrow={narrow}/>
   </section>;
 }
