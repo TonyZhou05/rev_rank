@@ -46,6 +46,9 @@ def offline(monkeypatch):
     monkeypatch.setattr(retrieval, "search", forbidden)
     monkeypatch.setattr(retrieval, "inventory_search", forbidden)
     monkeypatch.setattr(retrieval, "decode_vin", forbidden)
+    # A bound VIN triggers a NeoVIN MSRP decode; these tests are about identity, so it finds nothing.
+    # test_neovin_msrp.py covers the decode itself.
+    monkeypatch.setattr(retrieval, "decode_neovin_msrp", lambda settings, vin, timeout=8: None)
     monkeypatch.setattr(main, "settings", Settings())
 
 

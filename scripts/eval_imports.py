@@ -103,8 +103,10 @@ def main_() -> int:
     cases = [c for c in cases if args.only.lower() in c["label"].lower()]
     settings = main.settings
     imports = len(cases) * max(1, args.repeat)
-    # Worst case per import: 3 MarketCheck calls; 4 searches (8 Tavily credits). Blocked pages only.
-    worst = {"marketcheck": 3 * imports if settings.marketcheck_enabled and args.source != "search" else 0,
+    # Worst case per import: 3 MarketCheck inventory calls plus 1 NeoVIN MSRP decode; 4 searches
+    # (8 Tavily credits). Blocked pages only.
+    per_import = 4 if settings.neovin_msrp_enabled else 3
+    worst = {"marketcheck": per_import * imports if settings.marketcheck_enabled and args.source != "search" else 0,
              settings.search_provider: 4 * usage.COST.get(settings.search_provider, 1) * imports
              if settings.search_enabled and args.source != "marketcheck" else 0}
     left = {p: usage.limit(settings, p) - usage.used(settings, p) for p in worst if worst[p]}

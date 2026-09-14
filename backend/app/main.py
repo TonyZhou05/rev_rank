@@ -19,12 +19,12 @@ from .listing_url import normalize_input_url, url_vin
 from .llm import assist_extraction, assist_report
 from .models import Candidate, CompareRequest, Evidence, ImportRequest, ImportResponse, Report
 from .sources import sources_response
-from .retrieval import recover_listing
+from .retrieval import attach_original_msrp, recover_listing
 from . import usage
 
 settings = Settings.from_env()
 # Bump when the wire contract changes; the page warns when it talks to an older API process.
-API_REVISION = 4
+API_REVISION = 5
 app = FastAPI(title="RevRank API", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"], allow_methods=["GET", "POST"], allow_headers=["Content-Type", "Accept"])
 DB_LOCK = Lock()
@@ -41,6 +41,7 @@ def health():
     return {"status": "ok", "api_revision": API_REVISION, "llm_enabled": settings.llm_enabled, "market_enabled": False,
             "search_enabled": settings.search_enabled, "search_provider": settings.search_provider,
             "licensed_inventory_enabled": settings.marketcheck_enabled, "vin_decode_enabled": settings.vin_decode_enabled,
+            "neovin_msrp_enabled": settings.neovin_msrp_enabled,
             "usage": usage.summary(settings)}
 
 @app.get("/api/sources")
@@ -90,6 +91,10 @@ def import_listing(request: ImportRequest):
             on_page = request.vin in raw.upper()
             candidate.evidence["vin"] = Evidence(value=request.vin, status="extracted", source=(
                 "VIN shown on the listing page" if on_page else "VIN in the listing URL (check digit valid)"))
+    elif request.vin and "vin" not in candidate.evidence:
+        # No page was read, so the VIN is the buyer's own input whether or not the text repeats it.
+        candidate.evidence["vin"] = Evidence(value=request.vin, status="user_confirmed", source=(
+            "VIN you entered; also in the pasted text" if request.vin in raw.upper() else "VIN you entered"))
     candidate = assist_extraction(candidate, text, settings)
     candidate.retrieval_method = 'direct' if fetched else 'paste'
     status = import_status(candidate)
@@ -106,6 +111,11 @@ def import_listing(request: ImportRequest):
         return response
     if fetched and status == 'partial':
         return recover_listing(request, settings, response)
+    # A VIN the buyer pasted, the URL carried, or the page showed also buys the factory MSRP.
+    if response.candidate is not None and request.recovery_source in ('auto', 'marketcheck'):
+        evidence = response.candidate.evidence.get('vin')
+        attach_original_msrp(response.candidate, request.vin or (evidence.value.upper() if evidence else None),
+                             settings, response.attempts)
     return response
 
 @app.post("/api/compare", response_model=Report)

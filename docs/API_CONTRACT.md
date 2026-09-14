@@ -20,12 +20,22 @@ Recovery fields (populated during listing recovery):
 - `observations: [{field, value, source_url, retrieved_at, observed_at?, method, vin?}]` - Source observations collected during recovery
 - `conflicts: string[]` - Fields where sources disagree
 
-MSRP fields (buyer-entered only):
-- `msrp: number|null` - Original MSRP; buyer-entered and user_confirmed ONLY, NEVER scraped/LLM/MarketCheck filled
-- `percent_of_msrp: number|null` - Derived at compare time as `(price/msrp)*100`; NOT user-editable input
-  - Computed only when: price and msrp are both set, currency is not UNK, and msrp is in verified_fields
+MSRP fields (buyer-entered or decoded from the VIN):
+- `msrp: number|null` - Original (factory) MSRP. Two sources only: the buyer, or a MarketCheck NeoVIN
+  decode of a known 17-character VIN. Never scraped from a page, never LLM-suggested, and never a
+  listing's own `msrp` from inventory search (that figure often just repeats the asking price).
+- `percent_of_msrp: number|null` - Derived at compare time as `(price/msrp)*100`; NOT a user-editable input
+  - Computed only when: price and msrp are both set, currency is not UNK, and the MSRP is *sourced*
   - Otherwise null
-- MSRP must be in verified_fields to be used in calculations (ensures buyer manually confirmed)
+- An MSRP is *sourced* when `msrp` is in `verified_fields` (the buyer entered or confirmed it), or when
+  `evidence.msrp.source` starts with `MarketCheck NeoVIN` (status `extracted`)
+- NeoVIN fill is a suggestion, not a verified fact: it stays editable, and a buyer edit replaces it and
+  marks the field `user_confirmed`. An existing MSRP is never overwritten by a decode.
+- `evidence.msrp.source` grammar for a decode, which the UI reads for its label:
+  `MarketCheck NeoVIN <oem_msrp|original_msrp|combined_msrp> for VIN <VIN>; …`, or
+  `MarketCheck NeoVIN msrp labeled <oem_msrp|original_msrp> for VIN <VIN>; …`
+- The decode also appends one `observations` entry (`field: "msrp"`, `method: "licensed"`) whose
+  `source_url` is the decode endpoint without its API key
 
 Days-on-market fields (from licensed inventory payload only):
 - `dom: number|null` - Days on market from MarketCheck; null for search/direct/paste recovery
@@ -41,7 +51,8 @@ this confirms user input, NOT independent factual verification of seller claims.
 
 ## Endpoints
 
-- `GET /api/health` -> `{status: 'ok', llm_enabled: boolean, market_enabled: boolean, api_revision: number, ...}`.
+- `GET /api/health` -> `{status: 'ok', llm_enabled: boolean, market_enabled: boolean, api_revision: number,
+  licensed_inventory_enabled: boolean, vin_decode_enabled: boolean, neovin_msrp_enabled: boolean, usage: {...}}`.
 - `GET /api/sources` -> `{sources: [{domain,name,status,reason}], live_fetch_enabled: boolean}`.
   Source status strings: `allowed | restricted | unsupported` (not "unreviewed"). Restricted/unsupported do not fetch.
   Note: Local allowlist ≠ reuse license; verify source-specific rights before integration.
@@ -50,6 +61,10 @@ this confirms user input, NOT independent factual verification of seller claims.
   ImportResponse (see below).
   User text may accompany a URL and is analyzed locally/through configured LLM without fetching URL.
   Operational import failures are structured results; invalid schemas use 422.
+  When the import ends with a known VIN (pasted, read from the URL, shown on the page, or bound during
+  recovery) and `neovin_msrp_enabled`, one MarketCheck NeoVIN decode fills `candidate.msrp`. It runs once
+  per import, is skipped when an MSRP is already present, and is reported as a `licensed` attempt.
+  `recovery_source: 'search'` suppresses it, like every other MarketCheck call.
 - `POST /api/compare` body `{candidates: Candidate[2..3], preferences: Preferences}` -> Report.
 - `GET /api/reports` -> `{reports: [{id,title,created_at,analysis_mode}]}`.
 - `GET /api/reports/{id}` -> Report; not found 404.
@@ -182,9 +197,9 @@ Standard metrics include:
 - Generation / trim, Location
 - Projected odometer (when units match)
 - Must-have: {item} (for each must_have)
-- **% of original MSRP (you entered)**: Calculated as `price/msrp*100` when:
+- **% of original MSRP**: Calculated as `price/msrp*100` when:
   - Both price and msrp are set
-  - msrp is in verified_fields (user confirmed)
+  - The MSRP is sourced: in verified_fields (buyer confirmed) or NeoVIN-decoded (see MSRP fields above)
   - Currency is known and matches
   - Otherwise shows "N/A" or "MSRP not confirmed"
 

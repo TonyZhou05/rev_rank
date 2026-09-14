@@ -16,7 +16,7 @@ from .listing_url import bare_host, identity_params, identity_url, is_listing_ur
 from .models import Candidate, Evidence, ImportRequest, ImportResponse, Observation, RetrievalAttempt, now, value_text
 from .search import search, SearchError
 from .snippets import FOCUSED_QUERY, listed_date, single_vehicle_page, snippet_text
-from .vehicle_data import InventoryListing, ProviderError, VinDecode, decode_vin, inventory_search
+from .vehicle_data import InventoryListing, ProviderError, VinDecode, decode_neovin_msrp, decode_vin, inventory_search
 
 VIN = re.compile(r'(?<![A-Z0-9])[A-HJ-NPR-Z0-9]{17}(?![A-Z0-9])', re.I)
 FIELDS = ('make', 'model', 'year', 'trim', 'generation', 'price', 'currency', 'mileage',
@@ -260,6 +260,38 @@ def search_records(url, host, stock, target, request, settings, attempts, deadli
     return records, target
 
 
+def attach_original_msrp(candidate: Candidate | None, vin: str | None, settings: Settings,
+                         attempts: list[RetrievalAttempt], timeout: float = 8) -> Candidate | None:
+    """Fill Original MSRP from one NeoVIN decode of a bound VIN.
+
+    A listing's own MSRP is unreliable (it often repeats the asking price), so the factory figure comes
+    from the licensed VIN decode instead. It is a sourced suggestion, not a verified fact: the buyer can
+    still change it on the review page, and a value already on the candidate is never overwritten.
+    """
+    if candidate is None or not vin or not settings.neovin_msrp_enabled:
+        return candidate
+    # One decode per VIN: an MSRP the buyer entered, or one an earlier step already decoded, stands.
+    if candidate.msrp is not None or 'msrp' in candidate.evidence:
+        return candidate
+    try:
+        found = decode_neovin_msrp(settings, vin, timeout=timeout)
+    except (ProviderError, ValueError) as error:
+        attempts.append(RetrievalAttempt(method='licensed', status='failed', detail=f'NeoVIN MSRP decode: {error}'[:1000]))
+        return candidate
+    if found is None:
+        attempts.append(RetrievalAttempt(method='licensed', status='not_found',
+                                         detail='NeoVIN decode reported no OEM, original or combined MSRP for this VIN.'))
+        return candidate
+    candidate.msrp = found.amount
+    candidate.evidence['msrp'] = Evidence(value=value_text(found.amount), source=found.source, status='extracted')
+    candidate.observations = (candidate.observations + [Observation(
+        field='msrp', value=value_text(found.amount), source_url=found.source_url, retrieved_at=now(),
+        method='licensed', vin=found.vin)])[:150]
+    attempts.append(RetrievalAttempt(method='licensed', status='completed',
+                                     detail=f'NeoVIN decode reported {found.field} {found.amount:,.0f} as the original MSRP.'))
+    return candidate
+
+
 def normalized(value) -> str:
     return re.sub(r'[^a-z0-9]', '', value_text(value).casefold())
 
@@ -475,6 +507,9 @@ def recover_listing(request: ImportRequest, settings: Settings, original: Import
     if merged.history:
         merged.history = HISTORY_LABELS.get(history_method, HISTORY_LABELS['search']) + merged.history[:900]
         merged.evidence['history'].value = merged.history
+    # The bound VIN unlocks the factory MSRP; the recovery-source switch still decides who may be called.
+    if use_licensed:
+        attach_original_msrp(merged, target, settings, result.attempts, timeout=budget(deadline, 8))
     result.candidate = merged
     result.status = 'partial'
     if not records:

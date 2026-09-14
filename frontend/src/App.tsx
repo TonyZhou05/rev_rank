@@ -84,18 +84,18 @@ export default function App() {
     setBusy(true); setNotice('');
     try {
       const remote = await api.compare(candidates, preferences);
-      // PR #2 integration: send buyer-entered MSRP (verified_fields); overlay if backend omits it on the way back.
+      // Keep the MSRP this page holds if the backend omits it on the way back, with its own evidence:
+      // a value the buyer typed stays "you entered", a VIN-decoded one keeps the NeoVIN source.
       const local = new Map(candidates.map(c => [c.id, c]));
       const merged = remote.candidates.map(c => {
         const from = local.get(c.id);
         const msrp = from?.msrp ?? c.msrp ?? null;
+        const evidence = from?.evidence.msrp ?? c.evidence.msrp
+          ?? (from?.msrp != null ? { value: String(msrp), source: 'Buyer-entered original MSRP', status: 'user_confirmed' as const } : null);
         const withMsrp = msrp == null ? c : {
           ...c,
           msrp,
-          evidence: {
-            ...c.evidence,
-            ...(from?.evidence.msrp ? { msrp: from.evidence.msrp } : { msrp: { value: String(msrp), source: 'Buyer-entered original MSRP', status: 'user_confirmed' as const } }),
-          },
+          evidence: { ...c.evidence, ...(evidence ? { msrp: evidence } : {}) },
         };
         // Prefer backend-derived percent_of_msrp; FE fallback only when PR #2 fields absent.
         if (withMsrp.percent_of_msrp != null) return withMsrp;
@@ -138,9 +138,11 @@ const providerName = (key: string | undefined) => (key && PROVIDER_NAMES[key]) |
 // Debug switch: which paid provider may be called when a listing page is blocked. Both have small quotas.
 function SourceSwitch({ value, onChange, health }: { value: RecoverySource; onChange: (source: RecoverySource) => void; health: Health | null }) {
   const search = providerName(health?.search_provider);
+  // One more MarketCheck call decodes a known VIN for the factory MSRP; say so, the quota is small.
+  const neovin = health?.neovin_msrp_enabled ? ' One extra call decodes a known VIN for its original MSRP.' : '';
   const options: { key: RecoverySource; label: string; ready: boolean; hint: string }[] = [
-    { key: 'auto', label: 'Auto', ready: true, hint: `MarketCheck first; ${search} only when MarketCheck has no match.` },
-    { key: 'marketcheck', label: 'MarketCheck', ready: Boolean(health?.licensed_inventory_enabled), hint: 'Only MarketCheck is called: usually 1 call per import, at most 3.' },
+    { key: 'auto', label: 'Auto', ready: true, hint: `MarketCheck first; ${search} only when MarketCheck has no match.${neovin}` },
+    { key: 'marketcheck', label: 'MarketCheck', ready: Boolean(health?.licensed_inventory_enabled), hint: `Only MarketCheck is called: usually 1 call per import, at most 3.${neovin}` },
     { key: 'search', label: search, ready: Boolean(health?.search_enabled), hint: `Only ${search} is called: up to 4 searches per import. Excerpts can be stale.` },
   ];
   const chosen = options.find(o => o.key === value) ?? options[0];

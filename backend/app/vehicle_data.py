@@ -15,8 +15,17 @@ from .fetch import FetchError, validated_url
 from .usage import BudgetExceeded, spend
 
 MARKETCHECK_URL = 'https://api.marketcheck.com/v2/search/car/active'
+NEOVIN_URL = 'https://api.marketcheck.com/v2/decode/car/neovin/{vin}/specs'
 VPIC_URL = 'https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVinValues/{vin}'
 VIN = re.compile(r'^[A-HJ-NPR-Z0-9]{17}$')
+# A NeoVIN decode reports several MSRP figures. Only these are the factory sticker for the car as
+# built, in preference order. Bare `msrp` is often a weaker base figure, `build_specs_msrp` covers
+# the build sheet alone, and a listing's inventory `msrp` frequently just repeats the asking price.
+MSRP_FIELDS = ('oem_msrp', 'original_msrp', 'combined_msrp')
+# `msrp` is used only when NeoVIN labels it as one of these and no named field contradicts it.
+MSRP_LABELS = ('oem_msrp', 'original_msrp')
+# Prefix of the evidence source string for a NeoVIN-sourced value; the UI and the compare gate read it.
+NEOVIN_SOURCE = 'MarketCheck NeoVIN'
 
 
 class ProviderError(Exception):
@@ -144,6 +153,63 @@ def inventory_search(settings: Settings, *, vin: str | None = None, vdp_url: str
     if not isinstance(rows, list):
         raise ProviderError('Provider response unavailable or malformed.')
     return [item for item in map(parse_listing, rows[:10]) if item]
+
+
+@dataclass(frozen=True)
+class NeoVinMsrp:
+    """The one factory MSRP figure taken from a NeoVIN decode, with the field that carried it."""
+    vin: str
+    amount: float
+    field: str
+    # msrp_label, set only when the bare `msrp` field supplied the number.
+    labeled_as: str | None = None
+
+    @property
+    def source(self) -> str:
+        origin = f'msrp labeled {self.labeled_as}' if self.labeled_as else self.field
+        return (f'{NEOVIN_SOURCE} {origin} for VIN {self.vin}; the factory MSRP of the car as built, '
+                'not a listing or asking price')
+
+    @property
+    def source_url(self) -> str:
+        # The endpoint without its key: MarketCheck authenticates with a query parameter.
+        return NEOVIN_URL.format(vin=self.vin)
+
+
+def msrp_from_specs(payload, vin: str) -> NeoVinMsrp | None:
+    """Pick the one figure we are willing to call original MSRP, in MSRP_FIELDS order."""
+    if not isinstance(payload, dict):
+        return None
+    for field in MSRP_FIELDS:
+        amount = number(payload.get(field))
+        if amount:
+            return NeoVinMsrp(vin=vin, amount=amount, field=field)
+    # No named figure, but NeoVIN labels the bare one as the OEM or original MSRP. When the named field
+    # does carry a number, the loop above has already returned it, so nothing here can contradict it.
+    label, amount = payload.get('msrp_label'), number(payload.get('msrp'))
+    if amount and label in MSRP_LABELS:
+        return NeoVinMsrp(vin=vin, amount=amount, field='msrp', labeled_as=label)
+    return None
+
+
+def decode_neovin_msrp(settings: Settings, vin: str, timeout: float = 8) -> NeoVinMsrp | None:
+    """One paid NeoVIN decode of a known VIN; None when it reports no factory MSRP we can stand behind."""
+    vin = vin.upper()
+    if not VIN.fullmatch(vin):
+        raise ValueError('Invalid VIN.')
+    if not settings.marketcheck_enabled:
+        raise ProviderError('Licensed VIN decode provider is not configured.')
+    try:
+        spend(settings, 'marketcheck')
+    except BudgetExceeded as error:
+        raise ProviderError(str(error)) from None
+    payload = get_json(NEOVIN_URL.format(vin=vin), {'api_key': settings.marketcheck_api_key}, timeout, limit=2_000_000)
+    if not isinstance(payload, dict):
+        raise ProviderError('Provider response unavailable or malformed.')
+    echoed = payload.get('vin')
+    if isinstance(echoed, str) and echoed.strip().upper() not in ('', vin):
+        raise ProviderError('The VIN decode describes a different vehicle.')
+    return msrp_from_specs(payload, vin)
 
 
 @dataclass(frozen=True)

@@ -21,6 +21,8 @@ class Settings:
     search_provider: str = "brave"
     search_api_key: str = ""
     vin_decode_enabled: bool = False
+    # One extra MarketCheck call per known VIN, for the factory MSRP a listing cannot supply.
+    neovin_enabled: bool = True
     # Paid-provider budgets per UTC month, enforced by usage.py before each call.
     marketcheck_monthly_calls: int = 500
     search_monthly_credits: int = 1000
@@ -28,6 +30,10 @@ class Settings:
     @property
     def marketcheck_enabled(self) -> bool:
         return bool(self.marketcheck_api_key)
+
+    @property
+    def neovin_msrp_enabled(self) -> bool:
+        return self.marketcheck_enabled and self.neovin_enabled
 
     @property
     def search_enabled(self) -> bool:
@@ -58,6 +64,7 @@ class Settings:
             search_provider=os.getenv("REVRANK_SEARCH_PROVIDER", "brave").strip().lower(),
             search_api_key=os.getenv("REVRANK_SEARCH_API_KEY", "").strip(),
             vin_decode_enabled=os.getenv("REVRANK_VIN_DECODE_ENABLED", "false").lower() == "true",
+            neovin_enabled=os.getenv("REVRANK_NEOVIN_ENABLED", "true").lower() != "false",
             marketcheck_monthly_calls=int(os.getenv("REVRANK_MARKETCHECK_MONTHLY_CALLS", "500")),
             search_monthly_credits=int(os.getenv("REVRANK_SEARCH_MONTHLY_CREDITS", "1000")),
         )

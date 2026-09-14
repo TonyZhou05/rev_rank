@@ -7,7 +7,7 @@ from uuid import uuid4
 from .config import Settings
 from .models import (Candidate, Evidence, Finding, Market, Metric, NHTSAComplaint, NHTSARecall, NHTSASafetyData,
                      Preferences, Questions, Report, now, value_text)
-from .vehicle_data import ProviderError, get_json
+from .vehicle_data import NEOVIN_SOURCE, ProviderError, get_json
 
 NHTSA = "https://api.nhtsa.gov"
 NHTSA_RECALL_PAGE = "https://www.nhtsa.gov/recalls?nhtsaId={campaign}"
@@ -240,6 +240,15 @@ def usable(c: Candidate, field: str) -> bool:
     return getattr(c, field) is not None and (field not in c.conflicts or field in c.verified_fields) and not any(w.startswith(f"Conflicting {field}:") for w in c.warnings)
 
 
+def msrp_sourced(c: Candidate) -> bool:
+    """An MSRP the buyer confirmed, or the factory MSRP a NeoVIN decode of this VIN supplied.
+    A scraped, listing-reported or LLM-suggested figure still does not count."""
+    if "msrp" in c.verified_fields:
+        return True
+    evidence = c.evidence.get("msrp")
+    return bool(evidence and evidence.source.startswith(NEOVIN_SOURCE))
+
+
 def known_unit(c: Candidate) -> bool:
     return ("mileage_unit" in c.evidence and c.evidence["mileage_unit"].value == c.mileage_unit
             and usable(c, "mileage_unit"))
@@ -434,12 +443,12 @@ def create_report(candidates: list[Candidate], prefs: Preferences, settings: Set
     for c in candidates:
         warnings.extend(f"{c.title}: {w}" for w in c.warnings)
 
-    # MSRP v1: percent_of_msrp derived at compare time (buyer-entered MSRP only)
+    # percent_of_msrp is derived here, never supplied as an input, and only from a sourced MSRP:
+    # one the buyer confirmed or one a NeoVIN decode of the VIN reported.
     msrp_values = []
     for c in candidates:
         if c.msrp is not None and c.price is not None and usable(c, "price") and c.currency != "UNK":
-            # msrp must be user_confirmed to ensure it's buyer-entered
-            if "msrp" in c.verified_fields:
+            if msrp_sourced(c):
                 pct = float((dec(c.price) / dec(c.msrp)) * 100)
                 c.percent_of_msrp = round(pct, 2)
                 msrp_values.append(f"{fmt(pct, 1)}%")
@@ -449,7 +458,7 @@ def create_report(candidates: list[Candidate], prefs: Preferences, settings: Set
         else:
             c.percent_of_msrp = None
             msrp_values.append("N/A")
-    metrics.append(Metric(label="% of original MSRP (you entered)", values=msrp_values))
+    metrics.append(Metric(label="% of original MSRP", values=msrp_values))
 
     # Compute cross_model: true if any make/model differs (case-insensitive trim)
     def norm(s):
