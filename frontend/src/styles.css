@@ -207,3 +207,12 @@
 @media print{
   .constraint-panel,.constraint-mobile,.constraint-sheet{display:none!important}
 }
+
+.compare-empty,.compare-building{display:flex;flex-wrap:wrap;align-items:flex-start;gap:12px;margin:0 0 18px;padding:14px 16px;border-radius:10px}
+.compare-empty{background:#fff4d5;border:1px solid #ead59a;color:#73570c}
+.compare-empty strong,.compare-building strong{display:flex;align-items:center;gap:7px;font-size:13px}
+.compare-empty p,.compare-building p{margin:4px 0 0;font-size:12px;color:inherit;max-width:52ch}
+.compare-empty-actions{margin-left:auto;display:flex;gap:8px}
+.compare-building{background:#f4f8e8;border:1px solid #d5e6a8;color:#3f5518}
+.compare-building .secondary-button{margin-left:auto}
+.honest-empty{display:flex;gap:8px;align-items:flex-start;margin:0;font-size:13px;color:#73570c}

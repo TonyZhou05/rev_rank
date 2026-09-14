@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ArrowRight, Check, CircleAlert, FileText, Gauge, Link2, LoaderCircle, Pencil, Plus, RefreshCw, RotateCcw, Sparkles, X } from 'lucide-react';
 import { api, apiLog, API_REVISION, ApiError, errorMessage } from './api';
 import { ApiInspector, JsonView } from './ApiInspector';
@@ -37,12 +37,21 @@ export default function App() {
   const [notice, setNotice] = useState('');
   const [health, setHealth] = useState<Health | null>(null);
   const [recoverySource, setRecoverySource] = useState<RecoverySource>(loadRecoverySource);
+  const [compareError, setCompareError] = useState<string | null>(null);
+  const [buildSlow, setBuildSlow] = useState(false);
+  const compareAbort = useRef<AbortController | null>(null);
   const candidates = useMemo(() => slots.map(s => s.candidate).filter((c): c is Candidate => Boolean(c)), [slots]);
   const narrowConstraints = useNarrowViewport(CONSTRAINT_NARROW);
 
   useEffect(() => { api.health().then(setHealth).catch(() => undefined); }, []);
   useEffect(() => saveDraft({ slots, preferences }), [slots, preferences]);
   useEffect(() => saveRecoverySource(recoverySource), [recoverySource]);
+  useEffect(() => {
+    if (!busy) { setBuildSlow(false); return; }
+    const t = window.setTimeout(() => setBuildSlow(true), 20_000);
+    return () => window.clearTimeout(t);
+  }, [busy]);
+
 
   const updateSlot = (id: string, update: Partial<ImportSlot>) => {
     setReport(null);
@@ -96,11 +105,15 @@ export default function App() {
     }));
     setReport(null);
   };
+  const cancelCompare = () => { compareAbort.current?.abort(); };
   const generateReport = async () => {
     if (candidates.length < 2) { setNotice('Import at least two candidates before generating a report.'); return; }
-    setBusy(true); setNotice('');
+    compareAbort.current?.abort();
+    const ac = new AbortController();
+    compareAbort.current = ac;
+    setBusy(true); setNotice(''); setCompareError(null); setBuildSlow(false);
     try {
-      const remote = await api.compare(candidates, preferences);
+      const remote = await api.compare(candidates, preferences, ac.signal);
       // Keep the MSRP this page holds if the backend omits it on the way back, with its own evidence:
       // a value the buyer typed stays "you entered", a VIN-decoded one keeps the NeoVIN source.
       const local = new Map(candidates.map(c => [c.id, c]));
@@ -126,7 +139,15 @@ export default function App() {
       setReport({ ...remote, candidates: merged, cross_model: cross });
       setStep('report');
     }
-    catch (error) { setNotice(errorMessage(error)); } finally { setBusy(false); }
+    catch (error) {
+      const msg = errorMessage(error);
+      setCompareError(msg);
+      setNotice(msg);
+    } finally {
+      if (compareAbort.current === ac) compareAbort.current = null;
+      setBusy(false);
+      setBuildSlow(false);
+    }
   };
   const loadDemo = async () => { setReport(null); setBusy(true); try { const data = await api.demo(); setSlots(data.candidates.slice(0, 3).map(candidate => ({ ...freshSlot(), candidate, status: 'success', message: 'Loaded synthetic example' }))); setStep('import'); setNotice('Synthetic examples loaded. These are not live market observations.'); } catch (error) { setNotice(errorMessage(error)); } finally { setBusy(false); } };
   const reset = () => { if (busy) return; clearDraft(); setSlots([freshSlot()]); setPreferences(defaultPreferences); setReport(null); setStep('import'); setNotice(''); };
@@ -140,9 +161,9 @@ export default function App() {
       {health?.search_enabled === false && !health.licensed_inventory_enabled && <div className="notice" role="status"><CircleAlert size={17}/><span>{!health.search_provider?.trim() || health.search_provider === 'none' ? 'Search recovery is unavailable: no search provider is configured.' : `Search recovery is unavailable (provider setting: ${health.search_provider}).`} For local setup, set REVRANK_SEARCH_PROVIDER to brave or tavily and REVRANK_SEARCH_API_KEY (or a licensed REVRANK_MARKETCHECK_API_KEY) in the backend’s local .env, then restart the backend and reload this page. Keep the key server-side. Paste listing text to continue without search.</span></div>}
       {notice && <div className="notice"><CircleAlert size={17}/><span>{notice}</span></div>}
       {step === 'import' && <section className="workspace"><div className="panel main-panel"><div className="panel-heading"><div><p className="eyebrow">START HERE</p><h2>Import the cars you’re considering</h2></div><button className="secondary-button" onClick={loadDemo} disabled={busy}><Sparkles size={16}/> Use examples</button></div><p className="muted">Paste a listing URL from a supported source, or paste the listing text when a website blocks automated access.</p><SourceSwitch value={recoverySource} onChange={setRecoverySource} health={health}/><div className="import-grid">{slots.map((slot, index) => <ImportCard key={slot.id} slot={slot} index={index} busy={busy} loading={loadingSlot === slot.id} canRemove={slots.length > 1 || Boolean(slot.candidate || slot.url || slot.text || slot.vin)} onChange={update => updateSlot(slot.id, update)} onImport={refresh => importSlot(slot, refresh)} onRemove={() => removeSlot(s => s.id !== slot.id)} onEditField={(field, raw) => slot.candidate && updateCandidate(slot.candidate.id, field, raw)} />)}{slots.length < 3 && <button className="add-card" onClick={addSlot}><Plus size={18}/><strong>Add a {slots.length === 1 ? 'second' : 'third'} car</strong><span>Compare up to three listings</span></button>}</div><div className="import-footer"><p className="muted">{candidates.length} of {slots.length} {slots.length === 1 ? 'car' : 'cars'} imported{candidates.length < 2 ? ' · import at least two to generate a report' : ''}</p><button className="primary-button" disabled={!candidates.length} onClick={() => setStep('review')}>Review details <ArrowRight size={16}/></button></div></div><aside className="panel side-panel"><Gauge size={21} className="amber"/><h3>What happens next</h3><ol><li>We identify the exact model, generation, mileage, and price.</li><li>You confirm anything missing or unclear.</li><li>Price, mileage, and evidence quality shape the final comparison.</li></ol><div className="side-callout"><strong>Built for uncertainty</strong><p>Seller claims and unknown history remain labeled in your report.</p></div></aside></section>}
-      {step === 'review' && <Review candidates={candidates} preferences={preferences} setPreferences={setPreferences} updateCandidate={updateCandidate} removeCandidate={(id) => removeSlot(s => s.candidate?.id !== id)} generateReport={generateReport} onAddMore={() => { addSlot(); setStep('import'); }} busy={busy} narrow={narrowConstraints} />}
+      {step === 'review' && <Review candidates={candidates} preferences={preferences} setPreferences={setPreferences} updateCandidate={updateCandidate} removeCandidate={(id) => removeSlot(s => s.candidate?.id !== id)} generateReport={generateReport} onCancelCompare={cancelCompare} compareError={compareError} buildSlow={buildSlow} onAddMore={() => { addSlot(); setStep('import'); }} busy={busy} narrow={narrowConstraints} />}
       {step === 'report' && !report && <div className="panel main-panel"><h2>Generate an updated report</h2><p>Your inputs have changed or no report has been generated yet.</p><button className="primary-button" onClick={() => setStep(candidates.length ? 'review' : 'import')}>Return to {candidates.length ? 'review' : 'import'}</button></div>}
-      {step === 'report' && report && <ReportView report={report} preferences={preferences} setPreferences={setPreferences} onApply={generateReport} busy={busy} narrow={narrowConstraints} onBack={() => setStep('review')} onReset={reset} />}
+      {step === 'report' && report && <ReportView report={report} preferences={preferences} setPreferences={setPreferences} onApply={generateReport} onCancelCompare={cancelCompare} compareError={compareError} buildSlow={buildSlow} busy={busy} narrow={narrowConstraints} onBack={() => setStep('review')} onReset={reset} />}
     </fieldset></main>
     <ApiInspector/>
     <footer><span>RevRank v0.1 · Evidence before certainty</span><span><FileText size={14}/> Reports are informational estimates</span></footer>
