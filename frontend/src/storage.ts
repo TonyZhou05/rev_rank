@@ -1,4 +1,5 @@
-import type { ImportRequest, ImportResult, ImportSlot, Preferences } from './types';
+import { API_REVISION } from './api';
+import type { ImportRequest, ImportResult, ImportSlot, Preferences, RecoverySource } from './types';
 
 // Browser-local persistence. Storage can be full, disabled, or cleared: every access is
 // best-effort and the app works without it.
@@ -27,7 +28,9 @@ export const saveDraft = (draft: Draft) => write(DRAFT_KEY, draft);
 export function clearDraft() { try { window.localStorage.removeItem(DRAFT_KEY); } catch { /* nothing kept */ } }
 
 interface CachedImport { key: string; at: number; result: ImportResult }
-const cacheKey = (body: ImportRequest) => JSON.stringify([body.url ?? '', body.text ?? '', body.vin ?? '', body.recover ?? true]);
+// Results from an older API revision miss newer fields, so the revision is part of the key.
+// The recovery source is part of the key, so switching providers never replays the other provider's result.
+const cacheKey = (body: ImportRequest) => JSON.stringify([API_REVISION, body.url ?? '', body.text ?? '', body.vin ?? '', body.recover ?? true, body.recovery_source ?? 'auto']);
 const fresh = (entry: CachedImport) => Date.now() - entry.at < CACHE_TTL_MS;
 
 // Imports can spend search/provider credits, so identical requests reuse a recent result.
@@ -42,3 +45,10 @@ export function cacheImport(body: ImportRequest, result: ImportResult) {
   const kept = (Array.isArray(entries) ? entries : []).filter(entry => entry.key !== key && fresh(entry));
   write(CACHE_KEY, [{ key, at: Date.now(), result }, ...kept].slice(0, CACHE_LIMIT));
 }
+
+const SOURCE_KEY = 'revrank.recoverySource.v1';
+export function loadRecoverySource(): RecoverySource {
+  const value = read<string>(SOURCE_KEY);
+  return value === 'marketcheck' || value === 'search' ? value : 'auto';
+}
+export const saveRecoverySource = (source: RecoverySource) => write(SOURCE_KEY, source);

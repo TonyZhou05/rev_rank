@@ -28,9 +28,10 @@ def row(vin=VIN, url=URL, price=42500, miles=18000, stock=STOCK, year=2017, **ex
                             location="Austin, TX", last_seen="2026-09-10T00:00:00Z", **extra)
 
 
-def decode(year=2017, make="Bmw", model="M2", problem=None):
-    return VinDecode(vin=VIN, year=year, make=make, model=model, trim=None, body="Coupe",
-                     engine="3.0L 6 cyl", problem=problem)
+def decode(year=2017, make="Bmw", model="M2", problem=None, **build):
+    return VinDecode(vin=VIN, year=year, make=make, model=model, trim=build.get("trim"), body="Coupe",
+                     engine="3.0L 6 cyl", problem=problem, transmission=build.get("transmission"),
+                     drivetrain=build.get("drivetrain"), fuel_type=build.get("fuel_type"))
 
 
 def forbidden(*args, **kwargs):
@@ -74,7 +75,7 @@ def recover(settings, url=URL, **kwargs):
     return retrieval.recover_listing(ImportRequest(url=url, **kwargs), settings, original)
 
 
-def test_listing_url_binds_identity_and_keeps_provider_dates(monkeypatch):
+def test_listing_url_binds_identity_in_one_call(monkeypatch):
     calls = stub_inventory(monkeypatch, {"vdp_url": [row()], "vin": [row(), row(url=MIRROR, price=43500)]})
     result = recover(licensed())
     assert result.recovery_status == "recovered"
@@ -82,15 +83,22 @@ def test_listing_url_binds_identity_and_keeps_provider_dates(monkeypatch):
     assert candidate.retrieval_method == "licensed"
     assert candidate.evidence["vin"].value == VIN
     assert (candidate.make, candidate.model, candidate.year) == ("BMW", "M2", 2017)
-    # The seller's own listing wins over a syndicated copy; the disagreement stays visible.
     assert candidate.price == 42500 and candidate.currency == "USD"
-    assert "price" not in candidate.conflicts
+    assert all(o.method == "licensed" and o.observed_at == "2026-09-10T00:00:00Z" for o in candidate.observations)
+    # Paid calls stop once the seller's own listing is found: no VIN lookup for syndicated copies.
+    assert calls == [("vdp_url", URL)]
+    assert not any("Search observation dates" in w for w in candidate.warnings)
+
+
+def test_known_vin_finds_seller_and_copies_in_one_call(monkeypatch):
+    calls = stub_inventory(monkeypatch, {"vin": [row(), row(url=MIRROR, price=43500)]})
+    candidate = recover(licensed(), vin=VIN).candidate
+    assert calls == [("vin", VIN)]
+    # The seller's own listing wins over a syndicated copy; the disagreement stays visible.
+    assert candidate.price == 42500 and "price" not in candidate.conflicts
     assert any(w.startswith("Other sources report a different price") for w in candidate.warnings)
     prices = {(o.source_url, float(o.value)) for o in candidate.observations if o.field == "price"}
     assert prices == {(URL, 42500), (MIRROR, 43500)}
-    assert all(o.method == "licensed" and o.observed_at == "2026-09-10T00:00:00Z" for o in candidate.observations)
-    assert calls == [("vdp_url", URL), ("vin", VIN)]
-    assert not any("Search observation dates" in w for w in candidate.warnings)
 
 
 def test_query_string_is_removed_before_lookup(monkeypatch):
@@ -108,7 +116,7 @@ def test_stock_lookup_is_seller_scoped(monkeypatch):
     result = recover(licensed())
     assert result.recovery_status == "recovered"
     assert result.candidate.evidence["vin"].value == VIN
-    assert calls == [("vdp_url", URL), ("stock_no", STOCK), ("vin", VIN)]
+    assert calls == [("vdp_url", URL), ("stock_no", STOCK)]
 
 
 def test_other_seller_stock_number_is_not_identity(monkeypatch):
@@ -156,7 +164,7 @@ def test_licensed_miss_falls_back_to_search(monkeypatch):
     stub_inventory(monkeypatch, {})
     queries = []
 
-    def search(query, settings, timeout=10):
+    def search(query, settings, timeout=10, **kwargs):
         queries.append(query)
         return [SearchResult(url=URL, text=f"Make: BMW\nModel: M2\nYear: 2017\nPrice: $42,500 USD\nVIN: {VIN}\nStock: {STOCK}")]
 
@@ -339,3 +347,55 @@ def test_undecodable_vin_without_records_is_not_found(monkeypatch):
     result = recover(decode_only(), vin=VIN)
     assert result.recovery_status == "not_found"
     assert result.candidate is None
+
+
+def test_registry_fills_build_fields_without_overriding_listing(monkeypatch):
+    stub_inventory(monkeypatch, {"vdp_url": [row()]})
+    monkeypatch.setattr(retrieval, "decode_vin", lambda vin, timeout=8: decode(
+        trim="Base", transmission="7-speed Automatic", drivetrain="Rear-Wheel Drive", fuel_type="Gasoline"))
+    candidate = recover(licensed(decode_enabled=True)).candidate
+    # The listing says Manual: registry build data only fills gaps and never creates a conflict.
+    assert candidate.transmission == "Manual" and "transmission" not in candidate.conflicts
+    assert (candidate.trim, candidate.body, candidate.engine) == ("Base", "Coupe", "3.0L 6 cyl")
+    assert (candidate.drivetrain, candidate.fuel_type) == ("Rear-Wheel Drive", "Gasoline")
+    assert candidate.evidence["drivetrain"].source.startswith("NHTSA vPIC")
+
+
+@pytest.mark.parametrize("source,expected", [("marketcheck", "licensed"), ("search", "search")])
+def test_recovery_source_switch_calls_only_the_chosen_provider(monkeypatch, source, expected):
+    inventory = stub_inventory(monkeypatch, {"vdp_url": [row()]})
+    queries = []
+
+    def search(query, settings, timeout=10, **kwargs):
+        queries.append(query)
+        return [SearchResult(url=URL, text=f"Make: BMW\nModel: M2\nYear: 2017\nPrice: $41,000 USD\nVIN: {VIN}\nStock: {STOCK}")]
+
+    monkeypatch.setattr(retrieval, "search", search)
+    result = recover(licensed(search=True), recovery_source=source)
+    assert result.candidate.retrieval_method == expected
+    assert bool(inventory) == (source == "marketcheck") and bool(queries) == (source == "search")
+
+
+def test_unconfigured_recovery_source_is_explained(monkeypatch):
+    result = recover(licensed(), recovery_source="search")
+    assert result.recovery_status == "unavailable" and "not configured" in result.message
+
+
+def test_budget_stops_paid_calls_before_they_are_sent(monkeypatch):
+    sent = []
+    mock_client(monkeypatch, lambda request: sent.append(request) or httpx.Response(200, json={"listings": []}))
+    settings = Settings(marketcheck_api_key="secret-key", marketcheck_monthly_calls=2)
+    vehicle_data.inventory_search(settings, vin=VIN)
+    vehicle_data.inventory_search(settings, vin=VIN)
+    with pytest.raises(ProviderError, match="monthly budget reached"):
+        vehicle_data.inventory_search(settings, vin=VIN)
+    assert len(sent) == 2
+
+
+def test_parse_listing_reads_build_and_car_location():
+    parsed = vehicle_data.parse_listing({
+        "vin": VIN, "vdp_url": "https://www.carvana.com/vehicle/4711856", "stock_no": "2147483647",
+        "dealer": {"city": "Tempe", "state": "AZ"}, "car_location": {"city": "West Memphis", "state": "AR"},
+        "build": {"body_type": "Hatchback", "engine": "2.0L I4", "drivetrain": "4WD", "fuel_type": "Premium Unleaded"}})
+    assert (parsed.stock_no, parsed.location) == (None, "West Memphis, AR")
+    assert (parsed.body, parsed.engine, parsed.drivetrain, parsed.fuel_type) == ("Hatchback", "2.0L I4", "4WD", "Premium Unleaded")

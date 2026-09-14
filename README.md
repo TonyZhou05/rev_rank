@@ -55,7 +55,23 @@ editing `.env`. Re-run the checks with `.venv/bin/python scripts/check_sources.p
   establishing appropriate access/reuse rights. Site rules and access checks still
   apply. Unsupported or blocked sources offer pasted-text/manual fallbacks.
 - Set `REVRANK_LLM_API_KEY`, `REVRANK_LLM_BASE_URL`, and `REVRANK_LLM_MODEL` to enable
-  the optional OpenAI-compatible integration. No specific vendor/model is required.
+  the optional OpenAI-compatible integration. No specific vendor/model is required, but
+  it must support function calling. The report's AI comparison
+  (`backend/app/analyst.py`) gets facts only through tools: reviewed listing fields,
+  NHTSA recalls, complaints and 5-Star ratings, and RevRank's own calculations. A
+  statement is kept only if it cites tool results from that run and every number in it
+  appears in them; unsupported statements are dropped and counted. Small local models
+  (for example 3B) mostly fail these checks, so use a capable hosted model.
+- Pasted URLs may lack `https://` or include surrounding text. VINs in URLs (TrueCar,
+  Edmunds, Carfax, Autolist) are read with check-digit validation. Listing ids are read
+  for CarMax, Carvana, Autotrader, KBB, Cars.com and CarGurus (`#listing=`).
+- `scripts/eval_imports.py` and `scripts/eval_analysis.py` are live self-tests: they
+  import real URLs and audit fields or the AI analysis. `eval_imports.py` is a dry run
+  that prints the worst-case cost unless given `--spend`.
+- Paid providers are metered per month in `.local/usage.json` and refused at
+  `REVRANK_MARKETCHECK_MONTHLY_CALLS` / `REVRANK_SEARCH_MONTHLY_CREDITS`; see "Paid API
+  budget" in [AGENTS.md](AGENTS.md). The import page's "Recovery source (debug)" switch
+  limits recovery to MarketCheck or to search, and shows this month's usage.
 - Without an AI key, extraction and reports use explicitly labeled rules-based
   analysis. The app does not pretend to have called an AI model.
 - CarMax (Akamai) and Carvana (Cloudflare challenge) deny RevRank's fetcher on

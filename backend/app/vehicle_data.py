@@ -12,6 +12,7 @@ import httpx
 
 from .config import Settings
 from .fetch import FetchError, validated_url
+from .usage import BudgetExceeded, spend
 
 MARKETCHECK_URL = 'https://api.marketcheck.com/v2/search/car/active'
 VPIC_URL = 'https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVinValues/{vin}'
@@ -69,6 +70,10 @@ class InventoryListing:
     trim: str | None = None
     transmission: str | None = None
     location: str | None = None
+    body: str | None = None
+    engine: str | None = None
+    drivetrain: str | None = None
+    fuel_type: str | None = None
     seller: str | None = None
     history_claims: tuple[str, ...] = ()
     last_seen: str | None = None
@@ -86,19 +91,25 @@ def parse_listing(row) -> InventoryListing | None:
         return None
     build = row.get('build') if isinstance(row.get('build'), dict) else {}
     dealer = row.get('dealer') if isinstance(row.get('dealer'), dict) else {}
+    # car_location is where the car is; dealer is the selling rooftop. They differ for transfers and hubs.
+    spot = row.get('car_location') if isinstance(row.get('car_location'), dict) else dealer
     year = build.get('year')
     year = year if isinstance(year, int) and not isinstance(year, bool) and 1886 <= year <= 2100 else None
-    place = ', '.join(p for p in (text(dealer.get('city'), 80), text(dealer.get('state'), 20)) if p)
+    place = ', '.join(p for p in (text(spot.get('city'), 80), text(spot.get('state'), 20)) if p)
     # The provider marks these as "if mentioned on dealer website": seller claims, not a history report.
     claims = tuple(label for key, label in (('carfax_1_owner', 'one previous owner'),
                                             ('carfax_clean_title', 'clean title')) if row.get(key) is True)
     stock = row.get('stock_no')
+    # Carvana rows carry 2147483647 (the 32-bit integer maximum) as a placeholder, not a real stock number.
+    stock = str(stock)[:40] if isinstance(stock, (str, int)) and not isinstance(stock, bool) and str(stock) != '2147483647' else None
     return InventoryListing(
-        vin=vin, source_url=source_url, stock_no=str(stock)[:40] if isinstance(stock, (str, int)) and not isinstance(stock, bool) else None,
+        vin=vin, source_url=source_url, stock_no=stock,
         heading=text(row.get('heading')), price=number(row.get('price')), miles=number(row.get('miles')),
         year=year, make=text(build.get('make'), 80), model=text(build.get('model'), 80),
         trim=text(build.get('trim'), 80), transmission=text(build.get('transmission'), 80),
-        location=place or None, seller=text(dealer.get('name'), 120), history_claims=claims,
+        location=place or None, body=text(build.get('body_type'), 80), engine=text(build.get('engine'), 80),
+        drivetrain=text(build.get('drivetrain'), 40), fuel_type=text(build.get('fuel_type'), 40),
+        seller=text(dealer.get('name'), 120), history_claims=claims,
         last_seen=text(row.get('last_seen_at_date'), 40))
 
 
@@ -112,6 +123,10 @@ def inventory_search(settings: Settings, *, vin: str | None = None, vdp_url: str
     # nodedup keeps syndicated copies visible; append_api_key=false keeps the key out of returned URLs.
     params = {'api_key': settings.marketcheck_api_key, 'rows': 10, 'nodedup': 'true',
               'append_api_key': 'false', **filters}
+    try:
+        spend(settings, 'marketcheck')
+    except BudgetExceeded as error:
+        raise ProviderError(str(error)) from None
     payload = get_json(MARKETCHECK_URL, params, timeout)
     rows = payload.get('listings') if isinstance(payload, dict) else None
     if not isinstance(rows, list):
@@ -129,6 +144,9 @@ class VinDecode:
     body: str | None
     engine: str | None
     problem: str | None
+    transmission: str | None = None
+    drivetrain: str | None = None
+    fuel_type: str | None = None
 
     @property
     def source_url(self) -> str:
@@ -152,9 +170,16 @@ def decode_vin(vin: str, timeout: float = 8) -> VinDecode | None:
     year = int(year) if isinstance(year, str) and year.isdigit() and 1886 <= int(year) <= 2100 else None
     codes = {c.strip() for c in str(row.get('ErrorCode', '')).split(',') if c.strip()}
     displacement, cylinders = text(row.get('DisplacementL'), 10), text(row.get('EngineCylinders'), 4)
+    horsepower = text(row.get('EngineHP'), 10)
     engine = ' '.join(p for p in (
         displacement and re.fullmatch(r'\d+(?:\.\d+)?', displacement) and f'{float(displacement):.1f}L',
-        cylinders and cylinders.isdigit() and f'{cylinders} cyl') if p)
+        cylinders and cylinders.isdigit() and f'{cylinders} cyl',
+        horsepower and re.fullmatch(r'\d+(?:\.\d+)?', horsepower) and f'{float(horsepower):.0f} hp') if p)
+    style, speeds = text(row.get('TransmissionStyle'), 60), text(row.get('TransmissionSpeeds'), 4)
+    transmission = f'{speeds}-speed {style}' if style and speeds and speeds.isdigit() else style
+    drive = text(row.get('DriveType'), 60)
     return VinDecode(vin=vin, year=year, make=make, model=text(row.get('Model'), 80), trim=text(row.get('Trim'), 80),
                      body=text(row.get('BodyClass'), 80), engine=engine or None,
-                     problem=text(row.get('ErrorText'), 300) if codes - {'0'} else None)
+                     problem=text(row.get('ErrorText'), 300) if codes - {'0'} else None,
+                     transmission=transmission, drivetrain=drive.split('/')[-1] if drive else None,
+                     fuel_type=text(row.get('FuelTypePrimary'), 40))

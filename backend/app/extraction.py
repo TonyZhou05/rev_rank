@@ -10,13 +10,15 @@ from .models import Candidate, Evidence, now, value_text
 
 VERSION = "revrank-extract/0.1"
 EDITABLE = ("make", "model", "trim", "generation", "year", "price", "currency", "mileage",
-            "mileage_unit", "transmission", "location", "features", "history")
+            "mileage_unit", "transmission", "body", "engine", "drivetrain", "fuel_type", "location", "features", "history")
 MISSING = ("make", "model", "year", "price", "mileage", "transmission", "location", "history")
 LABELS = {
     "make": r"make|manufacturer|brand", "model": r"model",
     "trim": r"trim|variant", "generation": r"generation", "year": r"year|model year",
     "price": r"asking price|price", "mileage": r"mileage|odometer",
     "transmission": r"transmission|gearbox", "location": r"location",
+    "body": r"body style|body type|body", "engine": r"engine", "drivetrain": r"drivetrain|drive train|drive type",
+    "fuel_type": r"fuel type",
     "history": r"history|service history|accident history",
     "features": r"features|options|equipment", "vin": r"vin",
 }
@@ -27,7 +29,9 @@ MAKES = ("Alfa Romeo", "Aston Martin", "Land Rover", "Mercedes-Benz", "Rolls-Roy
          "MINI", "Mitsubishi", "Nissan", "Polestar", "Porsche", "Ram", "Rivian", "Subaru", "Tesla", "Toyota",
          "Volkswagen", "Volvo")
 MULTIWORD_MODELS = ("Range Rover", "Grand Cherokee", "Grand Wagoneer", "Grand Caravan", "Santa Fe", "Santa Cruz",
-                    "Model 3", "Model S", "Model X", "Model Y", "Town & Country", "Mustang Mach-E")
+                    "Model 3", "Model S", "Model X", "Model Y", "Town & Country", "Mustang Mach-E",
+                    "GR Supra", "GR Corolla", "718 Cayman", "718 Boxster")
+TITLE = re.compile(r"\b((?:19|20)\d{2})\s+(" + "|".join(re.escape(m) for m in MAKES) + r")\s+((?:GR\s+|718\s+)?[A-Za-z0-9][\w-]*(?:\s+[A-Za-z0-9][\w&-]*)?)", re.I)
 # Retail summary sentence, e.g. "Used 2025 Audi A5 Sportback S line for $29590 with 41239 miles".
 SUMMARY = re.compile(
     r"\b(?:Used|New|Certified(?: Pre-Owned)?)\s+((?:19|20)\d{2})\s+(" + "|".join(re.escape(m) for m in MAKES) + r")"
@@ -66,6 +70,28 @@ class Document(HTMLParser):
             self.script.append(data)
         elif not self.hidden:
             self.parts.append(data)
+
+
+US_STATES = {"Alabama": "AL", "Alaska": "AK", "Arizona": "AZ", "Arkansas": "AR", "California": "CA", "Colorado": "CO",
+             "Connecticut": "CT", "Delaware": "DE", "District Of Columbia": "DC", "Florida": "FL", "Georgia": "GA", "Hawaii": "HI",
+             "Idaho": "ID", "Illinois": "IL", "Indiana": "IN", "Iowa": "IA", "Kansas": "KS", "Kentucky": "KY", "Louisiana": "LA",
+             "Maine": "ME", "Maryland": "MD", "Massachusetts": "MA", "Michigan": "MI", "Minnesota": "MN", "Mississippi": "MS",
+             "Missouri": "MO", "Montana": "MT", "Nebraska": "NE", "Nevada": "NV", "New Hampshire": "NH", "New Jersey": "NJ",
+             "New Mexico": "NM", "New York": "NY", "North Carolina": "NC", "North Dakota": "ND", "Ohio": "OH", "Oklahoma": "OK",
+             "Oregon": "OR", "Pennsylvania": "PA", "Rhode Island": "RI", "South Carolina": "SC", "South Dakota": "SD",
+             "Tennessee": "TN", "Texas": "TX", "Utah": "UT", "Vermont": "VT", "Virginia": "VA", "Washington": "WA",
+             "West Virginia": "WV", "Wisconsin": "WI", "Wyoming": "WY"}
+
+
+def normalize_location(value: str) -> str:
+    """"Canoga Park, California … $36" -> "Canoga Park, CA"; anything not a US city/state stays as written."""
+    match = re.match(r"\s*([A-Z][A-Za-z.'\- ]{1,40}?),\s*([A-Z]{2}|[A-Z][a-z]+(?: [A-Z][a-z]+)?)\b", value)
+    if match:
+        state = match.group(2)
+        code = state if state in US_STATES.values() else US_STATES.get(state.title())
+        if code:
+            return f"{match.group(1).strip()}, {code}"
+    return value.strip()
 
 
 def scalar(value):
@@ -150,7 +176,10 @@ class Builder:
             self.warnings.append(f"Invalid {field} ignored; review the original listing.")
             return
         if isinstance(value, str):
-            value = value.strip()[:1000]
+            # Dangling separators ("4D Sport Utility ..", "Coupe;") are formatting, not part of the value.
+            value = value.strip().rstrip(" .,;:…").strip()[:1000] if field not in ("history", "features") else value.strip()[:1000]
+            if not value:
+                return
         if field == "year":
             try:
                 value = int(value)
@@ -158,6 +187,8 @@ class Builder:
                     return
             except (TypeError, ValueError):
                 return
+        if field == "location":
+            value = normalize_location(str(value))
         if field == "vin":
             value = str(value).upper()
             if not re.fullmatch(r"[A-HJ-NPR-Z0-9]{17}", value):
@@ -270,7 +301,7 @@ def address_text(value):
     return None
 
 
-def parse_text(text: str, builder: Builder, via="text"):
+def parse_text(text: str, builder: Builder, via="text", loose=True):
     for field, label in LABELS.items():
         for match in re.finditer(r"(?im)^\s*(?:" + label + r")\s*[:=]\s*([^\n\r]{1,1000})", text):
             raw = match.group(1).strip()
@@ -290,14 +321,15 @@ def parse_text(text: str, builder: Builder, via="text"):
                     builder.add(field, int(raw), via)
             else:
                 builder.add(field, raw, via)
-    # Conservative title recognizer: only known make/model names; never infer trims/specs.
-    for match in re.finditer(r"\b((?:19|20)\d{2})\s+(BMW|Toyota|Porsche|Chevrolet)\s+(M2|(?:GR\s+)?Supra|(?:718\s+)?Cayman|Camaro)\b", text, re.I):
+    # Conservative title recognizer: "YEAR MAKE MODEL" for known makes only; never infer trims/specs.
+    for match in (TITLE.finditer(text) if loose else ()):
         builder.add("year", int(match.group(1)), via + ".title")
-        builder.add("make", {"bmw": "BMW", "toyota": "Toyota", "porsche": "Porsche", "chevrolet": "Chevrolet"}[match.group(2).lower()], via + ".title")
-        model = re.sub(r"\s+", " ", match.group(3))
+        builder.add("make", next(m for m in MAKES if m.lower() == match.group(2).lower()), via + ".title")
+        words = match.group(3).split()
+        size = next((len(m.split()) for m in MULTIWORD_MODELS if [w.lower() for w in words[:len(m.split())]] == m.lower().split()), 1)
         # Preserve model wording rather than guessing an alias mapping.
-        builder.add("model", model, via + ".title")
-    for match in SUMMARY.finditer(text):
+        builder.add("model", " ".join(words[:size]), via + ".title")
+    for match in (SUMMARY.finditer(text) if loose else ()):
         summary = via + ".summary"
         builder.add("year", int(match.group(1)), summary)
         builder.add("make", next(m for m in MAKES if m.lower() == match.group(2).lower()), summary)
@@ -313,13 +345,14 @@ def parse_text(text: str, builder: Builder, via="text"):
         builder.add("mileage", amount, summary)
         builder.add("mileage_unit", unit, summary)
     # Strongly signaled standalone price / distance, without interpreting an arbitrary number.
-    if "price" not in builder.values:
+    # Only on single-vehicle text: on a page listing many cars an unlabeled number may be a neighbor's.
+    if loose and "price" not in builder.values:
         for line in text.splitlines():
             if re.fullmatch(r"\s*(?:(?:USD|CAD|EUR|GBP|AUD)\s*|(?:US|CA|C|A)?[$€£])\s*[\d,]+(?:\.\d{1,2})?\s*(?:USD|CAD|EUR|GBP|AUD)?\s*", line, re.I):
                 amount, currency = money(line)
                 builder.add("price", amount, via)
                 builder.add("currency", currency, via)
-    if "mileage" not in builder.values:
+    if loose and "mileage" not in builder.values:
         # "502 mi away" / "within 50 miles" are distances to the shopper, not the odometer.
         for match in re.finditer(r"(?<!within )(?<!\w)([\d,]+(?:\.\d+)?)\s+(miles|mi|km|kilometers|kilometres)\b"
                                  r"(?!\s*(?:away|from|radius|distance|range|of\b))", text, re.I):
@@ -328,7 +361,7 @@ def parse_text(text: str, builder: Builder, via="text"):
             builder.add("mileage_unit", unit, via)
 
 
-def extract(text: str, source_url: str | None = None, fetched=False) -> tuple[Candidate, str]:
+def extract(text: str, source_url: str | None = None, fetched=False, loose=True) -> tuple[Candidate, str]:
     document = Document(text)
     builder = Builder(source_url if fetched else "User-pasted listing text", "listing" if fetched else "user")
     scripts = document.scripts[:50]
@@ -348,7 +381,7 @@ def extract(text: str, source_url: str | None = None, fetched=False) -> tuple[Ca
             parse_node(node, builder)
     if node_count > 1:
         builder.warnings.append("Multiple structured products found; fields may conflict. Review that this page describes one vehicle.")
-    parse_text(document.text, builder)
+    parse_text(document.text, builder, loose=loose)
     candidate = builder.candidate()
     if source_url and not fetched:
         try:
@@ -357,6 +390,29 @@ def extract(text: str, source_url: str | None = None, fetched=False) -> tuple[Ca
             candidate.warnings.append("Supplied URL is not a valid source reference and was discarded; pasted text was still processed.")
     candidate.warnings.append("Source page content is not retained; only extracted fields and short evidence references enter a saved report.")
     return candidate, document.text
+
+
+# US-only marketplaces: a bare "$" there is USD and odometers are in miles. Other sites stay unknown.
+US_MARKETPLACES = frozenset({"carmax.com", "carvana.com", "cargurus.com", "cars.com", "autotrader.com", "truecar.com",
+                             "edmunds.com", "kbb.com", "autolist.com", "carfax.com", "capitalone.com", "dealerrater.com",
+                             "visor.vin", "autofinder.com"})
+
+
+def apply_market_units(candidate: Candidate, url: str | None) -> Candidate:
+    from urllib.parse import urlsplit
+    host = (urlsplit(url or "").hostname or "").removeprefix("www.")
+    if host not in US_MARKETPLACES:
+        return candidate
+    source = f"Inferred from source: {host} is a US marketplace listing prices in USD and odometers in miles"
+    if candidate.price is not None and candidate.currency == "UNK":
+        candidate.currency = "USD"
+        candidate.evidence["currency"] = Evidence(value="USD", source=source, status="extracted")
+        candidate.warnings = [w for w in candidate.warnings if not w.startswith("Currency is unknown;")]
+    if candidate.mileage is not None and "mileage_unit" not in candidate.evidence:
+        candidate.mileage_unit = "mi"
+        candidate.evidence["mileage_unit"] = Evidence(value="mi", source=source, status="extracted")
+        candidate.warnings = [w for w in candidate.warnings if not w.startswith("Mileage unit is unconfirmed;")]
+    return candidate
 
 
 def import_status(candidate: Candidate) -> str:

@@ -15,12 +15,41 @@ class LLMUnavailable(Exception):
     pass
 
 
-def request_json(settings: Settings, system: str, payload: dict) -> dict:
+def check_endpoint(settings: Settings):
     base = urlsplit(settings.llm_base_url)
     if (base.scheme not in ("https", "http") or not base.hostname or base.username or base.password
             or base.query or base.fragment
             or (base.scheme == "http" and base.hostname not in ("localhost", "127.0.0.1", "::1"))):
         raise LLMUnavailable("Invalid server-only model endpoint configuration.")
+
+
+def chat(settings: Settings, messages: list[dict], tools: list[dict], timeout: float) -> dict:
+    """One OpenAI-compatible chat completion with function tools; returns the assistant message."""
+    check_endpoint(settings)
+    try:
+        with httpx.Client(timeout=httpx.Timeout(max(1, timeout), connect=5), follow_redirects=False, trust_env=False) as client:
+            with client.stream("POST", settings.llm_base_url + "/chat/completions",
+                               headers={"Authorization": "Bearer " + settings.llm_api_key},
+                               json={"model": settings.llm_model, "temperature": 0, "max_tokens": 2500,
+                                     "messages": messages, "tools": tools}) as response:
+                response.raise_for_status()
+                chunks, size = [], 0
+                for chunk in response.iter_bytes():
+                    size += len(chunk)
+                    if size > 256000:
+                        raise LLMUnavailable("Model output exceeded limit.")
+                    chunks.append(chunk)
+        message = json.loads(b"".join(chunks))["choices"][0]["message"]
+        if not isinstance(message, dict):
+            raise ValueError()
+        return message
+    except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError):
+        # Never expose response bodies, provider URLs, API keys or raw exception strings.
+        raise LLMUnavailable("Model response unavailable or invalid.")
+
+
+def request_json(settings: Settings, system: str, payload: dict) -> dict:
+    check_endpoint(settings)
     try:
         with httpx.Client(timeout=httpx.Timeout(20, connect=5), follow_redirects=False, trust_env=False) as client:
             with client.stream("POST", settings.llm_base_url + "/chat/completions",

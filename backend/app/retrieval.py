@@ -10,15 +10,20 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 from .config import Settings
-from .extraction import extract
+from .extraction import apply_market_units, extract
 from .fetch import FetchError, validated_url
+from .listing_url import bare_host, identity_params, identity_url, is_listing_url, listing_id, normalize_input_url, same_listing, strip_tracking
 from .models import Candidate, Evidence, ImportRequest, ImportResponse, Observation, RetrievalAttempt, now, value_text
 from .search import search, SearchError
+from .snippets import FOCUSED_QUERY, listed_date, single_vehicle_page, snippet_text
 from .vehicle_data import InventoryListing, ProviderError, VinDecode, decode_vin, inventory_search
 
 VIN = re.compile(r'(?<![A-Z0-9])[A-HJ-NPR-Z0-9]{17}(?![A-Z0-9])', re.I)
 FIELDS = ('make', 'model', 'year', 'trim', 'generation', 'price', 'currency', 'mileage',
-          'mileage_unit', 'transmission', 'location', 'features', 'history')
+          'mileage_unit', 'transmission', 'body', 'engine', 'drivetrain', 'fuel_type', 'location', 'features', 'history')
+# The VIN encodes engine, drive type and fuel reliably; listings abbreviate them ("Engine: Gas").
+# Transmission, trim and body stay listing-first: VINs often do not encode a manual gearbox or trim wording.
+REGISTRY_PREFERRED = ('engine', 'drivetrain', 'fuel_type')
 HISTORY_LABELS = {'direct': 'Seller-reported, not independently verified: ',
                   'licensed': 'Dealer-reported via licensed inventory, not independently verified: ',
                   'search': 'Search-reported, date unknown: '}
@@ -38,22 +43,12 @@ class Record:
     observed_at: str | None = None
     # The seller's own listing (fresh direct page or its licensed record) outranks syndicated copies.
     primary: bool = False
+    # A dated past listing (vininspect "Listed for sale on: 2026-08"): evidence of history, never today's values.
+    historical: bool = False
 
 
 def identity_seed(url: str):
-    parts = urlsplit(url)
-    host = (parts.hostname or '').removeprefix('www.')
-    pattern = {'carmax.com': r'^/car/(\d+)/?$', 'carvana.com': r'^/vehicle/(\d+)/?$'}.get(host)
-    match = re.match(pattern, parts.path) if pattern else None
-    return host, match.group(1) if match else None
-
-
-def bare_host(url: str) -> str:
-    return (urlsplit(url).hostname or '').removeprefix('www.')
-
-
-def same_listing(a: str, b: str) -> bool:
-    return bare_host(a) == bare_host(b) and urlsplit(a).path.rstrip('/') == urlsplit(b).path.rstrip('/')
+    return bare_host(url), listing_id(url)
 
 
 def budget(deadline: float, cap: float) -> float:
@@ -65,7 +60,8 @@ def listing_candidate(row: InventoryListing) -> Candidate:
     candidate = Candidate(id=str(uuid4()), title=(row.heading or 'Licensed inventory listing')[:300],
                           source_kind='listing', source_url=row.source_url, retrieval_method='licensed')
     values = dict(year=row.year, make=row.make, model=row.model, trim=row.trim, price=row.price,
-                  mileage=row.miles, transmission=row.transmission, location=row.location)
+                  mileage=row.miles, transmission=row.transmission, location=row.location, body=row.body,
+                  engine=row.engine, drivetrain=row.drivetrain, fuel_type=row.fuel_type)
     # MarketCheck's default US market reports prices in USD and mileage in miles.
     if row.price is not None:
         values['currency'] = 'USD'
@@ -87,7 +83,8 @@ def listing_candidate(row: InventoryListing) -> Candidate:
 
 
 def licensed_records(url, host, stock, target, settings, attempts, deadline):
-    canonical = url.split('?')[0]
+    # Only listing identity leaves the server: no zip codes, tracking or other query parameters.
+    canonical = identity_url(url)
 
     def lookup(label, **query):
         if time.monotonic() >= deadline:
@@ -100,8 +97,13 @@ def licensed_records(url, host, stock, target, settings, attempts, deadline):
         attempts.append(RetrievalAttempt(method='licensed', status='completed', detail=f'{label}: {len(rows)} listings received.'))
         return rows
 
+    # Each lookup is a paid call, so stop at the first one that finds the seller's own listing.
+    # A known VIN goes first: one call returns the seller's record and its syndicated copies.
+    rows = lookup('VIN lookup', vin=target) if target else []
+    own = [r for r in rows if same_listing(r.source_url, url)]
     # Identity comes only from the seller's own listing: exact listing URL, else seller-scoped stock number.
-    own = [r for r in lookup('Listing URL lookup', vdp_url=canonical) if same_listing(r.source_url, canonical)]
+    if not own:
+        own = [r for r in lookup('Listing URL lookup', vdp_url=canonical) if same_listing(r.source_url, url)]
     if not own and stock:
         own = [r for r in lookup('Seller stock lookup', stock_no=stock)
                if r.stock_no == stock and bare_host(r.source_url) == host]
@@ -110,10 +112,9 @@ def licensed_records(url, host, stock, target, settings, attempts, deadline):
         raise Stop('identity_conflict', 'Licensed inventory associates this listing with different VINs. Enter the correct VIN before recovery.')
     if vins and target and vins != {target}:
         raise Stop('identity_conflict', 'Licensed inventory lists a different VIN for this listing than the one supplied. Confirm vehicle identity.')
+    # When the VIN came from the seller's record, no VIN lookup follows: syndicated copies are not worth a call.
     target = target or next(iter(vins), None)
-    rows = list(own)
-    if target:
-        rows += lookup('VIN lookup', vin=target)
+    rows = own + rows
     own_urls = {r.source_url for r in own}
     records, seen = [], set()
     for row in rows:
@@ -121,41 +122,56 @@ def licensed_records(url, host, stock, target, settings, attempts, deadline):
             continue
         seen.add(row.source_url)
         records.append(Record(listing_candidate(row), row.source_url, 'licensed', row.last_seen,
-                              primary=row.source_url in own_urls or same_listing(row.source_url, canonical)))
+                              primary=row.source_url in own_urls or same_listing(row.source_url, url)))
     return records, target
 
 
-def snippet_text(text: str) -> str:
-    # Strip common Markdown decoration without removing record boundaries.
-    text = re.sub(r'(?m)^\s*(?:#{1,6}\s+|[-*]\s+)', '', text).replace('**', '')
-    # Excerpts flatten "Label: value; Label: value." onto one line; the extractor reads one label per line.
-    text = re.sub(r'\bCity, State\s*:', 'Location:', text)
-    text = re.sub(r'\bAsking\s*(?=(?:US)?\$)', 'Price: ', text)
-    lines = re.sub(r'[.;]\s+(?=[A-Z][A-Za-z ]{1,24}:)', '\n', text).split('\n')
-    # Excerpts are cut mid-sentence; a trailing "Location: Madison," is a truncated value, not a fact.
-    if len(lines) > 1 and lines[-1].rstrip().endswith((',', '...', '…')):
-        lines.pop()
-    return '\n'.join(lines)
+SOLD = "The seller's indexed page says this vehicle is no longer available. This does not confirm a sale."
+
+
+def has_field(text: str, source_url: str, field: str) -> bool:
+    candidate, _ = extract(snippet_text(text, source_url), source_url, fetched=True, loose=False)
+    return getattr(candidate, field) is not None
+
+
+def has_details(text: str, source_url: str) -> bool:
+    candidate, _ = extract(snippet_text(text, source_url), source_url, fetched=True)
+    # A title alone ("2014 Honda Civic") says nothing about this listing; stop only once its price or mileage is known.
+    return any(getattr(candidate, field) is not None for field in ('price', 'mileage'))
 
 
 def search_records(url, host, stock, target, request, settings, attempts, deadline):
     # Remove query strings before sending URLs to a third-party search service.
-    canonical = url.split('?')[0]
-    queries = [f'"{target}"'] if target else ([f'"{stock}" "{host}"', f'"{canonical}"'] if stock else [f'"{canonical}"'])
+    canonical = strip_tracking(url).split('?')[0]
+    def vin_queries(vin):
+        return [f'"{vin}"', f'"{vin}" price']
+    # Seller-scoped queries: an unscoped stock number or URL mostly matches unrelated pages.
+    # A scheme-less quoted URL matches index entries more reliably than the full https://www form.
+    listing = f'"{canonical.split("://", 1)[-1].removeprefix("www.")}"'
+    # A path shared by every listing (identity in the query) is useless as a search phrase.
+    plan = [f'"{stock}" {host}'] + ([] if identity_params(url) else [listing]) if stock else [listing]
+    # Without a VIN, the listing's own indexed summary is the only evidence; its excerpt varies
+    # between calls, so a third phrasing is tried only if the first two gave no vehicle details.
+    if stock:
+        plan.append(f'{stock}')
+    queries = vin_queries(target) if target else plan
+    known_vin = bool(target)
     bound, seen, per_host = [], set(), {}
     ambiguous = False
-    for query_index in range(3):
+    removed = False
+    focused = False
+    for query_index in range(4):
         if query_index >= len(queries) or time.monotonic() >= deadline:
             break
         try:
-            hits = search(queries[query_index], settings, timeout=min(10, deadline-time.monotonic()))
+            scoped = host if not target or queries[query_index] not in vin_queries(target) else None
+            hits = search(queries[query_index], settings, timeout=min(10, deadline-time.monotonic()), domain=scoped)
         except SearchError as error:
             attempts.append(RetrievalAttempt(method='search', status='failed', detail=str(error)[:1000]))
             if not bound:
                 raise Stop('failed', 'Search could not recover this listing. Paste the VIN and listing text.')
             break
-        attempts.append(RetrievalAttempt(method='search', status='completed', detail=f'Query {query_index + 1}: {len(hits)} evidence excerpts received.'))
-        eligible = []
+        eligible, relevant = [], 0
         for hit in hits[:30]:
             try:
                 source_url, _, _ = validated_url(hit.url)
@@ -168,13 +184,20 @@ def search_records(url, host, stock, target, request, settings, attempts, deadli
             vins = {v.upper() for v in VIN.findall(hit.text)}
             # The exact listing URL is the seller's own page as indexed: the URL binds identity even
             # without a VIN. Any other page must name exactly one VIN.
-            exact = same_listing(source_url, canonical)
+            exact = same_listing(source_url, url)
+            mentions = bool(stock and re.search(r'(?<!\w)' + re.escape(stock) + r'(?!\w)', hit.text)) or canonical in hit.text
+            about = exact or mentions or bool(target and target in {v for v in vins})
+            relevant += about
+            if exact and not removed and re.search(r'no longer available|has been sold|vehicle you were interested in is not available', hit.text, re.I):
+                removed = True
+                attempts.append(RetrievalAttempt(method='search', status='removed', detail=SOLD))
             if len(vins) > 1 or (not vins and not exact):
-                ambiguous = ambiguous or len(vins) > 1
+                # Only pages about this listing can make its identity ambiguous; unrelated pages are noise.
+                ambiguous = ambiguous or (len(vins) > 1 and about)
                 continue
             vin = next(iter(vins), None)
             if vin and target and vin != target:
-                ambiguous = True
+                ambiguous = ambiguous or about
                 if not request.vin and stock and re.search(r'(?<!\d)' + re.escape(stock) + r'(?!\d)', hit.text) and source_host.removeprefix('www.') == host:
                     raise Stop('identity_conflict', 'The seller associates this stock number with different VINs. Confirm identity before continuing.')
                 continue
@@ -184,31 +207,54 @@ def search_records(url, host, stock, target, request, settings, attempts, deadli
                 if not stock_bound and canonical not in hit.text and not exact:
                     continue
             eligible.append((vin, source_url, hit.text, exact))
+        attempts.append(RetrievalAttempt(method='search', status='completed',
+                                         detail=f'Query {query_index + 1}: {len(hits)} excerpts, {relevant} about this listing.'))
         if not target:
             identities = {item[0] for item in eligible if item[0]}
             if len(identities) > 1:
                 raise Stop('identity_conflict', 'Sources associate this listing with different VINs. Enter the correct VIN before recovery.')
             if identities:
                 target = next(iter(identities))
-                queries.append(f'"{target}"')
+                # The pending exact-URL query would only repeat this identity evidence.
+                queries = queries[:query_index + 1] + vin_queries(target)
         for vin, source_url, text, exact in eligible:
-            token = (source_url, text)
-            # Cap each site so one publisher's many inventory pages cannot crowd out other sources.
-            if (vin == target or (vin is None and exact)) and token not in seen and per_host.get(bare_host(source_url), 0) < 3:
+            # The same card is repeated on many inventory pages: identical text adds nothing new.
+            token = re.sub(r'\s+', ' ', text).strip()
+            # Cap each site so one publisher's many pages cannot crowd out other sources; the focused query
+            # was spent on exactly the missing field, so its results are not capped.
+            capped = per_host.get(bare_host(source_url), 0) >= 3 and not (focused and query_index == len(queries) - 1)
+            if (vin == target or (vin is None and exact)) and token not in seen and not capped:
                 bound.append((source_url, text))
                 seen.add(token)
                 per_host[bare_host(source_url)] = per_host.get(bare_host(source_url), 0) + 1
-        # A VIN query is sufficient; never do an open-ended research loop.
-        if target and queries[query_index] == f'"{target}"':
+        # Fixed VIN queries end the plan, plus at most one seller-focused query for a missing location;
+        # never an open-ended research loop.
+        if target and query_index == len(queries) - 1 and not focused and host in FOCUSED_QUERY and not any(
+                has_field(text, source_url, 'location') for source_url, text in bound):
+            queries.append(f'"{target}" {FOCUSED_QUERY[host]}')
+            focused = True
+        elif target and queries[query_index] in (vin_queries(target)[-1], f'"{target}" {FOCUSED_QUERY.get(host)}'):
+            break
+        if not target and any(has_details(text, source_url) for source_url, text in bound if not listed_date(text)):
             break
     if not bound:
-        if ambiguous:
-            raise Stop('identity_conflict', 'Search evidence names different or multiple vehicles. Confirm the VIN or paste one listing only.')
-        raise Stop('not_found', 'No unambiguous matching vehicle was found. Enter its VIN or paste listing text.')
+        if removed:
+            raise Stop('not_found', SOLD)
+        # With the VIN already known, other VINs only mean nothing matched it.
+        if ambiguous and not known_vin:
+            raise Stop('identity_conflict', 'Pages about this listing name different or multiple vehicles. Confirm the VIN or paste the listing text.')
+        raise Stop('not_found', 'Search found no page about this listing; it may be sold or not indexed. Enter its VIN or paste the listing text.')
     records = []
     for source_url, text in bound[:10]:
-        candidate, _ = extract(snippet_text(text), source_url, fetched=True)
-        records.append(Record(candidate, source_url, 'search'))
+        # Unlabeled text ("2021 BMW M4s for sale", "23,163 miles") on a page listing many cars may describe the
+        # page or a neighboring card: loose parsing only for single-vehicle pages (see snippets.py).
+        candidate, _ = extract(snippet_text(text, source_url), source_url, fetched=True,
+                               loose=single_vehicle_page(source_url, url, target))
+        candidate = apply_market_units(candidate, source_url)
+        # The seller's own pages outrank syndicated copies; a dated record keeps its date, others are unknown.
+        dated = listed_date(text)
+        records.append(Record(candidate, source_url, 'search', observed_at=dated, primary=bare_host(source_url) == host,
+                              historical=bool(dated)))
     return records, target
 
 
@@ -228,6 +274,16 @@ def registry_values(decoded: VinDecode | None) -> dict:
     return {k: v for k, v in (('year', decoded.year), ('make', decoded.make), ('model', decoded.model)) if v is not None}
 
 
+def registry_build(decoded: VinDecode | None) -> dict:
+    # Build details the VIN encodes; listing wording differs ("Stingray 3LT" vs "Premium 3LT"),
+    # so these fill gaps but never create conflicts.
+    if not decoded:
+        return {}
+    return {k: v for k, v in (('trim', decoded.trim), ('transmission', decoded.transmission), ('body', decoded.body),
+                              ('engine', decoded.engine), ('drivetrain', decoded.drivetrain), ('fuel_type', decoded.fuel_type))
+            if v is not None}
+
+
 def recover_listing(request: ImportRequest, settings: Settings, original: ImportResponse) -> ImportResponse:
     result = original.model_copy(deep=True)
     def finish(status, detail):
@@ -238,28 +294,43 @@ def recover_listing(request: ImportRequest, settings: Settings, original: Import
     if not request.recover:
         return finish('disabled', 'Recovery was disabled for this import.')
     target = request.vin
-    if not target and original.candidate and original.candidate.evidence.get('vin'):
+    single = original.candidate and not any(w.startswith(('Conflicting vin:', 'Multiple structured products found')) for w in original.candidate.warnings)
+    if not target and single and original.candidate.evidence.get('vin'):
         target = original.candidate.evidence['vin'].value.upper()
     # A known VIN can still be decoded when no listing source is configured or none matches.
     identity_only = bool(target and settings.vin_decode_enabled)
     if not (settings.search_enabled or settings.marketcheck_enabled or identity_only):
         return finish('unavailable', 'Recovery needs a licensed inventory key (REVRANK_MARKETCHECK_API_KEY) or a search provider key (REVRANK_SEARCH_PROVIDER and REVRANK_SEARCH_API_KEY) on the server. With REVRANK_VIN_DECODE_ENABLED=true, entering the VIN also recovers year/make/model.')
+    raw = normalize_input_url(request.url)
     try:
-        url, _, _ = validated_url(request.url or '')
+        validated_url(raw)
     except FetchError:
         return finish('disabled', 'Invalid or private input URLs are not sent to recovery providers.')
+    # The raw URL keeps fragment identity (CarGurus "#listing=") that validation strips.
+    url = raw
+    if is_listing_url(url) is False and not request.vin:
+        # A marketplace search or model page lists many cars; recovering it would pick one at random.
+        return finish('not_listing', "This link is a search or category page, not one car's listing. "
+                                     "Open the car's own listing page on the site and paste that link.")
     host, stock = identity_seed(url)
     deadline = time.monotonic() + 30
     records = []
+    # The debug switch limits which paid provider may be called; NHTSA decoding is free and always allowed.
+    source = request.recovery_source
+    use_licensed = settings.marketcheck_enabled and source in ('auto', 'marketcheck')
+    use_search = settings.search_enabled and source in ('auto', 'search')
+    if source != 'auto' and not (use_licensed or use_search):
+        name = 'MarketCheck (REVRANK_MARKETCHECK_API_KEY)' if source == 'marketcheck' else 'Search (REVRANK_SEARCH_PROVIDER and REVRANK_SEARCH_API_KEY)'
+        return finish('unavailable', f'The selected recovery source, {name}, is not configured on the server. Choose another source.')
     try:
-        if settings.marketcheck_enabled:
+        if use_licensed:
             records, target = licensed_records(url, host, stock, target, settings, result.attempts, deadline)
         if not records:
-            if settings.search_enabled:
+            if use_search:
                 records, target = search_records(url, host, stock, target, request, settings, result.attempts, deadline)
             elif any(a.method == 'licensed' and a.status == 'failed' for a in result.attempts):
                 raise Stop('failed', 'Licensed inventory lookup failed. Paste the VIN and listing text.')
-            elif settings.marketcheck_enabled:
+            elif use_licensed:
                 raise Stop('not_found', 'No matching licensed inventory listing was found. Enter its VIN or paste listing text.')
     except Stop as stop:
         if not (identity_only and stop.status in ('not_found', 'failed')):
@@ -280,6 +351,12 @@ def recover_listing(request: ImportRequest, settings: Settings, original: Import
         except ProviderError as error:
             result.attempts.append(RetrievalAttempt(method='registry', status='failed', detail=f'NHTSA VIN decode: {error}'[:1000]))
     official = registry_values(decoded)
+    build = registry_build(decoded)
+    core = ('year', 'make', 'model', 'price', 'mileage')
+    removed = any(a.status == 'removed' for a in result.attempts)
+    if not official and not any(getattr(r.candidate, f) is not None for r in records for f in core):
+        return finish('not_found', SOLD if removed else "The listing's indexed page was found but its excerpt had no vehicle details. "
+                                                          'Try Refresh, enter the VIN, or paste the listing text.')
     if not records and not official:
         failed = any(a.method == 'registry' and a.status == 'failed' for a in result.attempts)
         return finish('failed' if failed else 'not_found', 'No listing source or VIN decode identified this vehicle. Paste the listing text.')
@@ -292,7 +369,7 @@ def recover_listing(request: ImportRequest, settings: Settings, original: Import
                 observations.append(Observation(field=field, value=value_text(value)[:1000], source_url=record.source_url,
                                                 retrieved_at=now(), observed_at=record.observed_at, method=record.method, vin=target))
     if decoded:
-        specs = {**official, 'trim': decoded.trim, 'body': decoded.body, 'engine': decoded.engine}
+        specs = {**official, **build}
         observations.extend(Observation(field=field, value=value_text(value)[:1000], source_url=decoded.source_url,
                                         retrieved_at=now(), method='registry', vin=target)
                             for field, value in specs.items() if value is not None)
@@ -305,22 +382,49 @@ def recover_listing(request: ImportRequest, settings: Settings, original: Import
     merged.evidence['price_type'] = Evidence(value='asking', source='Listing evidence; not a transaction', status='extracted')
     history_method = None
     for field in FIELDS:
-        options = [(r, getattr(r.candidate, field), r.candidate.evidence[field]) for r in records
-                   if field in r.candidate.evidence and getattr(r.candidate, field) not in (None, [], 'UNK')]
+        options = [(r, getattr(r.candidate, field), r.candidate.evidence[field]) for r in records if not r.historical
+                   and field in r.candidate.evidence and getattr(r.candidate, field) not in (None, [], 'UNK')]
         values = {value_text(v) for _, v, _ in options}
         primary_values = {value_text(v) for r, v, _ in options if r.primary}
-        warned = any(any(w.startswith(f'Conflicting {field}:') for w in r.candidate.warnings) for r in records)
-        registry = official.get(field)
-        if registry is not None and any(not agrees(registry, v) for _, v, _ in options):
+        # Only records that may supply today's value can make it disputed; dated history cannot.
+        warned = any(any(w.startswith(f'Conflicting {field}:') for w in r.candidate.warnings) for r in records if not r.historical)
+        registry = official.get(field, build.get(field))
+        if field == 'mileage' and options:
+            # An odometer only goes up. Show the seller's reading (the site the user pasted): the one most of its
+            # excerpts agree on, the higher on a tie, so a single leaked neighbor card cannot win. A lower
+            # reading elsewhere is just older; only a higher one is reported as a disagreement.
+            seller = [(r, v, e) for r, v, e in options if r.primary]
+            pool = seller or options
+            support = {float(v): sum(float(o[1]) == float(v) for o in pool) for _, v, _ in pool}
+            record, value, evidence = max(pool, key=lambda o: (support[float(o[1])], float(o[1])))
+            merged.mileage = value
+            merged.evidence['mileage'] = Evidence(value=value_text(value), source=evidence.source[:2000], status=evidence.status)
+            higher = sorted({float(v) for r, v, _ in options if float(v) > float(value)})
+            if higher:
+                merged.conflicts.append('mileage')
+                merged.warnings.append(f"Conflicting mileage: another source reports {higher[-1]:,.0f}, higher than the "
+                                       f"{'seller' if seller else 'shown'} reading of {float(value):,.0f}. Confirm the current odometer.")
+            continue
+        if field in official and any(r.primary and not agrees(registry, v) for r, v, _ in options):
+            # The seller's own data disagreeing with the VIN decode may mean the wrong VIN was bound.
             merged.conflicts.append(field)
-            merged.warnings.append(f'Conflicting {field}: the NHTSA VIN decode reports {registry}, but a listing source differs. Confirm the VIN and this value.')
+            merged.warnings.append(f'Conflicting {field}: the NHTSA VIN decode reports {registry}, but the seller listing differs. Confirm the VIN and this value.')
+        elif field in official and any(not agrees(registry, v) for _, v, _ in options):
+            # Year, make and model are encoded in the VIN; a third-party page that disagrees is the likelier error.
+            setattr(merged, field, registry)
+            merged.evidence[field] = Evidence(value=value_text(registry), source=f'NHTSA vPIC decode of VIN {target}', status='extracted')
+            others = sorted({value_text(v) for _, v, _ in options if not agrees(registry, v)})
+            merged.warnings.append(f"Another source reports {field} {', '.join(others)[:200]}; showing the NHTSA VIN decode ({registry}). See source observations.")
+        elif field in REGISTRY_PREFERRED and registry is not None:
+            setattr(merged, field, registry)
+            merged.evidence[field] = Evidence(value=value_text(registry), source=f'NHTSA vPIC decode of VIN {target}', status='extracted')
         elif warned or (len(values) > 1 and len(primary_values) != 1):
             merged.conflicts.append(field)
             merged.warnings.append(f'Conflicting {field}: source observations disagree; value withheld until reviewed.')
         elif options:
             record, value, evidence = next((o for o in options if o[0].primary), options[0]) if primary_values else options[0]
             setattr(merged, field, value)
-            suffix = '; matches NHTSA VIN decode' if registry is not None else ''
+            suffix = '; matches NHTSA VIN decode' if field in official else ''
             merged.evidence[field] = Evidence(value=value_text(value), source=(evidence.source + suffix)[:2000], status=evidence.status)
             if field == 'history':
                 history_method = record.method
@@ -329,6 +433,16 @@ def recover_listing(request: ImportRequest, settings: Settings, original: Import
         elif registry is not None:
             setattr(merged, field, registry)
             merged.evidence[field] = Evidence(value=value_text(registry), source=f'NHTSA vPIC decode of VIN {target}', status='extracted')
+    if merged.price is None and 'price' not in merged.conflicts:
+        # No current price anywhere: the latest dated past listing is context for the buyer, never the price.
+        past = sorted((r for r in records if r.historical and r.candidate.price is not None), key=lambda r: r.observed_at or '')
+        if past:
+            latest = past[-1]
+            merged.evidence['last_listed_price'] = Evidence(
+                value=f'${latest.candidate.price:,.0f} ({latest.observed_at})', status='extracted',
+                source=f'{latest.source_url} · listed for sale {latest.observed_at}; a past listing, not the current price')
+            merged.warnings.append(f'No current price was found. A past listing shows {latest.candidate.price:,.0f} in {latest.observed_at} '
+                                   f'({bare_host(latest.source_url)}); confirm the current price with the seller.')
     # Coupled numeric fields are unusable when their units disagree.
     if 'currency' in merged.conflicts:
         merged.price = None
@@ -345,6 +459,8 @@ def recover_listing(request: ImportRequest, settings: Settings, original: Import
         merged.warnings.append('Search observation dates are unknown. Price, availability, and seller history require current confirmation.')
     if len(records) > 1:
         merged.warnings.append('Multiple sources may repeat one seller feed; they are not independent confirmations.')
+    if removed:
+        merged.warnings.append(SOLD)
     if not target:
         merged.warnings.append("VIN unknown: identity rests on the listing URL's own indexed summary. Enter the VIN to cross-check the vehicle.")
     if decoded and decoded.problem:

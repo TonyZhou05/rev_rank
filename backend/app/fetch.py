@@ -230,7 +230,9 @@ def check_robots(url: str, settings: Settings, deadline: float):
 
 
 def fetch_listing(url: str, settings: Settings) -> Page:
+    from .listing_url import is_listing_url, same_listing
     url, host, _ = validated_url(url)
+    requested = url
     source = source_for(host, settings)
     if source["status"] != "allowed":
         raise FetchError("restricted" if source["status"] == "restricted" else "unsupported", source["reason"])
@@ -242,6 +244,10 @@ def fetch_listing(url: str, settings: Settings) -> Page:
         result = request_once(url, settings, deadline, MAX_BYTES)
         if result.status in (301, 302, 303, 307, 308):
             url = redirect_target(url, result)
+            # Expired listings redirect to search results; that page's cars are not this vehicle.
+            if is_listing_url(requested) and not same_listing(url, requested):
+                raise FetchError("failed", "The listing redirected to a different page (usually a search page), so it appears to be "
+                                           "sold or removed. This does not confirm a sale.")
             continue
         if result.status in (401, 403, 429):
             raise FetchError("blocked", f"The website returned HTTP {result.status} (access denied or rate limited). RevRank did attempt this URL; paste listing text to continue.")

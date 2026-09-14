@@ -8,6 +8,7 @@ import time
 import httpx
 
 from .config import Settings
+from .usage import BudgetExceeded, spend
 
 
 @dataclass(frozen=True)
@@ -20,20 +21,26 @@ class SearchError(Exception):
     pass
 
 
-def search(query: str, settings: Settings, timeout: float = 10) -> list[SearchResult]:
+def search(query: str, settings: Settings, timeout: float = 10, domain: str | None = None) -> list[SearchResult]:
+    # domain scopes results to one site (the seller); it is a bare hostname, never user text.
     if not settings.search_enabled:
         raise SearchError('Search provider is not configured.')
+    try:
+        spend(settings, settings.search_provider)
+    except BudgetExceeded as error:
+        raise SearchError(str(error)) from None
     timeout = max(.1, min(timeout, 10))
     deadline = time.monotonic() + timeout
     if settings.search_provider == 'brave':
         method, url = 'GET', 'https://api.search.brave.com/res/v1/web/search'
         kwargs = dict(headers={'X-Subscription-Token': settings.search_api_key},
-                      params={'q': query[:500], 'count': 5, 'extra_snippets': 'true'})
+                      params={'q': (f'site:{domain} ' if domain else '') + query[:500], 'count': 5, 'extra_snippets': 'true'})
     else:
         method, url = 'POST', 'https://api.tavily.com/search'
         kwargs = dict(headers={'Authorization': 'Bearer ' + settings.search_api_key},
                       json={'query': query[:500], 'max_results': 5, 'search_depth': 'advanced',
-                            'include_answer': False, 'include_raw_content': False})
+                            'include_answer': False, 'include_raw_content': False,
+                            **({'include_domains': [domain]} if domain else {})})
     try:
         with httpx.Client(timeout=httpx.Timeout(timeout, connect=min(4, timeout)),
                           follow_redirects=False, trust_env=False) as client:

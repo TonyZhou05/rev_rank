@@ -1,5 +1,28 @@
 # Agent context
 
+## ⚠ Paid API budget: read before every task
+
+The user's quotas are small. **Do not call MarketCheck or Tavily unless the task cannot be done
+without a live call.**
+
+| Provider | Remaining (set 2026-09-13) | Cost |
+| --- | --- | --- |
+| MarketCheck | 500 calls/month (free tier) | 1 call per request; an import uses 1, at most 3 |
+| Tavily | 1,000 credits | 2 credits per advanced search; an import uses up to 4 searches (8 credits) |
+
+- Default to offline work: stubbed tests (`backend/tests`), and saved real responses in `.local/eval/`
+  (`probe-20260913/` holds MarketCheck and Tavily responses; `snippets.json` holds search excerpts).
+- Before any live call, tell the user how many calls or credits it will use and why. Stay under 10
+  calls per task unless the user approves more.
+- `scripts/eval_imports.py` is a dry run unless given `--spend`. Narrow it first with `--only`,
+  `--repeat 1` and `--source marketcheck|search`.
+- The backend meters paid calls in `.local/usage.json` and refuses them at `REVRANK_MARKETCHECK_MONTHLY_CALLS`
+  (default 500) and `REVRANK_SEARCH_MONTHLY_CREDITS` (default 1000). It counts only this checkout's
+  calls; `/api/health` reports the counts. Never reset the file to get around the limit.
+- Tavily crawl cannot read carmax.com or carvana.com: it returned no pages on 2026-09-13. Don't retry it.
+- Never print, log or commit API keys. MarketCheck sends its key as a query parameter, so never echo
+  request URLs.
+
 ## Read first
 
 1. `docs/PRODUCT_BRIEF.md`

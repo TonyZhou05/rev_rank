@@ -31,7 +31,8 @@ def equivalent(field: str, value, previous: str) -> bool:
 def normalize(candidate: Candidate) -> Candidate:
     c = candidate.model_copy(deep=True)
     fields = ("title", "make", "model", "trim", "generation", "year", "price", "currency",
-              "mileage", "mileage_unit", "transmission", "location", "features", "history")
+              "mileage", "mileage_unit", "transmission", "body", "engine", "drivetrain", "fuel_type",
+              "location", "features", "history")
     for field in fields:
         value = getattr(c, field)
         prior = c.evidence.get(field)

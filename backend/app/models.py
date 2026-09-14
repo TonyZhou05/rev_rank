@@ -50,6 +50,10 @@ class Candidate(Model):
     mileage: Scalar | None = None
     mileage_unit: Literal["mi", "km"] = "mi"
     transmission: Short | None = None
+    body: Short | None = None
+    engine: Short | None = None
+    drivetrain: Short | None = None
+    fuel_type: Short | None = None
     location: Short | None = None
     features: Annotated[list[Nonempty], Field(max_length=100)] = Field(default_factory=list)
     history: Short | None = None
@@ -95,7 +99,8 @@ class Candidate(Model):
     @classmethod
     def valid_verified_fields(cls, value):
         editable = {"title", "make", "model", "trim", "generation", "year", "price", "currency",
-                    "mileage", "mileage_unit", "transmission", "location", "features", "history"}
+                    "mileage", "mileage_unit", "transmission", "body", "engine", "drivetrain", "fuel_type",
+                    "location", "features", "history"}
         if set(value) - editable:
             raise ValueError("verified_fields contains an unknown or non-editable field")
         return list(dict.fromkeys(value))
@@ -122,6 +127,8 @@ class ImportRequest(Model):
     text: Annotated[str, StringConstraints(strip_whitespace=True, max_length=200000)] | None = None
     vin: Annotated[str, StringConstraints(strip_whitespace=True, to_upper=True, pattern=r'^[A-HJ-NPR-Z0-9]{17}$')] | None = None
     recover: bool = True
+    # Debug switch: which recovery provider may be called. "auto" tries MarketCheck, then search only on a miss.
+    recovery_source: Literal["auto", "marketcheck", "search"] = "auto"
 
     @model_validator(mode="after")
     def has_content(self):
@@ -173,6 +180,50 @@ class Market(Model):
     comparables: list[dict] = Field(default_factory=list)
 
 
+class Claim(Model):
+    text: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=700)]
+    # Ids of tool results fetched during the analysis run that support the text.
+    citations: Annotated[list[Short], Field(min_length=1, max_length=12)]
+
+
+class VehicleAnalysis(Model):
+    candidate_id: Short
+    summary: Claim | None = None
+    strengths: Annotated[list[Claim], Field(max_length=4)] = Field(default_factory=list)
+    risks: Annotated[list[Claim], Field(max_length=4)] = Field(default_factory=list)
+
+
+class ComparisonPoint(Model):
+    topic: Short
+    claim: Claim
+    favors: Short | None = None
+
+
+class AIQuestion(Model):
+    candidate_id: Short
+    text: Short
+
+
+class SourceRef(Model):
+    id: Short
+    label: Short
+    url: Annotated[str, StringConstraints(max_length=2048)] | None = None
+    detail: Annotated[str, StringConstraints(max_length=1500)] = ""
+
+
+class AIAnalysis(Model):
+    status: Literal["complete", "partial", "unavailable"]
+    message: Short = ""
+    model: Short = ""
+    verdict: Claim | None = None
+    vehicles: list[VehicleAnalysis] = Field(default_factory=list)
+    comparisons: Annotated[list[ComparisonPoint], Field(max_length=8)] = Field(default_factory=list)
+    questions: Annotated[list[AIQuestion], Field(max_length=12)] = Field(default_factory=list)
+    sources: list[SourceRef] = Field(default_factory=list)
+    tool_calls: int = 0
+    dropped_claims: int = 0
+
+
 class Report(Model):
     id: str
     created_at: str
@@ -186,6 +237,7 @@ class Report(Model):
     questions: list[Questions]
     market: Market
     warnings: list[str]
+    ai_analysis: AIAnalysis | None = None
 
 
 def now() -> str:

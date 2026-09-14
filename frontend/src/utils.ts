@@ -1,4 +1,4 @@
-import type { Candidate, EvidenceStatus, ImportRequest, ImportSlot, Preferences } from './types';
+import type { Candidate, EvidenceStatus, ImportRequest, ImportSlot, Preferences, RecoverySource } from './types';
 
 export const evidenceLabels: Record<EvidenceStatus, string> = {
   seller_claim: 'Seller claim', user_confirmed: 'User input', extracted: 'Extracted', synthetic: 'Synthetic',
@@ -16,13 +16,15 @@ export const restoreSlot = (saved: Partial<ImportSlot>): ImportSlot => {
 };
 // Send only what this import needs. Blank fields are omitted, and `recover` is sent only to opt
 // out of the server default on a URL fetch (pasted text never fetches or recovers).
-export const importBody = (slot: Pick<ImportSlot, 'url' | 'text' | 'vin' | 'recover'>): ImportRequest => {
+export const importBody = (slot: Pick<ImportSlot, 'url' | 'text' | 'vin' | 'recover'>, source: RecoverySource = 'auto'): ImportRequest => {
   const url = slot.url.trim(), text = slot.text.trim(), vin = slot.vin.replace(/\s+/g, '').toUpperCase();
   return {
     ...(url ? { url } : {}),
     ...(text ? { text } : {}),
     ...(vin ? { vin } : {}),
     ...(url && !text && !slot.recover ? { recover: false } : {}),
+    // Only sent when it changes something: a URL import that may recover, with a non-default source.
+    ...(url && !text && slot.recover && source !== 'auto' ? { recovery_source: source } : {}),
   };
 };
 export const money = (price: number | null, currency: string) => {
@@ -64,7 +66,41 @@ export function manualCandidate(): Candidate {
   return {
     id: crypto.randomUUID(), title: 'Untitled vehicle', make: null, model: null, trim: null, generation: null,
     year: null, price: null, currency: 'USD', mileage: null, mileage_unit: 'mi', transmission: null,
+    body: null, engine: null, drivetrain: null, fuel_type: null,
     location: null, features: [], history: null, source_url: null, source_kind: 'user', evidence: {},
     warnings: ['Manually entered candidate. Blank fields remain unknown.'], verified_fields: [],
   };
 }
+
+export const carName = (c: Candidate) => [c.year, c.make, c.model].filter(Boolean).join(' ') || c.title;
+
+export interface Provenance { label: string; tone: 'registry' | 'listing' | 'search' | 'user' | 'inferred' | 'licensed' | 'demo'; source: string }
+// Short, human label for where a field's value came from; the full source string stays in the tooltip.
+export function provenance(c: Candidate, field: string): Provenance | null {
+  const evidence = c.evidence[field];
+  if (!evidence) return null;
+  const source = evidence.source;
+  if (evidence.status === 'user_confirmed') return { label: 'You', tone: 'user', source };
+  if (source.startsWith('NHTSA vPIC')) return { label: 'NHTSA', tone: 'registry', source };
+  if (source.startsWith('Inferred from source')) return { label: 'Inferred', tone: 'inferred', source };
+  if (source.startsWith('Licensed inventory')) return { label: 'Licensed', tone: 'licensed', source };
+  if (c.source_kind === 'synthetic') return { label: 'Demo', tone: 'demo', source };
+  if (c.retrieval_method === 'search') return { label: 'Search', tone: 'search', source };
+  if (c.source_kind === 'user') return { label: 'Pasted', tone: 'listing', source };
+  return { label: 'Listing', tone: 'listing', source };
+}
+
+export const hostOf = (url: string | null) => { const safe = safeUrl(url); return safe ? new URL(safe).hostname.replace(/^www\./, '') : ''; };
+
+// Distinct values the sources reported for a field, for one-click conflict resolution.
+export function fieldOptions(c: Candidate, field: string): { value: string; hosts: string[] }[] {
+  const options = new Map<string, Set<string>>();
+  for (const o of c.observations ?? []) {
+    if (o.field !== field) continue;
+    const value = /^\d+\.0$/.test(o.value) ? o.value.slice(0, -2) : o.value;
+    options.set(value, (options.get(value) ?? new Set()).add(o.method === 'registry' ? 'NHTSA' : hostOf(o.source_url) || o.method));
+  }
+  return [...options].map(([value, hosts]) => ({ value, hosts: [...hosts] }));
+}
+
+export const unresolvedConflicts = (c: Candidate) => (c.conflicts ?? []).filter(field => !c.verified_fields.includes(field));

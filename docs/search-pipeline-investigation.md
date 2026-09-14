@@ -50,8 +50,9 @@ is not such a service.
    `identity_conflict`. Then look up the bound VIN with `nodedup=true` for
    syndicated copies. At most 3 requests. The provider's last-seen date becomes
    `observed_at`.
-2. Search, only if licensed inventory found nothing. Same bounded queries and
-   identity rules as before.
+2. Search, only if licensed inventory found nothing. Same identity rules as before. Up to
+   three queries: seller-scoped, then VIN, then VIN + "price". A fourth seller-focused query
+   runs only for a missing CarMax location (see `docs/parsing-notes.md`).
 3. NHTSA decode, if `REVRANK_VIN_DECODE_ENABLED=true`. Year/make/model must agree
    with every source; registry names may be coarser, e.g. "Camaro" vs "Camaro ZL1".
    A disagreement withholds the field as a conflict. The decoder fills an identity
