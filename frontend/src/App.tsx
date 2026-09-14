@@ -186,10 +186,26 @@ function needsPasteFallback(slot: ImportSlot): boolean {
 }
 
 function pasteFallbackTitle(status: ImportSlot['status'] | undefined): string {
-  if (status === 'blocked' || status === 'restricted') return 'Listing page blocked automated access';
-  if (status === 'unsupported') return 'This listing source is not supported for automated import';
-  return 'Import did not find a usable listing';
+  // Buyer-facing; never surface operator/infra wording.
+  if (status === 'blocked' || status === 'restricted' || status === 'unsupported') {
+    return 'We couldn’t open this listing page';
+  }
+  return 'We couldn’t import this listing';
 }
+
+// Map server/registry strings to plain buyer copy (friend demo).
+function buyerImportMessage(message: string | undefined): string | null {
+  if (!message) return null;
+  const m = message.toLowerCase();
+  if (m.includes('operator opt-in') || m.includes('live fetch') || m.includes('allowlist')) {
+    return 'We couldn’t open this listing page — paste the text you see, or add the VIN.';
+  }
+  if (m.includes('robot') || m.includes('blocked') || m.includes('403')) {
+    return 'We couldn’t open this listing page — paste the text you see, or add the VIN.';
+  }
+  return message;
+}
+
 
 // One-line outcome from attempts; never invents providers beyond what the server returned.
 function recoveryOutcomeLine(slot: ImportSlot): string | null {
@@ -225,8 +241,8 @@ function ImportCard({ slot, index, busy, loading, canRemove, onChange, onImport,
     {showForm ? <>
       {pasteNeeded && <div className="paste-callout" role="status">
         <strong><CircleAlert size={15}/> {pasteFallbackTitle(slot.status)}</strong>
-        <p>Paste the listing text below (what you can see in the browser), or add a VIN, then import again.</p>
-        {slot.message && <p className="paste-callout-detail">{slot.message}</p>}
+        <p>Paste the listing text you see, or add the VIN, then import again.</p>
+        {buyerImportMessage(slot.message) && <p className="paste-callout-detail">{buyerImportMessage(slot.message)}</p>}
       </div>}
       <label>Listing URL <span>optional</span><input value={slot.url} onChange={e => onChange({ url: e.target.value })} placeholder="https://…" /></label>
       <label>VIN <span>optional</span><input value={slot.vin} onChange={e => onChange({ vin: e.target.value })} placeholder="Vehicle identification number" /></label>
@@ -239,7 +255,7 @@ function ImportCard({ slot, index, busy, loading, canRemove, onChange, onImport,
         </button>
         {candidate && <button className="secondary-button full" onClick={() => onChange({ editing: false })}>Cancel</button>}
       </div>
-      {!candidate && slot.message && !pasteNeeded && <p className="import-error"><CircleAlert size={15}/><span>{slot.message}</span></p>}
+      {!candidate && slot.message && !pasteNeeded && <p className="import-error"><CircleAlert size={15}/><span>{buyerImportMessage(slot.message) ?? slot.message}</span></p>}
     </> : <VehicleSummary slot={slot} busy={busy} loading={loading} onEdit={() => onChange({ editing: true })} onRefresh={() => onImport(true)} onEditField={onEditField} />}
     {outcome && <p className="recovery-outcome"><CircleAlert size={14}/><span>{outcome}</span></p>}
     {(slot.message || !!slot.attempts?.length) && <details className="import-log">
@@ -337,7 +353,7 @@ function VehicleSummary({ slot, busy, loading, onEdit, onRefresh, onEditField }:
       {slot.cachedAt && <span className="tag" title="Reused a result saved in this browser; Refresh requests it again.">Saved {dateLabel(new Date(slot.cachedAt).toISOString())}</span>}
     </div>
     {(car.retrieval_method === 'search' || car.retrieval_method === 'licensed') &&
-      <p className="vehicle-recovered"><CircleAlert size={15}/><span>Recovered via {car.retrieval_method === 'licensed' ? 'licensed inventory' : 'search'} — confirm price and mileage before comparing.</span></p>}
+      <p className="vehicle-recovered"><CircleAlert size={15}/><span>Recovered from inventory data — please confirm price and mileage.</span></p>}
     {review.length ? <p className="vehicle-review"><CircleAlert size={15}/><span>Check before comparing: {review.join(', ')}.</span></p>
                    : <p className="vehicle-ok"><Check size={15}/><span>Key details found. Click a value to correct it.</span></p>}
     <div className="vehicle-actions">
