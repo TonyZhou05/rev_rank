@@ -135,7 +135,8 @@ location: string, priorities: string[], must_haves: string[]}`.
   frontal_rating: string|null,
   side_rating: string|null,
   rollover_rating: string|null,
-  vehicle_url: string|null,        // https://www.nhtsa.gov/vehicle/{VehicleId}; null when unrated
+  recalls_url: string|null,        // model-year page for the recalls count (see below)
+  complaints_url: string|null,     // same page, #complaints tab; null when year/make/model missing
   recalls: NHTSARecall[],          // up to 5; counts above stay full
   complaints: NHTSAComplaint[]     // up to 5; counts above stay full
 }
@@ -154,8 +155,20 @@ location: string, priorities: string[], must_haves: string[]}`.
   summary: string,
   date_filed: string|null,
   url: string|null                 // null: NHTSA publishes no per-ODI permalink, so the UI
-}                                  // links complaints through vehicle_url or nhtsa.gov/recalls
+}                                  // links complaint rows through complaints_url
 ```
+
+`recalls_url` / `complaints_url` shapes, in preference order:
+
+1. Trim deep link, when the SafetyRatings `VehicleDescription` yields a body style and drive type:
+   `https://www.nhtsa.gov/vehicle/2020/TOYOTA/CAMRY/4%252520DR/FWD#recalls` (`#complaints` for the
+   other tab). NHTSA encodes a space inside these path segments as `%252520`; that literal form is
+   what opens in a browser, so it is reproduced verbatim.
+2. Year/make/model search landing, when body style or drive type is unknown:
+   `https://www.nhtsa.gov/recalls?vymm=2020%20Toyota%20Camry` (no per-tab anchor exists here).
+
+`https://www.nhtsa.gov/vehicle/{VehicleId}` is never emitted: the SafetyRatings numeric id has no
+public page and returns "Page not found".
 
 This is model-year level data from NHTSA. VIN-level recall status is OUT OF SCOPE.
 Never invent counts; null means data unavailable.
