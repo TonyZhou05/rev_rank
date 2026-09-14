@@ -22,7 +22,7 @@ with dated records.
 | Free tier | Researcher: 1,000 credits/month on the pricing page; this account's usage endpoint reports a 1,500 limit | 500 calls/month, 5 calls/s; "100 mile radius restriction" (Free and Basic) |
 | Paid | Pay-as-you-go $0.008/credit; Project plan 4,000 credits/month | Basic $299/month + data fees (5,000 calls); Standard $749/month + data fees (unlimited, 40 calls/s) |
 | Unit price | 2 credits per advanced search (measured: Tavily's response reports `usage.credits: 2`) | Inventory search $0.002/call; VIN history $0.006/call; basic VIN decode $0.0015/call |
-| Calls per RevRank import | 3–4 searches = 6–8 credits | up to 3 inventory calls (listing URL, stock, VIN), plus 1 optional history call |
+| Calls per RevRank import | 3–4 searches = 6–8 credits | up to 3 inventory calls (listing URL, stock, VIN), plus 1 NeoVIN MSRP decode when the VIN is known, plus 1 optional history call |
 | Cost per import | about $0.05–0.06 pay-as-you-go; free tier covers about 190–250 imports/month | about $0.006 in data fees (+$0.006 with history); free tier covers about 166 imports/month |
 
 **Which is cheaper?**
@@ -86,7 +86,48 @@ Implemented, with offline tests, and verified live on 2026-09-13:
   for syndicated copies. `last_seen_at_date` becomes each observation's date, and the seller's own record
   wins field disagreements. Search runs only if MarketCheck found nothing.
 - `backend/tests/test_licensed_recovery.py`: offline regressions for all of the above.
-- Configuration: `REVRANK_MARKETCHECK_API_KEY` in `.env`; `/api/health` reports `licensed_inventory_enabled`.
+- **NeoVIN original MSRP:** `decode_neovin_msrp()` in `vehicle_data.py` calls
+  `GET https://api.marketcheck.com/v2/decode/car/neovin/{vin}/specs` once for a known VIN and returns the
+  one figure we are willing to call original MSRP. `attach_original_msrp()` in `retrieval.py` writes it to
+  `Candidate.msrp`, with `evidence.msrp` sourced to the exact NeoVIN field and one `msrp` observation.
+  Details in "Original MSRP from NeoVIN" below; offline tests in `backend/tests/test_neovin_msrp.py`.
+- Configuration: `REVRANK_MARKETCHECK_API_KEY` in `.env`; `/api/health` reports `licensed_inventory_enabled`
+  and `neovin_msrp_enabled`.
+
+## Original MSRP from NeoVIN
+
+A listing rarely states the factory sticker, and MarketCheck's own inventory `msrp` often just repeats the
+asking price, so neither can fill "Original MSRP" on the review page. The NeoVIN decode can: it returns the
+MSRP figures for the car as it was built. Confirmed live on 2026-09-14 for VIN `WBS33BA06NCJ75401`, which
+returned `msrp: 86500`, `msrp_label: "oem_msrp"`, `oem_msrp: 93245`, `original_msrp: 93245`,
+`combined_msrp: 93195`, `installed_options_msrp: 5700`, `delivery_charges: 995`, `mc_msrp: 93245`,
+`build_specs_msrp: null`.
+
+**Field priority.** The first available positive number among:
+
+1. `oem_msrp`
+2. `original_msrp`
+3. `combined_msrp` (the as-built grand total)
+
+Bare `msrp` is used only when `msrp_label` is `oem_msrp` or `original_msrp` and no named field contradicts
+it; in the probe above the bare figure is $6,745 lower than the OEM one it is labeled with, which is why it
+is never preferred. `build_specs_msrp`, `mc_msrp`, `installed_options_msrp` and `delivery_charges` are not
+used as the sticker. When none of the three named fields is present, MSRP stays blank and the buyer can
+still type it: no figure is derived from a bare or listing `msrp`.
+
+**Where it runs.** Once per import, after the VIN is known:
+
+- `POST /api/import` on the direct and pasted paths, for a VIN the buyer pasted, the URL carried, or the
+  page showed (`backend/app/main.py`);
+- `recover_listing()`, for the VIN bound by licensed inventory, the seller's stock number, or the buyer
+  (`backend/app/retrieval.py`), including the VIN-decode-only outcome.
+
+**Cost and rules.** One metered MarketCheck call per import, so an import is at most 3 inventory calls plus
+1 decode. It is skipped when the candidate already has an MSRP (a buyer's value is never overwritten), when
+no valid 17-character VIN exists, when `recovery_source=search`, and when `REVRANK_NEOVIN_ENABLED=false`.
+A failure or an empty result is recorded as a `licensed` attempt and never blocks the import. The value is
+labeled in the UI as coming from the NeoVIN OEM/original/combined field, stays editable, and unlocks
+`% of original MSRP` as a sourced figure; a buyer edit marks it `user_confirmed` as before.
 
 ## Steps
 
@@ -129,7 +170,7 @@ Run the import harness with MarketCheck enabled, and search disabled so the two 
 separately. Then run with both enabled:
 
 The harness is a dry run until you add `--spend`, and prints the worst-case cost first. The full corpus
-is 21 imports (up to 63 MarketCheck calls). Ask the user before spending that much:
+is 21 imports (up to 84 MarketCheck calls with the NeoVIN decode on). Ask the user before spending that much:
 
 ```sh
 .venv/bin/python scripts/eval_imports.py --source marketcheck                 # dry run: prints the cost

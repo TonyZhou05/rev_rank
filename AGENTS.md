@@ -7,7 +7,7 @@ without a live call.**
 
 | Provider | Remaining (set 2026-09-13) | Cost |
 | --- | --- | --- |
-| MarketCheck | 500 calls/month (free tier) | 1 call per request; an import uses 1, at most 3 |
+| MarketCheck | 500 calls/month (free tier) | 1 call per request; an import uses 1, at most 3, plus 1 NeoVIN MSRP decode when the VIN is known (`REVRANK_NEOVIN_ENABLED=false` turns that off) |
 | Tavily | 1,000 credits | 2 credits per advanced search; an import uses up to 4 searches (8 credits) |
 
 - Default to offline work: stubbed tests (`backend/tests`), and saved real responses in `.local/eval/`
