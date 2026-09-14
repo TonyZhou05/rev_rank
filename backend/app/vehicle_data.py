@@ -77,6 +77,10 @@ class InventoryListing:
     seller: str | None = None
     history_claims: tuple[str, ...] = ()
     last_seen: str | None = None
+    # A6: Days-on-market from MarketCheck payload (0 extra paid calls)
+    dom: int | None = None
+    dom_active: int | None = None
+    first_seen_at: str | None = None
 
 
 def parse_listing(row) -> InventoryListing | None:
@@ -102,6 +106,13 @@ def parse_listing(row) -> InventoryListing | None:
     stock = row.get('stock_no')
     # Carvana rows carry 2147483647 (the 32-bit integer maximum) as a placeholder, not a real stock number.
     stock = str(stock)[:40] if isinstance(stock, (str, int)) and not isinstance(stock, bool) and str(stock) != '2147483647' else None
+    # A6: Extract DOM fields from MarketCheck payload (no extra paid calls)
+    dom_val = row.get('dom')
+    dom = int(dom_val) if isinstance(dom_val, (int, float)) and not isinstance(dom_val, bool) and 0 <= dom_val <= 100000 else None
+    dom_active_val = row.get('dom_active')
+    dom_active = int(dom_active_val) if isinstance(dom_active_val, (int, float)) and not isinstance(dom_active_val, bool) and 0 <= dom_active_val <= 100000 else None
+    first_seen = text(row.get('first_seen_at_date'), 40)
+
     return InventoryListing(
         vin=vin, source_url=source_url, stock_no=stock,
         heading=text(row.get('heading')), price=number(row.get('price')), miles=number(row.get('miles')),
@@ -110,7 +121,8 @@ def parse_listing(row) -> InventoryListing | None:
         location=place or None, body=text(build.get('body_type'), 80), engine=text(build.get('engine'), 80),
         drivetrain=text(build.get('drivetrain'), 40), fuel_type=text(build.get('fuel_type'), 40),
         seller=text(dealer.get('name'), 120), history_claims=claims,
-        last_seen=text(row.get('last_seen_at_date'), 40))
+        last_seen=text(row.get('last_seen_at_date'), 40),
+        dom=dom, dom_active=dom_active, first_seen_at=first_seen)
 
 
 def inventory_search(settings: Settings, *, vin: str | None = None, vdp_url: str | None = None,

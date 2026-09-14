@@ -1,10 +1,62 @@
 """Reproducible buyer-aware comparisons. Asking prices never establish fair value."""
 from decimal import Decimal, ROUND_HALF_UP
 import re
+from urllib.parse import quote
 from uuid import uuid4
 
 from .config import Settings
-from .models import Candidate, Evidence, Finding, Market, Metric, Preferences, Questions, Report, now, value_text
+from .models import Candidate, Evidence, Finding, Market, Metric, NHTSASafetyData, Preferences, Questions, Report, now, value_text
+from .vehicle_data import ProviderError, get_json
+
+NHTSA = "https://api.nhtsa.gov"
+_NHTSA_CACHE: dict = {}
+
+
+def _nhtsa(url: str, params: dict, limit: int = 5_000_000):
+    """Cached NHTSA API fetch - reuses pattern from analyst.py."""
+    key = (url, tuple(sorted(params.items())))
+    if key not in _NHTSA_CACHE:
+        if len(_NHTSA_CACHE) > 128:
+            _NHTSA_CACHE.clear()
+        _NHTSA_CACHE[key] = get_json(url, params, timeout=10, limit=limit)
+    return _NHTSA_CACHE[key]
+
+
+def fetch_nhtsa_safety(year: int, make: str, model: str) -> NHTSASafetyData | None:
+    """Fetch NHTSA model-year safety data (recalls, complaints, ratings).
+
+    Returns structured data with fixed scope label. Never invents counts.
+    VIN-level recall status is OUT OF SCOPE.
+    """
+    try:
+        # Recalls count
+        recalls_data = _nhtsa(f"{NHTSA}/recalls/recallsByVehicle", {"make": make, "model": model, "modelYear": year})
+        recalls_count = len([r for r in (recalls_data.get("results") or []) if isinstance(r, dict)])
+
+        # Complaints count
+        complaints_data = _nhtsa(f"{NHTSA}/complaints/complaintsByVehicle", {"make": make, "model": model, "modelYear": year})
+        complaints_count = len([r for r in (complaints_data.get("results") or []) if isinstance(r, dict)])
+
+        # Safety ratings
+        path = f"{NHTSA}/SafetyRatings/modelyear/{int(year)}/make/{quote(make, safe='')}/model/{quote(model, safe='')}"
+        variants = [v for v in (_nhtsa(path, {}).get("Results") or []) if isinstance(v, dict) and str(v.get("VehicleId", "")).isdigit()]
+
+        overall_rating = frontal_rating = side_rating = rollover_rating = None
+        if variants:
+            row = (_nhtsa(f"{NHTSA}/SafetyRatings/VehicleId/{int(variants[0]['VehicleId'])}", {}).get("Results") or [{}])[0]
+            overall_rating = str(row.get("OverallRating")) if row.get("OverallRating") else None
+            frontal_rating = str(row.get("OverallFrontCrashRating")) if row.get("OverallFrontCrashRating") else None
+            side_rating = str(row.get("OverallSideCrashRating")) if row.get("OverallSideCrashRating") else None
+            rollover_rating = str(row.get("RolloverRating")) if row.get("RolloverRating") else None
+
+        return NHTSASafetyData(
+            year=year, make=make, model=model,
+            recalls_count=recalls_count, complaints_count=complaints_count,
+            overall_rating=overall_rating, frontal_rating=frontal_rating,
+            side_rating=side_rating, rollover_rating=rollover_rating
+        )
+    except (ProviderError, Exception):
+        return None
 
 VERSION = "revrank-rules/0.1"
 KM_PER_MILE = Decimal("1.609344")
@@ -181,6 +233,10 @@ def create_report(candidates: list[Candidate], prefs: Preferences, settings: Set
                    f"{fmt(c.mileage)} {c.mileage_unit}" if usable(c, "mileage") and known_unit(c)
                    else "Unknown / unit unconfirmed / conflicting" for c in candidates]),
                Metric(label="Transmission", values=[c.transmission or "Unknown" for c in candidates]),
+               Metric(label="Engine", values=[c.engine or "Unknown" for c in candidates]),
+               Metric(label="Drivetrain", values=[c.drivetrain or "Unknown" for c in candidates]),
+               Metric(label="Body", values=[c.body or "Unknown" for c in candidates]),
+               Metric(label="Fuel Type", values=[c.fuel_type or "Unknown" for c in candidates]),
                Metric(label="Generation / trim", values=[
                    " / ".join((c.generation or "Unknown generation", c.trim or "Unknown trim")) for c in candidates]),
                Metric(label="Location", values=[c.location or "Unknown" for c in candidates])]
@@ -259,6 +315,36 @@ def create_report(candidates: list[Candidate], prefs: Preferences, settings: Set
         questions.append(Questions(candidate_id=c.id, questions=q))
     for c in candidates:
         warnings.extend(f"{c.title}: {w}" for w in c.warnings)
+
+    # MSRP v1: percent_of_msrp metric (buyer-entered MSRP only)
+    msrp_values = []
+    for c in candidates:
+        if c.msrp is not None and c.price is not None and usable(c, "price") and c.currency != "UNK":
+            # msrp must be user_confirmed to ensure it's buyer-entered
+            if "msrp" in c.verified_fields:
+                pct = (dec(c.price) / dec(c.msrp)) * 100
+                msrp_values.append(f"{fmt(pct, 1)}%")
+            else:
+                msrp_values.append("MSRP not confirmed")
+        else:
+            msrp_values.append("N/A")
+    metrics.append(Metric(label="% of original MSRP (you entered)", values=msrp_values))
+
+    # Compute cross_model: true if any make/model differs (case-insensitive trim)
+    def norm(s):
+        return (s or "").strip().casefold()
+    make_models = [(norm(c.make), norm(c.model)) for c in candidates]
+    cross_model = len(set(make_models)) > 1
+
+    # A5: Deterministic NHTSA model-year safety data
+    nhtsa_data = {}
+    for c in candidates:
+        if c.year and c.make and c.model:
+            safety = fetch_nhtsa_safety(c.year, c.make, c.model)
+            if safety:
+                nhtsa_data[c.id] = safety
+                c.nhtsa_safety = safety.model_dump()
+
     market = Market(message=(
         "MarketCheck key is configured, but no licensed adapter/data-use scope has been validated; enrichment remains unavailable."
         if settings.marketcheck_api_key else
@@ -272,4 +358,5 @@ def create_report(candidates: list[Candidate], prefs: Preferences, settings: Set
     return Report(id=str(uuid4()), created_at=now(),
                   title=" / ".join((c.make or "Unknown") + " " + (c.model or "vehicle") for c in candidates)[:300] + " comparison",
                   summary=summary, preferences=prefs, candidates=candidates, findings=findings,
-                  metrics=metrics, questions=questions, market=market, warnings=list(dict.fromkeys(warnings)))
+                  metrics=metrics, questions=questions, market=market, warnings=list(dict.fromkeys(warnings)),
+                  cross_model=cross_model, nhtsa_data=nhtsa_data)

@@ -58,7 +58,9 @@ def budget(deadline: float, cap: float) -> float:
 def listing_candidate(row: InventoryListing) -> Candidate:
     source = f'Licensed inventory record for {row.source_url}; provider last seen {row.last_seen or "date unknown"}'[:2000]
     candidate = Candidate(id=str(uuid4()), title=(row.heading or 'Licensed inventory listing')[:300],
-                          source_kind='listing', source_url=row.source_url, retrieval_method='licensed')
+                          source_kind='listing', source_url=row.source_url, retrieval_method='licensed',
+                          # A6: DOM fields from MarketCheck payload (0 extra paid calls)
+                          dom=row.dom, dom_active=row.dom_active, first_seen_at=row.first_seen_at)
     values = dict(year=row.year, make=row.make, model=row.model, trim=row.trim, price=row.price,
                   mileage=row.miles, transmission=row.transmission, location=row.location, body=row.body,
                   engine=row.engine, drivetrain=row.drivetrain, fuel_type=row.fuel_type)

@@ -65,6 +65,14 @@ class Candidate(Model):
     retrieval_method: Literal['direct', 'search', 'licensed', 'registry', 'paste', 'synthetic'] = 'direct'
     observations: Annotated[list[Observation], Field(max_length=150)] = Field(default_factory=list)
     conflicts: Annotated[list[Short], Field(max_length=30)] = Field(default_factory=list)
+    # A6: Days-on-market from licensed inventory only; null otherwise (never extra paid calls)
+    dom: Annotated[int, Field(ge=0, le=100000)] | None = None
+    dom_active: Annotated[int, Field(ge=0, le=100000)] | None = None
+    first_seen_at: Short | None = None
+    # MSRP v1: buyer-entered only; NEVER scraped/LLM/MarketCheck filled
+    msrp: Scalar | None = None
+    # A5: NHTSA model-year safety data attached at compare time
+    nhtsa_safety: dict | None = None
 
     @field_validator("price", "mileage", mode="before")
     @classmethod
@@ -100,7 +108,7 @@ class Candidate(Model):
     def valid_verified_fields(cls, value):
         editable = {"title", "make", "model", "trim", "generation", "year", "price", "currency",
                     "mileage", "mileage_unit", "transmission", "body", "engine", "drivetrain", "fuel_type",
-                    "location", "features", "history"}
+                    "location", "features", "history", "msrp"}
         if set(value) - editable:
             raise ValueError("verified_fields contains an unknown or non-editable field")
         return list(dict.fromkeys(value))
@@ -137,12 +145,24 @@ class ImportRequest(Model):
         return self
 
 
+RecoveryStatus = Literal[
+    "recovered",         # Successfully recovered from licensed inventory or search
+    "identity_only",     # Only NHTSA VIN decode succeeded; listing details unknown
+    "identity_conflict", # Sources disagree on VIN or identity
+    "not_found",         # No matching listing found
+    "not_listing",       # URL is a search/category page, not a single listing
+    "failed",            # Recovery attempted but failed (provider error)
+    "disabled",          # Recovery was disabled or URL invalid
+    "unavailable",       # No recovery provider configured
+]
+
+
 class ImportResponse(Model):
     status: Literal["success", "partial", "restricted", "unsupported", "blocked", "failed"]
     candidate: Candidate | None = None
     message: str
     attempts: list[RetrievalAttempt] = Field(default_factory=list)
-    recovery_status: str | None = None
+    recovery_status: RecoveryStatus | None = None
 
 
 class CompareRequest(Model):
@@ -224,6 +244,20 @@ class AIAnalysis(Model):
     dropped_claims: int = 0
 
 
+class NHTSASafetyData(Model):
+    """Model-year safety data (not VIN-specific); scope label always present."""
+    scope: str = "Model-Year Safety Data (not VIN-specific)"
+    year: int | None = None
+    make: str | None = None
+    model: str | None = None
+    recalls_count: int | None = None
+    complaints_count: int | None = None
+    overall_rating: str | None = None
+    frontal_rating: str | None = None
+    side_rating: str | None = None
+    rollover_rating: str | None = None
+
+
 class Report(Model):
     id: str
     created_at: str
@@ -238,6 +272,8 @@ class Report(Model):
     market: Market
     warnings: list[str]
     ai_analysis: AIAnalysis | None = None
+    cross_model: bool = False
+    nhtsa_data: dict[str, NHTSASafetyData] = Field(default_factory=dict)
 
 
 def now() -> str:
