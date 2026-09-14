@@ -6,10 +6,13 @@ export type RecoveryStatus =
 export interface NHTSARecall {
   campaign_number: string; component: string; summary: string;
   consequence?: string | null; remedy?: string | null; report_date?: string | null;
+  url?: string | null;
 }
+// NHTSA has no stable permalink per ODI number, so `url` is usually absent for complaints.
 export interface NHTSAComplaint {
   odi_number: string; component: string; summary: string;
   crash?: boolean; fire?: boolean; injuries?: number; deaths?: number; date_filed?: string | null;
+  url?: string | null;
 }
 export interface NHTSARating {
   overall_rating?: number | null; frontal_crash?: number | null;
@@ -34,6 +37,7 @@ export interface NHTSASafetyData {
   rating?: NHTSARating | null;
   recalls?: NHTSARecall[];
   complaints?: NHTSAComplaint[];
+  vehicle_url?: string | null;
 }
 
 export type EvidenceStatus = 'seller_claim' | 'user_confirmed' | 'extracted' | 'synthetic';

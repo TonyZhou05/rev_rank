@@ -259,6 +259,14 @@ function nhtsaComplaints(data: NHTSASafetyData) {
 function nhtsaOverall(data: NHTSASafetyData) {
   return data.overall_rating ?? data.rating?.overall_rating ?? null;
 }
+// Model-year landing page: the per-vehicle page when NHTSA gave us an id, else their lookup page.
+const NHTSA_LOOKUP = 'https://www.nhtsa.gov/recalls';
+function nhtsaHub(data: NHTSASafetyData) {
+  return safeUrl(data.vehicle_url ?? null) ?? NHTSA_LOOKUP;
+}
+function NhtsaLink({ href, children }: { href: string; children: ReactNode }) {
+  return <a className="nhtsa-link" href={href} target="_blank" rel="noopener noreferrer">{children}</a>;
+}
 
 function NhtsaSection({ report }: { report: Report }) {
   const cars = report.candidates;
@@ -273,7 +281,9 @@ function NhtsaSection({ report }: { report: Report }) {
         {!data ? <p className="muted-cell">No model-year NHTSA block for this car.</p> : <>
           <p className="nhtsa-label">{nhtsaScope(data)}</p>
           <p className="nhtsa-counts">
-            <strong>{nhtsaRecalls(data)}</strong> recalls · <strong>{nhtsaComplaints(data)}</strong> complaints
+            <NhtsaLink href={nhtsaHub(data)}><strong>{nhtsaRecalls(data)}</strong> recalls</NhtsaLink>
+            {' · '}
+            <NhtsaLink href={nhtsaHub(data)}><strong>{nhtsaComplaints(data)}</strong> complaints</NhtsaLink>
             {nhtsaOverall(data) != null && <> · NHTSA overall {nhtsaOverall(data)}</>}
           </p>
           {!!data.recalls?.[0] && <p className="nhtsa-top">Top recall component: {data.recalls[0].component}</p>}
@@ -281,8 +291,14 @@ function NhtsaSection({ report }: { report: Report }) {
           {!!(data.recalls?.length || data.complaints?.length) && <details className="review-more">
             <summary>Recalls &amp; complaints detail</summary>
             <ul className="nhtsa-list">
-              {(data.recalls ?? []).slice(0, 5).map(r => <li key={r.campaign_number}><strong>{r.component}</strong> — {r.summary}</li>)}
-              {(data.complaints ?? []).slice(0, 5).map(r => <li key={r.odi_number}><strong>{r.component}</strong> — {r.summary}</li>)}
+              {(data.recalls ?? []).slice(0, 5).map(r => <li key={r.campaign_number}>
+                <strong>{r.component || 'Recall'}</strong> — {r.summary}{' '}
+                <NhtsaLink href={safeUrl(r.url ?? null) ?? nhtsaHub(data)}>Recall {r.campaign_number} on NHTSA</NhtsaLink>
+              </li>)}
+              {(data.complaints ?? []).slice(0, 5).map(r => <li key={r.odi_number}>
+                <strong>{r.component || 'Complaint'}</strong> — {r.summary}{' '}
+                <NhtsaLink href={safeUrl(r.url ?? null) ?? nhtsaHub(data)}>Complaint {r.odi_number} on NHTSA</NhtsaLink>
+              </li>)}
             </ul>
           </details>}
         </>}
