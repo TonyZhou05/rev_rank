@@ -100,8 +100,7 @@
 .compare-narrow .compare-focus{margin-bottom:14px}
 .compare-narrow .compare-table tbody th{white-space:normal;width:34%}
 .compare-narrow .compare-table th,.compare-narrow .compare-table td{padding:9px 8px}
-.compare-narrow .delta,.compare-narrow .best-tag{margin-left:0;margin-top:4px}
-.compare-narrow .delta{display:block;width:max-content}
+.compare-narrow .delta{display:block;width:max-content;margin:4px 0 0}
 .paste-callout{margin:0 0 12px;padding:10px 12px;border-radius:10px;background:#fff7e8;border:1px solid #f0d9a8;color:#5c4a1e}
 .paste-callout strong{display:inline-flex;align-items:center;gap:6px;font:700 13px Manrope}
 .paste-callout p{margin:6px 0 0;font-size:12.5px;line-height:1.45;color:#6a5728}
