@@ -1,0 +1,35 @@
+# Git
+.git
+.gitignore
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Local data and caches
+.local
+*.sqlite3
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+
+# Node artifacts (rebuilt in Docker)
+frontend/node_modules
+frontend/dist
+
+# IDE
+.vscode
+.idea
+*.swp
+
+# Documentation not needed at runtime
+docs
+*.md
+!README.md
+
+# Development scripts and tests
+scripts
+tests
+samples

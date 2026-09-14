@@ -1,0 +1,14 @@
+# Render Blueprint for RevRank
+# Deploy with: https://dashboard.render.com/select-repo?type=web
+
+services:
+  - type: web
+    name: revrank
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: REVRANK_LIVE_FETCH_ENABLED
+        value: "false"
+      - key: REVRANK_DATA_DIR
+        value: /app/.local
