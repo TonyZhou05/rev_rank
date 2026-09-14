@@ -6,7 +6,8 @@ import type { Candidate, Health, ImportSlot, Preferences, RecoverySource, Report
 import { Review } from './Review';
 import { ReportView } from './ReportView';
 import { cacheImport, cachedImport, clearDraft, loadDraft, loadRecoverySource, saveDraft, saveRecoverySource } from './storage';
-import { dateLabel, defaultPreferences, editCandidate, fieldOptions, freshSlot, importBody, mileage, money, readableField, restoreSlot, safeUrl, sourceLabel } from './utils';
+import { derivePercentOfMsrp } from './compare';
+import { dateLabel, defaultPreferences, editCandidate, fieldOptions, freshSlot, importBody, mileage, money, readableField, recoveryBadge, restoreSlot, safeUrl, sourceLabel } from './utils';
 
 export default function App() {
   // Restore the browser-local draft so imported cars survive reloads and step changes.
@@ -68,15 +69,46 @@ export default function App() {
   const updateCandidate = (id: string, field: keyof Candidate, raw: string) => {
     setSlots(current => current.map(s => {
       if (s.candidate?.id !== id) return s;
-      const numeric = field === 'year' || field === 'price' || field === 'mileage';
-      return { ...s, candidate: editCandidate(s.candidate, field, numeric ? (raw ? Number(raw) : null) : raw || null) };
+      const numeric = field === 'year' || field === 'price' || field === 'mileage' || field === 'msrp';
+      let candidate = editCandidate(s.candidate, field, numeric ? (raw ? Number(raw) : null) : raw || null);
+      // Keep percent_of_msrp in sync with local price/msrp edits (contract shape).
+      if (field === 'price' || field === 'msrp' || field === 'currency') {
+        candidate = { ...candidate, percent_of_msrp: derivePercentOfMsrp(candidate) };
+      }
+      return { ...s, candidate };
     }));
     setReport(null);
   };
   const generateReport = async () => {
     if (candidates.length < 2) { setNotice('Import at least two candidates before generating a report.'); return; }
     setBusy(true); setNotice('');
-    try { setReport(await api.compare(candidates, preferences)); setStep('report'); }
+    try {
+      const remote = await api.compare(candidates, preferences);
+      // PR #2 integration: send buyer-entered MSRP (verified_fields); overlay if backend omits it on the way back.
+      const local = new Map(candidates.map(c => [c.id, c]));
+      const merged = remote.candidates.map(c => {
+        const from = local.get(c.id);
+        const msrp = from?.msrp ?? c.msrp ?? null;
+        const withMsrp = msrp == null ? c : {
+          ...c,
+          msrp,
+          evidence: {
+            ...c.evidence,
+            ...(from?.evidence.msrp ? { msrp: from.evidence.msrp } : { msrp: { value: String(msrp), source: 'Buyer-entered original MSRP', status: 'user_confirmed' as const } }),
+          },
+        };
+        // Prefer backend-derived percent_of_msrp; FE fallback only when PR #2 fields absent.
+        if (withMsrp.percent_of_msrp != null) return withMsrp;
+        const percent = derivePercentOfMsrp(withMsrp);
+        return percent == null ? withMsrp : { ...withMsrp, percent_of_msrp: percent };
+      });
+      // Mirror contract: Report.cross_model until backend sets it.
+      const makes = new Set(merged.map(c => (c.make ?? '').trim().toLowerCase()));
+      const models = new Set(merged.map(c => (c.model ?? '').trim().toLowerCase()));
+      const cross = remote.cross_model ?? (merged.some(c => !c.make || !c.model) || makes.size > 1 || models.size > 1);
+      setReport({ ...remote, candidates: merged, cross_model: cross });
+      setStep('report');
+    }
     catch (error) { setNotice(errorMessage(error)); } finally { setBusy(false); }
   };
   const loadDemo = async () => { setReport(null); setBusy(true); try { const data = await api.demo(); setSlots(data.candidates.slice(0, 3).map(candidate => ({ ...freshSlot(), candidate, status: 'success', message: 'Loaded synthetic example' }))); setStep('import'); setNotice('Synthetic examples loaded. These are not live market observations.'); } catch (error) { setNotice(errorMessage(error)); } finally { setBusy(false); } };
@@ -146,11 +178,43 @@ function reviewItems(car: Candidate): string[] {
           ...(car.price !== null && car.currency === 'UNK' && !car.verified_fields.includes('price') ? ['currency'] : [])];
 }
 
+
+const PASTE_STATUSES = new Set(['blocked', 'restricted', 'failed', 'unsupported']);
+
+function needsPasteFallback(slot: ImportSlot): boolean {
+  return !slot.candidate && Boolean(slot.message) && Boolean(slot.status && PASTE_STATUSES.has(slot.status));
+}
+
+function pasteFallbackTitle(status: ImportSlot['status'] | undefined): string {
+  if (status === 'blocked' || status === 'restricted') return 'Listing page blocked automated access';
+  if (status === 'unsupported') return 'This listing source is not supported for automated import';
+  return 'Import did not find a usable listing';
+}
+
+// One-line outcome from attempts; never invents providers beyond what the server returned.
+function recoveryOutcomeLine(slot: ImportSlot): string | null {
+  const attempts = slot.attempts ?? [];
+  if (!attempts.length && !slot.recovery_status) return null;
+  if (!attempts.length) return `Recovery status: ${readableField(slot.recovery_status!)}`;
+  const parts = attempts.map(a => `${readableField(a.method)} · ${a.status}`);
+  const last = attempts[attempts.length - 1];
+  const ok = ['success', 'ok', 'matched', 'found'].some(s => last.status.toLowerCase().includes(s));
+  if (slot.candidate) {
+    return ok
+      ? `Tried ${parts.join(', then ')} — used ${METHOD_LABELS[slot.candidate.retrieval_method ?? ''] ?? readableField(slot.candidate.retrieval_method ?? 'recovery')}.`
+      : `Tried ${parts.join(', then ')}.`;
+  }
+  return `Tried ${parts.join(', then ')} — paste the listing text or add a VIN to continue.`;
+}
+
 function ImportCard({ slot, index, busy, loading, canRemove, onChange, onImport, onRemove, onEditField }: ImportCardProps) {
   const candidate = slot.candidate;
   const showForm = !candidate || slot.editing;
   const ready = slot.status === 'success' || (candidate !== null && reviewItems(candidate).length === 0);
-  return <div className={showForm ? 'import-card' : 'import-card has-vehicle'}>
+  const pasteNeeded = needsPasteFallback(slot);
+  const outcome = recoveryOutcomeLine(slot);
+  const cardClass = [showForm ? 'import-card' : 'import-card has-vehicle', pasteNeeded ? 'needs-paste' : ''].filter(Boolean).join(' ');
+  return <div className={cardClass}>
     <div className="card-top">
       <span className="card-number">0{index + 1}</span><strong>{ORDINALS[index]} car</strong>
       <span className="card-actions">
@@ -159,18 +223,25 @@ function ImportCard({ slot, index, busy, loading, canRemove, onChange, onImport,
       </span>
     </div>
     {showForm ? <>
+      {pasteNeeded && <div className="paste-callout" role="status">
+        <strong><CircleAlert size={15}/> {pasteFallbackTitle(slot.status)}</strong>
+        <p>Paste the listing text below (what you can see in the browser), or add a VIN, then import again.</p>
+        {slot.message && <p className="paste-callout-detail">{slot.message}</p>}
+      </div>}
       <label>Listing URL <span>optional</span><input value={slot.url} onChange={e => onChange({ url: e.target.value })} placeholder="https://…" /></label>
       <label>VIN <span>optional</span><input value={slot.vin} onChange={e => onChange({ vin: e.target.value })} placeholder="Vehicle identification number" /></label>
       <label className="recovery-toggle"><input type="checkbox" checked={slot.recover} onChange={e => onChange({ recover: e.target.checked })}/> Try search recovery if needed</label>
-      <label>Or paste listing text <span>fallback</span><textarea value={slot.text} onChange={e => onChange({ text: e.target.value })} placeholder="Vehicle name, price, mileage, options…" rows={4}/></label>
+      <label className={pasteNeeded ? 'paste-field highlight' : undefined}>Or paste listing text <span>fallback</span>
+        <textarea value={slot.text} onChange={e => onChange({ text: e.target.value })} placeholder="Vehicle name, price, mileage, options…" rows={4}/></label>
       <div className="form-actions">
         <button className="primary-button full" onClick={() => onImport(false)} disabled={busy || (!slot.url.trim() && !slot.text.trim())}>
           {loading ? <LoaderCircle className="spin" size={16}/> : <Link2 size={16}/>} {loading ? 'Importing…' : candidate ? 'Import replacement' : 'Import car'}
         </button>
         {candidate && <button className="secondary-button full" onClick={() => onChange({ editing: false })}>Cancel</button>}
       </div>
-      {!candidate && slot.message && <p className="import-error"><CircleAlert size={15}/><span>{slot.message}</span></p>}
+      {!candidate && slot.message && !pasteNeeded && <p className="import-error"><CircleAlert size={15}/><span>{slot.message}</span></p>}
     </> : <VehicleSummary slot={slot} busy={busy} loading={loading} onEdit={() => onChange({ editing: true })} onRefresh={() => onImport(true)} onEditField={onEditField} />}
+    {outcome && <p className="recovery-outcome"><CircleAlert size={14}/><span>{outcome}</span></p>}
     {(slot.message || !!slot.attempts?.length) && <details className="import-log">
       <summary>Import details</summary>
       {candidate && slot.message && <p>{slot.message}</p>}
@@ -258,9 +329,15 @@ function VehicleSummary({ slot, busy, loading, onEdit, onRefresh, onEditField }:
     </dl>
     <div className="vehicle-tags">
       <span className="tag">{METHOD_LABELS[car.retrieval_method ?? 'direct'] ?? readableField(car.retrieval_method ?? 'direct')}</span>
+      {recoveryBadge(slot.recovery_status) && <span className="tag recovery-tag">{recoveryBadge(slot.recovery_status)}</span>}
       <span className="tag">{vin ? `VIN ${vin}` : 'VIN unknown'}</span>
+      {(car.dom != null || car.dom_active != null) && <span className="tag" title={car.first_seen_at ? `First seen ${car.first_seen_at}` : undefined}>
+        {car.dom_active != null ? `${car.dom_active}d active` : `${car.dom}d on market`}
+      </span>}
       {slot.cachedAt && <span className="tag" title="Reused a result saved in this browser; Refresh requests it again.">Saved {dateLabel(new Date(slot.cachedAt).toISOString())}</span>}
     </div>
+    {(car.retrieval_method === 'search' || car.retrieval_method === 'licensed') &&
+      <p className="vehicle-recovered"><CircleAlert size={15}/><span>Recovered via {car.retrieval_method === 'licensed' ? 'licensed inventory' : 'search'} — confirm price and mileage before comparing.</span></p>}
     {review.length ? <p className="vehicle-review"><CircleAlert size={15}/><span>Check before comparing: {review.join(', ')}.</span></p>
                    : <p className="vehicle-ok"><Check size={15}/><span>Key details found. Click a value to correct it.</span></p>}
     <div className="vehicle-actions">

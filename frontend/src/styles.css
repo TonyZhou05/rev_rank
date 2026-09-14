@@ -80,3 +80,72 @@
 .stat-options{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.stat-options .choice{font-size:12px}
 @media (prefers-reduced-motion:reduce){.vehicle-stats .stat-value svg{transition:none}}
 .import-card .vehicle-stats dt label{display:inline;margin:0;font:inherit;color:inherit;letter-spacing:inherit;text-transform:inherit}
+.compare-controls{display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;margin:0 0 12px}.compare-controls .control-label{font:600 10.5px 'DM Mono',monospace;letter-spacing:.05em;text-transform:uppercase;color:#7b8997}
+.diff-toggle{display:inline-flex;align-items:center;gap:7px;font:600 12px Manrope;color:#44566b;cursor:pointer;margin-left:auto}.diff-toggle input{accent-color:#8cae2c;width:15px;height:15px;margin:0}
+.compare-table thead th small,.compare-table tbody th small{display:block;font:500 9.5px 'DM Mono',monospace;color:#9aa6b3;text-transform:none;letter-spacing:0;margin-top:2px}.compare-table thead th small{text-transform:uppercase;letter-spacing:.05em}
+.compare-table th.bench-col,.compare-table td.bench-col{box-shadow:inset 3px 0 0 #b5d051}
+.delta{display:inline-block;margin-left:7px;padding:1px 7px;border-radius:8px;font:700 11px Manrope;white-space:nowrap}.delta.better{background:#e9f3d6;color:#3f6d1f}.delta.worse{background:#fff1d1;color:#8a5d07}
+.tradeoff{display:inline-block;font-size:12.5px;line-height:1.45;padding:3px 8px;border-radius:6px;background:#f2f5f7;color:#33475c}.tradeoff.better{background:#e9f3d6;color:#3f6d1f}.tradeoff.worse{background:#fff1d1;color:#8a5d07}
+.muted-cell{color:#9aa6b3;font-size:12px}
+.req{display:inline-block;padding:1px 8px;border-radius:8px;font:600 11.5px Manrope}.req.listed{background:#e9f3d6;color:#3f6d1f}.req.unknown{border:1px dashed #cbd5de;color:#7b8997}
+.compare-note{font-size:11.5px;color:#7b8997;margin:8px 0 0}
+@media print{.compare-controls{display:none}}
+.paste-callout{margin:0 0 12px;padding:10px 12px;border-radius:10px;background:#fff7e8;border:1px solid #f0d9a8;color:#5c4a1e}
+.paste-callout strong{display:inline-flex;align-items:center;gap:6px;font:700 13px Manrope}
+.paste-callout p{margin:6px 0 0;font-size:12.5px;line-height:1.45;color:#6a5728}
+.paste-callout-detail{opacity:.85}
+.import-card.needs-paste label.paste-field.highlight textarea,.import-card label.paste-field.highlight textarea{border-color:#d4a017;box-shadow:0 0 0 3px #f7e7b8;background:#fffdf6}
+.import-card label.paste-field.highlight{color:#5c4a1e}
+.recovery-outcome{display:flex;gap:8px;align-items:flex-start;margin:10px 0 0;padding:8px 10px;border-radius:8px;background:#f2f5f7;color:#44566b;font-size:12.5px;line-height:1.4}
+.recovery-outcome svg{flex:none;margin-top:1px;color:#7b8997}
+.vehicle-recovered{display:flex;gap:8px;align-items:flex-start;margin:8px 0 0;padding:8px 10px;border-radius:8px;background:#eef5ff;border:1px solid #d5e3f7;color:#355275;font-size:12.5px;line-height:1.4}
+.vehicle-recovered svg{flex:none;margin-top:1px;color:#4d74a3}
+.field-optional{margin-left:6px;font:500 10px 'DM Mono',monospace;color:#9aa6b3;text-transform:uppercase;letter-spacing:.04em}
+.msrp-pct{font-weight:700;color:#33475c}
+.cross-model-note{display:flex;gap:8px;align-items:flex-start;margin:0 0 14px;padding:10px 12px;border-radius:10px;background:#fff7e8;border:1px solid #f0d9a8;color:#5c4a1e;font-size:13px;line-height:1.45}
+.cross-model-note svg{flex:none;margin-top:2px}
+.compare-section-label{font:700 10.5px 'DM Mono',monospace;letter-spacing:.06em;text-transform:uppercase;color:#7b8997;margin:4px 0 10px}
+.value-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:0 0 18px}
+.value-card{padding:14px;border-radius:12px;background:#f7f9fb;border:1px solid #e3e9ef}
+.value-card h4{margin:0 0 8px;font:700 15px Manrope;color:#1f2d3a}
+.value-price{margin:0;font:800 20px Manrope;color:#1f2d3a}
+.value-msrp{margin:6px 0 0;font:600 12.5px Manrope;color:#3f6d1f}
+.value-msrp-raw,.value-miles,.value-model{margin:4px 0 0;font-size:12px;color:#7b8997}
+.tradeoff.secondary{opacity:.85;font-size:12px;background:#eef1f4}
+@media print{.value-cards{break-inside:avoid}.cross-model-note{border:1px solid #ccc}}
+
+.msrp-cta,.value-msrp.muted-cta{color:#8a5d07;font-weight:600}
+.ranking-block{margin:0 0 8px}
+.ranking-head{display:flex;flex-wrap:wrap;gap:12px 24px;align-items:end;margin-bottom:12px}
+.ranking-head h3{margin:0}
+.ranking-lede{max-width:42rem;margin:0}
+.ranking-note{display:flex;gap:8px;align-items:flex-start;margin:0 0 8px;font-size:12.5px;color:#5c4a1e}
+.rank-weights{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin:0 0 14px;padding:12px;border-radius:12px;background:#f7f9fb;border:1px solid #e3e9ef}
+.rank-weight{display:flex;flex-direction:column;gap:6px;font:600 12px Manrope;color:#44566b}
+.rank-weight em{font-style:normal;color:#688022;margin-left:6px}
+.rank-weight input[type=range]{width:100%;accent-color:#8cae2c}
+.rank-cards{list-style:none;margin:0;padding:0;display:grid;gap:10px}
+.rank-card{padding:14px;border-radius:12px;border:1px solid #e3e9ef;background:#fff}
+.rank-card.flagged{border-color:#f0d9a8;background:#fffdf6}
+.rank-card-top{display:flex;gap:12px;align-items:flex-start}
+.rank-place{flex:none;width:36px;height:36px;border-radius:10px;display:grid;place-items:center;background:#1f2d3a;color:#fff;font:800 14px Manrope}
+.rank-fit{margin:2px 0 0;font:700 13px Manrope;color:#3f6d1f}
+.rank-knock{margin:8px 0 0;font-size:12.5px;color:#8a5d07}
+.rank-why{margin:8px 0 0;font-size:12.5px;color:#44566b}
+.rank-breakdown{margin-top:8px;font-size:12.5px}
+.rank-breakdown ul{list-style:none;margin:8px 0 0;padding:0}
+.rank-breakdown li{display:flex;justify-content:space-between;gap:12px;padding:4px 0;border-top:1px solid #eef1f4}
+.rank-breakdown li.omitted{color:#9aa6b3;justify-content:flex-start}
+.rank-sensitivity{margin:12px 0 0;padding:10px 12px;border-radius:10px;background:#eef5ff;border:1px solid #d5e3f7;color:#355275;font-size:13px}
+@media print{.rank-weights{display:none}}
+
+.dom-first{display:block;margin-top:2px;font:500 10px 'DM Mono',monospace;color:#9aa6b3}
+.nhtsa-scope{display:flex;gap:8px;align-items:flex-start;margin:0 0 12px;padding:10px 12px;border-radius:10px;background:#fff7e8;border:1px solid #f0d9a8;color:#5c4a1e;font-size:12.5px;line-height:1.45}
+.nhtsa-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+.nhtsa-card{padding:14px;border-radius:12px;border:1px solid #e3e9ef;background:#fff}
+.nhtsa-card h4{margin:0 0 6px}
+.nhtsa-label{margin:0;font:600 11px 'DM Mono',monospace;color:#8a5d07;text-transform:uppercase;letter-spacing:.04em}
+.nhtsa-counts{margin:8px 0 0;font-size:13px;color:#33475c}
+.nhtsa-top{margin:6px 0 0;font-size:12.5px;color:#44566b}
+.nhtsa-list{margin:8px 0 0;padding-left:1.1rem;font-size:12.5px;color:#44566b}
+.tag.recovery-tag{background:#eef5ff;color:#355275}

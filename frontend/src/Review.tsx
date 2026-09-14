@@ -111,6 +111,12 @@ function ReviewCard({ candidate, index, onEdit, onRemove }: { candidate: Candida
             </select>
           </span>
         </label>
+        <label className="field">
+          <span className="field-label">Original MSRP <Badge candidate={candidate} field="msrp"/><span className="field-optional">you enter</span></span>
+          <input type="number" value={candidate.msrp ?? ''} placeholder="Optional — never invented"
+                 onChange={e => onEdit(candidate.id, 'msrp', e.target.value)}/>
+          <span className="field-hint">Used for % of original MSRP in the report. Leave blank if you do not know it.</span>
+        </label>
       </div>
     </section>
     {GROUPS.map(group => <section className="field-group" key={group.title}>
