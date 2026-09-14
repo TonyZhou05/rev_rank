@@ -1,8 +1,9 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Check, CircleAlert, Sparkles } from 'lucide-react';
-import { allSame, comparable, delta, isCrossModel, metric, mileageValue, msrpOrigin, msrpPctDelta, msrpValue, mustHaveMetrics, numberIn, pctOfMsrp, pctOfMsrpText, priceValue, sharedAnnual, tradeOff, type DeltaKind } from './compare';
+import { allSame, comparable, delta, isCrossModel, metric, mileageValue, msrpNeoVinKind, msrpOrigin, msrpPctDelta, msrpValue, mustHaveMetrics, numberIn, pctOfMsrp, pctOfMsrpText, priceValue, sharedAnnual, tradeOff, type DeltaKind } from './compare';
+import { ConstraintPanel } from './ConstraintPanel';
 import { SourceTable } from './Review';
-import type { AIAnalysis, Candidate, Claim, NHTSASafetyData, Report } from './types';
+import type { AIAnalysis, Candidate, Claim, NHTSASafetyData, Preferences, Report } from './types';
 import { carName, dateLabel, money, safeUrl, unresolvedConflicts } from './utils';
 
 interface Row {
@@ -169,7 +170,7 @@ function ValueCards({ cars }: { cars: Candidate[] }) {
         <h4>{carName(c)}</h4>
         <p className="value-price">{priceText(c)}</p>
         <p className={pct ? 'value-msrp' : 'value-msrp muted-cta'}>{pct ? pct : 'No MSRP yet — add original MSRP on Review to see % of sticker'}</p>
-        {msrp !== null && <p className="value-msrp-raw">Original MSRP ({msrpOrigin(c)}): {money(msrp, c.currency)}</p>}
+        {msrp !== null && <p className="value-msrp-raw">Original MSRP ({msrpOrigin(c)}{msrpNeoVinKind(c) ? ` · ${msrpNeoVinKind(c)}` : ''}): {money(msrp, c.currency)}</p>}
         <p className="value-miles">{mileageText(c)}</p>
         {(c.make || c.model) && <p className="value-model">{[c.year, c.make, c.model, c.trim].filter(Boolean).join(' ')}</p>}
       </article>;
@@ -391,14 +392,38 @@ function AIComparison({ ai, cars }: { ai: AIAnalysis; cars: Candidate[] }) {
       })}</ol>
     </details>
     <p className="ai-meta">{ai.message} Model: {ai.model}.</p>
+    {ai.dropped_claims > 0 && <p className="dropped-claims" role="status">
+      <CircleAlert size={14}/> {ai.dropped_claims} claim{ai.dropped_claims === 1 ? '' : 's'} held back — not enough evidence.
+    </p>}
   </section>;
 }
 
-export function ReportView({ report, onBack, onReset }: { report: Report; onBack: () => void; onReset: () => void }) {
+function ComingModule({ title, body, caveats }: { title: string; body: string; caveats: string[] }) {
+  return <section className="report-section coming-module">
+    <h3>{title}</h3>
+    <p className="coming-copy"><CircleAlert size={15}/> Coming next: {body} We won’t invent a number.</p>
+    {caveats.length > 0 && <ul className="coming-caveats">{caveats.map(w => <li key={w}>{w}</li>)}</ul>}
+  </section>;
+}
+
+export function ReportView({ report, preferences, setPreferences, onApply, busy, narrow, onBack, onReset }: {
+  report: Report;
+  preferences: Preferences;
+  setPreferences: (p: Preferences) => void;
+  onApply: () => void;
+  busy?: boolean;
+  narrow?: boolean;
+  onBack: () => void;
+  onReset: () => void;
+}) {
   const ai = report.ai_analysis;
   const cars = report.candidates;
   const aiQuestions = (id: string) => (ai?.questions ?? []).filter(q => q.candidate_id === id).map(q => q.text);
-  return <section className="report-wrap">
+  const warnings = [...new Set(report.warnings)];
+  const depCaveats = warnings.filter(w => /depreciat|resale|ownership|years kept|mileage when/i.test(w));
+  const condCaveats = warnings.filter(w => /condition|feature|history|accident|title|option/i.test(w));
+  return <section className="workspace report-layout">
+    <div className="report-wrap">
     <div className="report-toolbar">
       <button className="secondary-button" onClick={onBack}>← Edit cars</button>
       <button className="secondary-button" onClick={() => window.print()}>Print report</button>
@@ -423,6 +448,9 @@ export function ReportView({ report, onBack, onReset }: { report: Report; onBack
         <h3>Side by side</h3>
         <CompareTable report={report}/>
       </section>
+
+      <ComingModule title="Depreciation" body="ownership-horizon depreciation from cited market observations." caveats={depCaveats}/>
+      <ComingModule title="Condition & feature vs price" body="condition and option content weighed against asking price with evidence." caveats={condCaveats}/>
 
       <section className="report-section">
         <h3>Ask each seller</h3>
@@ -453,5 +481,7 @@ export function ReportView({ report, onBack, onReset }: { report: Report; onBack
         </div>
       </details>
     </article>
+    </div>
+    <ConstraintPanel mode="report" preferences={preferences} onChange={setPreferences} onApply={onApply} busy={busy} narrow={narrow}/>
   </section>;
 }

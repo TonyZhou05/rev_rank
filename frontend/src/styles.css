@@ -163,3 +163,47 @@
 .nhtsa-link{color:#1d5fa8;text-decoration:underline;text-underline-offset:2px}
 .nhtsa-link:hover{color:#14406f}
 .tag.recovery-tag{background:#eef5ff;color:#355275}
+
+
+/* Constraint panel — secondary re-rank controls (not Import side-panel; stay visible <850px). */
+.review-layout,.report-layout{display:grid;grid-template-columns:minmax(0,1fr) min(320px,34%);gap:20px;align-items:start;padding-bottom:52px}
+.constraint-panel{padding:22px 20px;align-self:start;background:#fff;border:1px solid #e1e7ed;color:#172437;position:sticky;top:16px}
+.constraint-head h3{margin:0 0 8px;font-size:17px;letter-spacing:-.02em;color:#12243a}
+.constraint-lede{margin:0 0 16px;font-size:12px;color:#778699}
+.constraint-chips{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px}
+.constraint-chip{display:flex;flex-direction:column;gap:6px;position:relative;margin:0;padding:10px;background:#f7f9fa;border:1px solid #e0e6eb;border-radius:8px;font:600 10px 'DM Mono',monospace;letter-spacing:.04em;text-transform:uppercase;color:#5b6b7e}
+.constraint-chip.wide{grid-column:1/-1}
+.constraint-chip input{width:100%;border:1px solid #d8e0e7;border-radius:6px;padding:8px;font:500 13px Manrope,system-ui,sans-serif;color:#172b40;text-transform:none;letter-spacing:0}
+.constraint-chip input:focus{outline:none;border-color:#8cae2c;box-shadow:0 0 0 3px #e5f1ba}
+.chip-x{position:absolute;top:6px;right:6px;border:0;background:none;color:#9aa7b4;cursor:pointer;padding:2px;display:grid;place-items:center}
+.chip-x:hover{color:#ad4c45}
+.constraint-lists{display:grid;gap:14px;margin-bottom:14px}
+.constraint-label{margin:0 0 6px;font:600 10px 'DM Mono',monospace;letter-spacing:.06em;text-transform:uppercase;color:#68788c}
+.chip-row{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;min-height:8px}
+.tag-chip,.suggest-chip{display:inline-flex;align-items:center;gap:4px;border:1px solid #d5dee7;background:#fff;border-radius:999px;padding:5px 10px;font:600 12px Manrope,system-ui,sans-serif;color:#243a52;cursor:pointer}
+.tag-chip:hover{border-color:#ad4c45;color:#ad4c45}
+.suggest-chip{background:#f4f8e8;border-color:#d5e6a8;color:#4f6a14}
+.suggest-chip:hover{background:#eaf3d0}
+.chip-add{display:flex;gap:6px}
+.chip-add input{flex:1;border:1px solid #d8e0e7;border-radius:6px;padding:8px;font:500 13px Manrope,system-ui,sans-serif}
+.constraint-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:8px}
+.constraint-actions.sticky{position:sticky;bottom:0;padding:12px 0 4px;background:linear-gradient(180deg,rgba(255,255,255,0),#fff 28%);margin-top:12px}
+.constraint-note{display:flex;gap:6px;align-items:flex-start;margin:12px 0 0;font-size:11px;color:#896f27}
+.constraint-mobile{margin-top:16px}
+.constraint-summary{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;background:#fff;border:1px solid #e1e7ed;border-radius:12px}
+.constraint-summary-text{margin:0;font-size:13px;color:#52677e}
+.constraint-sheet{position:fixed;inset:0;z-index:40;display:flex;align-items:flex-end;justify-content:center}
+.constraint-sheet-backdrop{position:absolute;inset:0;background:rgba(15,29,48,.45)}
+.constraint-sheet-card{position:relative;z-index:1;width:min(560px,100%);max-height:min(88vh,720px);overflow:auto;background:#fff;border-radius:16px 16px 0 0;padding:20px 18px 28px;box-shadow:0 -12px 40px rgba(24,46,72,.18)}
+.coming-module{background:#f7f9fa;border:1px dashed #d5dee7;border-radius:10px;padding:18px 18px 14px}
+.coming-module h3{margin-bottom:10px}
+.coming-copy{display:flex;gap:8px;align-items:flex-start;margin:0;font-size:13px;color:#52677e}
+.coming-caveats{margin:12px 0 0;padding-left:18px;color:#73570c;font-size:12px}
+.dropped-claims{display:flex;gap:7px;align-items:center;margin:10px 0 0;padding:10px 12px;background:#fff8e5;border:1px solid #ead59a;border-radius:8px;color:#73570c;font-size:12px}
+@media(max-width:900px){
+  .review-layout,.report-layout{display:block;padding-bottom:28px}
+  .constraint-panel{display:none}
+}
+@media print{
+  .constraint-panel,.constraint-mobile,.constraint-sheet{display:none!important}
+}

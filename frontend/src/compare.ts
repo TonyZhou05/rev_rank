@@ -78,13 +78,20 @@ export const allSame = (values: string[]) => values.every(v => v === values[0]);
 
 // How the backend labels an MSRP it decoded from the VIN; see docs/API_CONTRACT.md.
 const NEOVIN_MSRP = /^MarketCheck NeoVIN (?:msrp labeled )?(oem_msrp|original_msrp|combined_msrp)\b/;
-const NEOVIN_FIELDS: Record<string, string> = { oem_msrp: 'OEM', original_msrp: 'original', combined_msrp: 'combined' };
+const NEOVIN_FIELDS: Record<string, string> = { oem_msrp: 'OEM build', original_msrp: 'original sticker', combined_msrp: 'combined sticker' };
 
 // Short, honest note on where the shown MSRP came from; null when nothing sourced it.
 export function msrpOrigin(c: Candidate): string | null {
   if (c.verified_fields.includes('msrp')) return 'you entered';
   const decoded = c.evidence.msrp && NEOVIN_MSRP.exec(c.evidence.msrp.source);
-  return decoded ? `from NeoVIN ${NEOVIN_FIELDS[decoded[1]]} MSRP` : null;
+  return decoded ? 'Factory MSRP · NeoVIN' : null;
+}
+
+/** Plain NeoVIN field kind under the MSRP input (OEM build / original / combined). */
+export function msrpNeoVinKind(c: Candidate): string | null {
+  if (c.verified_fields.includes('msrp')) return null;
+  const decoded = c.evidence.msrp && NEOVIN_MSRP.exec(c.evidence.msrp.source);
+  return decoded ? (NEOVIN_FIELDS[decoded[1]] ?? null) : null;
 }
 
 export const msrpValue = (c: Candidate) =>
