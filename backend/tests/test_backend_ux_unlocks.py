@@ -249,6 +249,43 @@ class TestMSRPFields:
         msrp_metric = next(m for m in report.metrics if "MSRP" in m.label)
         assert msrp_metric.values[0] == "MSRP not confirmed"
 
+    def test_candidate_percent_of_msrp_computed_when_confirmed(self, monkeypatch):
+        monkeypatch.setattr(comparison, "fetch_nhtsa_safety", lambda *a: None)
+        c1 = car("Car A", "BMW", "M2", 2020, price=50000, mileage=10000)
+        c1.msrp = 65000
+        c1.verified_fields = ["msrp"]
+        c1.evidence["msrp"] = Evidence(value="65000", source="User", status="user_confirmed")
+        c2 = car("Car B", "Audi", "RS3", 2021, price=55000, mileage=5000)
+        report = create_report([c1, c2], Preferences(), SETTINGS)
+        # percent_of_msrp should be (50000/65000)*100 = 76.92...
+        assert report.candidates[0].percent_of_msrp is not None
+        assert 76.9 <= report.candidates[0].percent_of_msrp <= 77.0
+        assert report.candidates[1].percent_of_msrp is None
+
+    def test_candidate_percent_of_msrp_null_when_not_confirmed(self, monkeypatch):
+        monkeypatch.setattr(comparison, "fetch_nhtsa_safety", lambda *a: None)
+        c1 = car("Car A", "BMW", "M2", 2020, price=50000, mileage=10000)
+        c1.msrp = 65000  # Not in verified_fields
+        c2 = car("Car B", "Audi", "RS3", 2021, price=55000, mileage=5000)
+        report = create_report([c1, c2], Preferences(), SETTINGS)
+        assert report.candidates[0].percent_of_msrp is None
+
+    def test_candidate_percent_of_msrp_null_when_currency_unknown(self, monkeypatch):
+        monkeypatch.setattr(comparison, "fetch_nhtsa_safety", lambda *a: None)
+        c1 = Candidate(
+            id="car-a", title="Car A", make="BMW", model="M2", year=2020,
+            price=50000, currency="UNK", mileage=10000, mileage_unit="mi",
+            source_kind="user", msrp=65000, verified_fields=["msrp"]
+        )
+        c1.evidence["msrp"] = Evidence(value="65000", source="User", status="user_confirmed")
+        c2 = car("Car B", "Audi", "RS3", 2021, price=55000, mileage=5000)
+        report = create_report([c1, c2], Preferences(), SETTINGS)
+        assert report.candidates[0].percent_of_msrp is None
+
+    def test_candidate_percent_of_msrp_default_null(self):
+        c = Candidate(id="test", title="Test", source_kind="user")
+        assert c.percent_of_msrp is None
+
 
 class TestCrossModel:
     """Test cross_model detection."""

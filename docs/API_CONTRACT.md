@@ -22,6 +22,9 @@ Recovery fields (populated during listing recovery):
 
 MSRP fields (buyer-entered only):
 - `msrp: number|null` - Original MSRP; buyer-entered and user_confirmed ONLY, NEVER scraped/LLM/MarketCheck filled
+- `percent_of_msrp: number|null` - Derived at compare time as `(price/msrp)*100`; NOT user-editable input
+  - Computed only when: price and msrp are both set, currency is not UNK, and msrp is in verified_fields
+  - Otherwise null
 - MSRP must be in verified_fields to be used in calculations (ensures buyer manually confirmed)
 
 Days-on-market fields (from licensed inventory payload only):

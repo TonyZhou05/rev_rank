@@ -71,6 +71,8 @@ class Candidate(Model):
     first_seen_at: Short | None = None
     # MSRP v1: buyer-entered only; NEVER scraped/LLM/MarketCheck filled
     msrp: Scalar | None = None
+    # Derived at compare time: (price/msrp)*100 when both set, currency known, msrp confirmed; NOT user-editable
+    percent_of_msrp: Annotated[float, Field(ge=0, le=10000, allow_inf_nan=False)] | None = None
     # A5: NHTSA model-year safety data attached at compare time
     nhtsa_safety: dict | None = None
 

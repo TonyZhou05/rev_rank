@@ -316,17 +316,20 @@ def create_report(candidates: list[Candidate], prefs: Preferences, settings: Set
     for c in candidates:
         warnings.extend(f"{c.title}: {w}" for w in c.warnings)
 
-    # MSRP v1: percent_of_msrp metric (buyer-entered MSRP only)
+    # MSRP v1: percent_of_msrp derived at compare time (buyer-entered MSRP only)
     msrp_values = []
     for c in candidates:
         if c.msrp is not None and c.price is not None and usable(c, "price") and c.currency != "UNK":
             # msrp must be user_confirmed to ensure it's buyer-entered
             if "msrp" in c.verified_fields:
-                pct = (dec(c.price) / dec(c.msrp)) * 100
+                pct = float((dec(c.price) / dec(c.msrp)) * 100)
+                c.percent_of_msrp = round(pct, 2)
                 msrp_values.append(f"{fmt(pct, 1)}%")
             else:
+                c.percent_of_msrp = None
                 msrp_values.append("MSRP not confirmed")
         else:
+            c.percent_of_msrp = None
             msrp_values.append("N/A")
     metrics.append(Metric(label="% of original MSRP (you entered)", values=msrp_values))
 
