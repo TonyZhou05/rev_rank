@@ -90,6 +90,17 @@
 .req{display:inline-block;padding:1px 8px;border-radius:8px;font:600 11.5px Manrope}.req.listed{background:#e9f3d6;color:#3f6d1f}.req.unknown{border:1px dashed #cbd5de;color:#7b8997}
 .compare-note{font-size:11.5px;color:#7b8997;margin:8px 0 0}
 @media print{.compare-controls{display:none}}
+/* Narrow report layout: ReportView adds .compare-narrow when it shows the benchmark plus one
+   comparison car, so the two-column table gets room for full row labels and wrapped values. */
+.compare-narrow .compare-controls{gap:8px}
+.compare-narrow .control-label{flex:1 1 100%}
+.compare-narrow .segmented{display:flex;flex-wrap:wrap;width:100%}
+.compare-narrow .segmented button{flex:1 1 40%;padding:8px 10px;border-bottom:1px solid #e1e7ed}
+.compare-narrow .diff-toggle{margin-left:0}
+.compare-narrow .compare-focus{margin-bottom:14px}
+.compare-narrow .compare-table tbody th{white-space:normal;width:34%}
+.compare-narrow .compare-table th,.compare-narrow .compare-table td{padding:9px 8px}
+.compare-narrow .delta{display:block;width:max-content;margin:4px 0 0}
 .paste-callout{margin:0 0 12px;padding:10px 12px;border-radius:10px;background:#fff7e8;border:1px solid #f0d9a8;color:#5c4a1e}
 .paste-callout strong{display:inline-flex;align-items:center;gap:6px;font:700 13px Manrope}
 .paste-callout p{margin:6px 0 0;font-size:12.5px;line-height:1.45;color:#6a5728}
