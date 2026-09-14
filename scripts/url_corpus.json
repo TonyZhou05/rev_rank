@@ -1,0 +1,191 @@
+{
+ "about": "Live import corpus. 'input' is exactly what a user pastes. 'expect' holds ground truth gathered on 2026-09-13 from each site's own listing title or the VIN printed beside the stock number on the seller's pages; listings can sell, so 'expect.removed' marks ones already reported unavailable.",
+ "cases": [
+  {
+   "label": "CarMax M2 (user report: location)",
+   "input": "https://www.carmax.com/car/70181882",
+   "expect": {
+    "vin": "WBS1H9C3XHV887640",
+    "year": 2017,
+    "make": "BMW",
+    "model": "M2"
+   }
+  },
+  {
+   "label": "CarMax C43 (user report: price 'sources disagree')",
+   "input": "https://www.carmax.com/car/28033756",
+   "expect": {
+    "vin": "WDDWK6EB4JF686842",
+    "year": 2018,
+    "make": "Mercedes-Benz",
+    "model": "C-Class"
+   }
+  },
+  {
+   "label": "CarMax M4 as pasted by user (no scheme)",
+   "input": "carmax.com/car/28084730",
+   "expect": {
+    "vin": "WBS33BA06NCJ75401",
+    "year": 2022,
+    "make": "BMW",
+    "model": "M4"
+   }
+  },
+  {
+   "label": "CarMax Corvette wrapped in text",
+   "input": "Check this one: https://www.carmax.com/car/70043489 thanks",
+   "expect": {
+    "vin": "1G1YC2D41M5101164",
+    "year": 2021,
+    "make": "Chevrolet",
+    "model": "Corvette"
+   }
+  },
+  {
+   "label": "CarMax Camaro ZL1",
+   "input": "https://www.carmax.com/car/70108828",
+   "expect": {
+    "vin": "1G1FK1R64N0130896",
+    "year": 2022,
+    "make": "Chevrolet",
+    "model": "Camaro"
+   }
+  },
+  {
+   "label": "CarMax Camry (trailing slash)",
+   "input": "https://www.carmax.com/car/28897887/",
+   "expect": {
+    "vin": "4T1DAACK2SU590002"
+   }
+  },
+  {
+   "label": "CarMax CR-V",
+   "input": "https://www.carmax.com/car/70223315",
+   "expect": {
+    "vin": "7FARW2H85KE022631"
+   }
+  },
+  {
+   "label": "CarMax Wrangler",
+   "input": "https://www.carmax.com/car/28741361",
+   "expect": {
+    "vin": "1C4AJWAG7JL818437"
+   }
+  },
+  {
+   "label": "CarMax Jeep (query string)",
+   "input": "https://www.carmax.com/car/70016469?utm_source=share&zip=53201",
+   "expect": {
+    "vin": "1C4PJXFN9RW114502"
+   }
+  },
+  {
+   "label": "Carvana Audi A5 (user's, uppercase host)",
+   "input": "HTTPS://WWW.CARVANA.COM/vehicle/4711856?refSource=home",
+   "expect": {
+    "year": 2025,
+    "make": "Audi",
+    "model": "A5"
+   }
+  },
+  {
+   "label": "Carvana 2013 Civic",
+   "input": "https://www.carvana.com/vehicle/3450496",
+   "expect": {
+    "year": 2013,
+    "make": "Honda",
+    "model": "Civic"
+   }
+  },
+  {
+   "label": "Carvana 2021 Civic",
+   "input": "www.carvana.com/vehicle/1681574",
+   "expect": {
+    "year": 2021,
+    "make": "Honda",
+    "model": "Civic"
+   }
+  },
+  {
+   "label": "Carvana 2014 Civic (/lt/ link)",
+   "input": "https://www.carvana.com/vehicle/lt/3768960?utm_vehicle_id=3768960",
+   "expect": {
+    "year": 2014,
+    "make": "Honda",
+    "model": "Civic"
+   }
+  },
+  {
+   "label": "TrueCar F-150 (VIN in URL, sold)",
+   "input": "https://www.truecar.com/used-cars-for-sale/listing/1FTEW1CG2FKD04446/2015-ford-f-150/",
+   "expect": {
+    "vin": "1FTEW1CG2FKD04446",
+    "year": 2015,
+    "make": "Ford",
+    "model": "F-150",
+    "removed": true
+   }
+  },
+  {
+   "label": "TrueCar F-150 2017 (VIN in URL)",
+   "input": "https://www.truecar.com/used-cars-for-sale/listing/1FTEW1EG3HKD57589/2017-ford-f-150/",
+   "expect": {
+    "vin": "1FTEW1EG3HKD57589",
+    "year": 2017,
+    "make": "Ford",
+    "model": "F-150",
+    "removed": true
+   }
+  },
+  {
+   "label": "Edmunds Tacoma (VIN in URL)",
+   "input": "https://www.edmunds.com/toyota/tacoma/2024/vin/3TMLB5JN6RM055030/",
+   "expect": {
+    "vin": "3TMLB5JN6RM055030",
+    "year": 2024,
+    "make": "Toyota",
+    "model": "Tacoma"
+   }
+  },
+  {
+   "label": "Autotrader RAV4 (long query)",
+   "input": "https://www.autotrader.com/cars-for-sale/vehicle/775250873?listingType=USED&makeCode=TOYOTA&modelCode=RAV4&numRecords=25&sortBy=relevance&zip=79402",
+   "expect": {
+    "make": "Toyota",
+    "model": "RAV4"
+   }
+  },
+  {
+   "label": "Cars.com 2024 Accord EX",
+   "input": "https://www.cars.com/vehicledetail/5397b0a9-43d8-4367-a42c-b80007a59c23/",
+   "expect": {
+    "year": 2024,
+    "make": "Honda",
+    "model": "Accord"
+   }
+  },
+  {
+   "label": "Cars.com 2018 Accord LX",
+   "input": "https://www.cars.com/vehicledetail/333cc704-cc50-4e88-bb24-1766c0dbc569/",
+   "expect": {
+    "year": 2018,
+    "make": "Honda",
+    "model": "Accord"
+   }
+  },
+  {
+   "label": "CarGurus search page (not one listing)",
+   "input": "https://www.cargurus.com/Cars/l-Used-Subaru-Outback-d380",
+   "expect": {
+    "no_candidate": true
+   }
+  },
+  {
+   "label": "Not a URL",
+   "input": "the red corvette I saw yesterday",
+   "expect": {
+    "no_candidate": true
+   }
+  }
+ ]
+}
