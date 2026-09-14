@@ -69,9 +69,11 @@ class Candidate(Model):
     dom: Annotated[int, Field(ge=0, le=100000)] | None = None
     dom_active: Annotated[int, Field(ge=0, le=100000)] | None = None
     first_seen_at: Short | None = None
-    # MSRP v1: buyer-entered only; NEVER scraped/LLM/MarketCheck filled
+    # Original (factory) MSRP: buyer-entered, or decoded from a known VIN by MarketCheck NeoVIN.
+    # Never scraped, never LLM-guessed, and never a listing's own msrp (that often repeats the asking price).
     msrp: Scalar | None = None
-    # Derived at compare time: (price/msrp)*100 when both set, currency known, msrp confirmed; NOT user-editable
+    # Derived at compare time: (price/msrp)*100 when both are set, the currency is known, and the MSRP is
+    # buyer-confirmed or NeoVIN-sourced; NOT user-editable
     percent_of_msrp: Annotated[float, Field(ge=0, le=10000, allow_inf_nan=False)] | None = None
     # A5: NHTSA model-year safety data attached at compare time
     nhtsa_safety: dict | None = None
