@@ -1,4 +1,4 @@
-import type { Candidate, EvidenceStatus, ImportRequest, ImportSlot, Preferences, RecoverySource } from './types';
+import type { Candidate, EvidenceStatus, ImportRequest, ImportSlot, Preferences, RecoverySource, RecoveryStatus } from './types';
 
 export const evidenceLabels: Record<EvidenceStatus, string> = {
   seller_claim: 'Seller claim', user_confirmed: 'User input', extracted: 'Extracted', synthetic: 'Synthetic',
@@ -65,7 +65,7 @@ export function editCandidate(candidate: Candidate, field: keyof Candidate, valu
 export function manualCandidate(): Candidate {
   return {
     id: crypto.randomUUID(), title: 'Untitled vehicle', make: null, model: null, trim: null, generation: null,
-    year: null, price: null, currency: 'USD', mileage: null, mileage_unit: 'mi', transmission: null,
+    year: null, price: null, msrp: null, currency: 'USD', mileage: null, mileage_unit: 'mi', transmission: null,
     body: null, engine: null, drivetrain: null, fuel_type: null,
     location: null, features: [], history: null, source_url: null, source_kind: 'user', evidence: {},
     warnings: ['Manually entered candidate. Blank fields remain unknown.'], verified_fields: [],
@@ -104,3 +104,20 @@ export function fieldOptions(c: Candidate, field: string): { value: string; host
 }
 
 export const unresolvedConflicts = (c: Candidate) => (c.conflicts ?? []).filter(field => !c.verified_fields.includes(field));
+
+
+/** Suggested badge copy for ImportResponse.recovery_status (frontend owns final wording). */
+export const recoveryBadge = (status: RecoveryStatus | null | undefined): string | null => {
+  if (!status) return null;
+  const labels: Record<RecoveryStatus, string> = {
+    recovered: 'Recovered from other sources',
+    identity_only: 'Identity only',
+    identity_conflict: 'Identity conflict',
+    not_found: 'Not found',
+    not_listing: 'Not a listing',
+    failed: 'Recovery failed',
+    disabled: 'Recovery disabled',
+    unavailable: 'Source unavailable',
+  };
+  return labels[status] ?? readableField(status);
+};

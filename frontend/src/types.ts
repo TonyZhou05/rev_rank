@@ -1,3 +1,41 @@
+
+export type RecoveryStatus =
+  | 'recovered' | 'identity_only' | 'identity_conflict' | 'not_found'
+  | 'not_listing' | 'failed' | 'disabled' | 'unavailable';
+
+export interface NHTSARecall {
+  campaign_number: string; component: string; summary: string;
+  consequence?: string | null; remedy?: string | null; report_date?: string | null;
+}
+export interface NHTSAComplaint {
+  odi_number: string; component: string; summary: string;
+  crash?: boolean; fire?: boolean; injuries?: number; deaths?: number; date_filed?: string | null;
+}
+export interface NHTSARating {
+  overall_rating?: number | null; frontal_crash?: number | null;
+  side_crash?: number | null; rollover?: number | null;
+}
+// Model-year scope only — never treat as VIN-specific.
+// PR #2 wire shape (primary); optional nested fields kept for forward-compat.
+export interface NHTSASafetyData {
+  scope?: string;
+  scope_label?: string;
+  year?: number | null;
+  make?: string | null;
+  model?: string | null;
+  recalls_count?: number | null;
+  complaints_count?: number | null;
+  recall_count?: number | null;
+  complaint_count?: number | null;
+  overall_rating?: string | number | null;
+  frontal_rating?: string | number | null;
+  side_rating?: string | number | null;
+  rollover_rating?: string | number | null;
+  rating?: NHTSARating | null;
+  recalls?: NHTSARecall[];
+  complaints?: NHTSAComplaint[];
+}
+
 export type EvidenceStatus = 'seller_claim' | 'user_confirmed' | 'extracted' | 'synthetic';
 export interface Evidence { value: string; source: string; status: EvidenceStatus }
 export interface Observation {
@@ -20,6 +58,10 @@ export interface Candidate {
   generation: string | null;
   year: number | null;
   price: number | null;
+  // Buyer-entered original MSRP (FE-local until backend PR); never invent.
+  msrp?: number | null;
+  // Derived at compare: (price/msrp)*100; NOT user-editable. Prefer API value when present.
+  percent_of_msrp?: number | null;
   currency: string;
   mileage: number | null;
   mileage_unit: 'mi' | 'km';
@@ -30,6 +72,11 @@ export interface Candidate {
   drivetrain?: string | null;
   fuel_type?: string | null;
   location: string | null;
+  // Days on market from licensed inventory when already fetched; never invented.
+  dom?: number | null;
+  dom_active?: number | null;
+  first_seen_at?: string | null;
+  nhtsa_safety?: NHTSASafetyData | null;
   features: string[];
   history: string | null;
   source_url: string | null;
@@ -58,6 +105,10 @@ export interface Report {
   metrics: { label: string; values: string[] }[];
   questions: { candidate_id: string; questions: string[] }[];
   market: { status: string; message: string; comparables: Record<string, unknown>[] };
+  // True when any make/model differs; backend will set; FE computes until then.
+  cross_model?: boolean;
+  // Optional map from candidate id → model-year NHTSA block (PR #1).
+  nhtsa_data?: Record<string, NHTSASafetyData | null>;
   warnings: string[];
   ai_analysis?: AIAnalysis | null;
 }
@@ -78,7 +129,7 @@ export interface AIAnalysis {
 export interface ReportSummary { id: string; title: string; created_at: string; analysis_mode: 'llm' | 'rules' }
 export interface ImportResult {
   attempts?: ImportAttempt[];
-  recovery_status?: string | null;
+  recovery_status?: RecoveryStatus | null;
   status: 'success' | 'partial' | 'restricted' | 'unsupported' | 'blocked' | 'failed';
   candidate: Candidate | null;
   message: string;
@@ -93,7 +144,7 @@ export interface ImportSlot {
   vin: string;
   recover: boolean;
   attempts?: ImportAttempt[];
-  recovery_status?: string | null;
+  recovery_status?: RecoveryStatus | null;
   candidate: Candidate | null;
   status?: ImportResult['status'];
   message?: string;
