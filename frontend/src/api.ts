@@ -29,12 +29,15 @@ export const apiLog = {
 
 async function request<T>(path: string, body?: unknown, timeoutMs?: number, external?: AbortSignal): Promise<T> {
   const controller = new AbortController();
-  const onExternal = () => controller.abort();
+  const limit = timeoutMs ?? (body ? 120_000 : 20_000);
+  let timedOut = false;
+  const onExternal = () => controller.abort('cancel');
   if (external) {
-    if (external.aborted) controller.abort();
+    if (external.aborted) controller.abort('cancel');
     else external.addEventListener('abort', onExternal, { once: true });
   }
-  const timer = window.setTimeout(() => controller.abort('timeout'), timeoutMs ?? (body ? 120_000 : 20_000));
+  // Local flag — abort reason is not reliably visible on the thrown AbortError in all browsers.
+  const timer = window.setTimeout(() => { timedOut = true; controller.abort('timeout'); }, limit);
   const started = performance.now();
   const entry = apiLog.add({ method: body === undefined ? 'GET' : 'POST', endpoint: `/api${path}`, request: body, status: 'pending' });
   try {
@@ -66,10 +69,16 @@ async function request<T>(path: string, body?: unknown, timeoutMs?: number, exte
     const aborted = (error instanceof DOMException && error.name === 'AbortError')
       || (error instanceof Error && error.name === 'AbortError');
     if (aborted) {
-      const timedOut = controller.signal.reason === 'timeout' || !external?.aborted;
-      throw new Error(timedOut
-        ? 'Building the report timed out. Your draft is intact — retry when ready.'
-        : 'Report build cancelled. Your draft is intact.');
+      const secs = Math.round(limit / 1000);
+      const msg = timedOut || controller.signal.reason === 'timeout'
+        ? (path === '/compare'
+          ? `Timed out after ${secs}s — try again. Your draft is intact.`
+          : `The request timed out after ${secs}s. Your draft is intact — please try again.`)
+        : (path === '/compare'
+          ? 'Report build cancelled. Your draft is intact.'
+          : 'The request was cancelled. Your draft is intact.');
+      apiLog.update(entry, { status: 'network error', ms: Math.round(performance.now() - started), note: msg });
+      throw new Error(msg);
     }
     if (!(error instanceof ApiError)) apiLog.update(entry, { status: 'network error', ms: Math.round(performance.now() - started), note: error instanceof Error ? error.message : String(error) });
     if (error instanceof TypeError) throw new Error('Could not reach the RevRank API. Check your connection and that the backend is running on port 8000.');
