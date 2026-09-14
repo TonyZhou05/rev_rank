@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { CircleAlert, X } from 'lucide-react';
 import type { Preferences } from './types';
+import { defaultPreferences } from './utils';
 
 const SUGGESTIONS = [
   { label: 'Under $45k', apply: (p: Preferences): Preferences => ({ ...p, budget: 45000 }) },
@@ -15,6 +16,16 @@ function splitList(value: string) {
   return value.split(',').map(x => x.trim()).filter(Boolean);
 }
 
+export function preferencesEqual(a: Preferences, b: Preferences): boolean {
+  const list = (xs: string[]) => [...xs].map(x => x.trim()).filter(Boolean).sort().join('\0');
+  return a.budget === b.budget
+    && a.annual_mileage === b.annual_mileage
+    && a.ownership_years === b.ownership_years
+    && (a.location || '') === (b.location || '')
+    && list(a.priorities) === list(b.priorities)
+    && list(a.must_haves) === list(b.must_haves);
+}
+
 interface Props {
   preferences: Preferences;
   onChange: (next: Preferences) => void;
@@ -24,40 +35,76 @@ interface Props {
   mode: 'review' | 'report';
   /** Mobile: collapsed summary + Edit opens the sheet. */
   narrow?: boolean;
+  /** Preferences last applied into the current report (Report mode dirty cue). */
+  applied?: Preferences | null;
 }
 
-export function ConstraintPanel({ preferences, onChange, onApply, busy, mode, narrow }: Props) {
+export function ConstraintPanel({ preferences, onChange, onApply, busy, mode, narrow, applied }: Props) {
   const [open, setOpen] = useState(false);
   const [draftPriority, setDraftPriority] = useState('');
   const [draftMust, setDraftMust] = useState('');
+  const titleId = useId();
+  const editButtonRef = useRef<HTMLButtonElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const sheetRef = useRef<HTMLDivElement>(null);
 
-  const empty = preferences.budget == null && !preferences.priorities.length && !preferences.must_haves.length
-    && preferences.ownership_years === 3 && preferences.annual_mileage === 12000 && !preferences.location;
+  const atDefaults = preferencesEqual(preferences, defaultPreferences);
+  const dirty = mode === 'report' && applied != null && !preferencesEqual(preferences, applied);
 
-  const summaryBits = [
+  const customBits = [
     preferences.budget != null ? `Budget ≤ $${preferences.budget.toLocaleString()}` : null,
-    `${preferences.ownership_years} yr`,
-    `${preferences.annual_mileage.toLocaleString()} mi/yr`,
+    preferences.location ? preferences.location : null,
     ...preferences.priorities.slice(0, 2),
     ...preferences.must_haves.slice(0, 2),
   ].filter(Boolean) as string[];
+  const yearsMilesCustom = preferences.ownership_years !== defaultPreferences.ownership_years
+    || preferences.annual_mileage !== defaultPreferences.annual_mileage;
+  const summaryText = atDefaults
+    ? `Defaults: ${defaultPreferences.ownership_years} yr · ${defaultPreferences.annual_mileage.toLocaleString()} mi/yr`
+    : [
+        ...customBits,
+        yearsMilesCustom || !customBits.length
+          ? `${preferences.ownership_years} yr · ${preferences.annual_mileage.toLocaleString()} mi/yr`
+          : null,
+      ].filter(Boolean).join(' · ');
 
-  const clearAll = () => onChange({
-    budget: null, annual_mileage: 12000, ownership_years: 3, location: '', priorities: [], must_haves: [],
-  });
+  const clearAll = () => onChange({ ...defaultPreferences });
+
+  const closeSheet = () => {
+    setOpen(false);
+    queueMicrotask(() => editButtonRef.current?.focus());
+  };
+
+  useEffect(() => {
+    if (!open || !narrow) return;
+    const prev = document.activeElement as HTMLElement | null;
+    closeButtonRef.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { e.preventDefault(); closeSheet(); }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      if (prev && document.contains(prev)) prev.focus();
+    };
+  }, [open, narrow]);
 
   const body = <>
     <div className="constraint-head">
       <div>
         <p className="eyebrow">RE-RANK CONTROLS</p>
-        <h3>Your constraints</h3>
+        <h3 id={titleId}>Your constraints</h3>
       </div>
       <p className="muted constraint-lede">
         {mode === 'report'
           ? 'Adjust chips, then Apply to rebuild the cited comparison. This is not discovery chat.'
-          : 'Optional. Facts on the left stay primary; these only steer the report when you generate.'}
+          : 'Optional. Facts stay primary; these only steer the report when you generate.'}
       </p>
     </div>
+
+    {dirty && <div className="constraint-dirty" role="status">
+      <CircleAlert size={14}/> Constraints changed — Apply to rebuild.
+    </div>}
 
     <div className="constraint-chips" role="list">
       <label className="constraint-chip" role="listitem">
@@ -123,7 +170,7 @@ export function ConstraintPanel({ preferences, onChange, onApply, busy, mode, na
       </div>
     </div>
 
-    {empty && <div className="constraint-suggestions">
+    {atDefaults && <div className="constraint-suggestions">
       <p className="constraint-label">Suggested</p>
       <div className="chip-row">
         {SUGGESTIONS.map(s => <button key={s.label} type="button" className="suggest-chip" onClick={() => onChange(s.apply(preferences))}>{s.label}</button>)}
@@ -131,11 +178,12 @@ export function ConstraintPanel({ preferences, onChange, onApply, busy, mode, na
     </div>}
 
     <div className={`constraint-actions${narrow ? ' sticky' : ''}`}>
-      <button type="button" className="primary-button" disabled={busy} onClick={() => { onApply(); setOpen(false); }}>
-        {mode === 'report' ? 'Apply to report' : 'Use for report'}
-      </button>
+      {mode === 'report'
+        ? <button type="button" className="primary-button" disabled={busy} onClick={() => { onApply(); setOpen(false); }}>Apply to report</button>
+        : <button type="button" className="secondary-button" disabled={busy} onClick={() => setOpen(false)}>Save for report</button>}
       <button type="button" className="text-button" disabled={busy} onClick={clearAll}>Clear all</button>
     </div>
+    {mode === 'review' && <p className="constraint-note muted-note">Generate comparison uses these chips — this only confirms them.</p>}
     <p className="constraint-note"><CircleAlert size={13}/> We won’t invent fair-price or fit scores from these chips.</p>
   </>;
 
@@ -147,13 +195,19 @@ export function ConstraintPanel({ preferences, onChange, onApply, busy, mode, na
     <div className="constraint-summary">
       <div>
         <p className="eyebrow">YOUR CONSTRAINTS</p>
-        <p className="constraint-summary-text">{summaryBits.length ? summaryBits.join(' · ') : 'None set — using report defaults'}</p>
+        <p className="constraint-summary-text">{summaryText}</p>
+        {dirty && <p className="constraint-dirty-inline">Constraints changed — Apply to rebuild.</p>}
       </div>
-      <button type="button" className="secondary-button" onClick={() => setOpen(true)}>Edit</button>
+      <button type="button" className="secondary-button" ref={editButtonRef} onClick={() => setOpen(true)}>Edit</button>
     </div>
-    {open && <div className="constraint-sheet" role="dialog" aria-label="Your constraints">
-      <div className="constraint-sheet-backdrop" onClick={() => setOpen(false)}/>
-      <div className="constraint-sheet-card">{body}</div>
+    {open && <div className="constraint-sheet" role="dialog" aria-modal="true" aria-labelledby={titleId}>
+      <div className="constraint-sheet-backdrop" onClick={closeSheet}/>
+      <div className="constraint-sheet-card" ref={sheetRef}>
+        <div className="constraint-sheet-top">
+          <button type="button" className="secondary-button" ref={closeButtonRef} onClick={closeSheet}>Close</button>
+        </div>
+        {body}
+      </div>
     </div>}
   </div>;
 }

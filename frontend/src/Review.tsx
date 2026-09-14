@@ -116,11 +116,12 @@ function ReviewCard({ candidate, index, onEdit, onRemove }: { candidate: Candida
           </span>
         </label>
         <label className="field">
-          <span className="field-label">Original MSRP <Badge candidate={candidate} field="msrp"/><span className="field-optional">{msrpOrigin(candidate) ?? 'you enter'}</span></span>
+          <span className="field-label">Original MSRP <Badge candidate={candidate} field="msrp"/>
+            <span className="field-optional">{msrpOrigin(candidate) === 'Factory MSRP · NeoVIN' ? 'Factory MSRP · NeoVIN' : (msrpOrigin(candidate) ?? 'you enter')}</span></span>
           <input type="number" value={candidate.msrp ?? ''} placeholder="Optional — never invented"
                  onChange={e => onEdit(candidate.id, 'msrp', e.target.value)}/>
           <span className="field-hint">{decodedMsrp
-            ? <>Factory MSRP · NeoVIN{msrpNeoVinKind(candidate) ? <> · {msrpNeoVinKind(candidate)}</> : null}. Decoded from this VIN — the factory sticker as built, not the listing price. Change it if you know better.</>
+            ? <>{msrpNeoVinKind(candidate) ?? 'VIN decode'}. Factory sticker as built, not the listing price. Change it if you know better.</>
             : 'Used for % of original MSRP in the report. Leave blank if you do not know it.'}</span>
         </label>
       </div>
@@ -170,7 +171,9 @@ interface ReviewProps {
 
 export function Review({ candidates, preferences, setPreferences, updateCandidate, removeCandidate, generateReport, onCancelCompare, compareError, buildSlow, onAddMore, busy, narrow }: ReviewProps) {
   const open = candidates.reduce((total, c) => total + attentionItems(c).length, 0);
+  const panel = <ConstraintPanel mode="review" preferences={preferences} onChange={setPreferences} onApply={generateReport} busy={busy} narrow={narrow}/>;
   return <section className="workspace review-layout">
+    {narrow && panel}
     <div className="panel main-panel">
       <div className="panel-heading">
         <div><p className="eyebrow">CHECK THE INPUTS</p><h2>Review each car</h2></div>
@@ -205,6 +208,6 @@ export function Review({ candidates, preferences, setPreferences, updateCandidat
         </button>
       </div>
     </div>
-    <ConstraintPanel mode="review" preferences={preferences} onChange={setPreferences} onApply={generateReport} busy={busy} narrow={narrow}/>
+    {!narrow && panel}
   </section>;
 }
