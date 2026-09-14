@@ -134,8 +134,27 @@ location: string, priorities: string[], must_haves: string[]}`.
   overall_rating: string|null,
   frontal_rating: string|null,
   side_rating: string|null,
-  rollover_rating: string|null
+  rollover_rating: string|null,
+  vehicle_url: string|null,        // https://www.nhtsa.gov/vehicle/{VehicleId}; null when unrated
+  recalls: NHTSARecall[],          // up to 5; counts above stay full
+  complaints: NHTSAComplaint[]     // up to 5; counts above stay full
 }
+
+{  // NHTSARecall
+  campaign_number: string,
+  component: string,
+  summary: string,
+  report_date: string|null,
+  url: string|null                 // https://www.nhtsa.gov/recalls?nhtsaId={campaign_number}
+}
+
+{  // NHTSAComplaint
+  odi_number: string,
+  component: string,
+  summary: string,
+  date_filed: string|null,
+  url: string|null                 // null: NHTSA publishes no per-ODI permalink, so the UI
+}                                  // links complaints through vehicle_url or nhtsa.gov/recalls
 ```
 
 This is model-year level data from NHTSA. VIN-level recall status is OUT OF SCOPE.

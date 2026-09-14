@@ -43,6 +43,29 @@ def car(title, make, model, year, price=None, mileage=None, **extra):
     return c
 
 
+def recall_row(campaign):
+    return {"NHTSACampaignNumber": campaign, "Component": "AIR BAGS", "Summary": "Warning lamp may fail.",
+            "Remedy": "Software update.", "ReportReceivedDate": "10/06/2021"}
+
+
+def complaint_row(odi):
+    return {"odiNumber": odi, "components": "ENGINE", "summary": "Stalled while merging.",
+            "dateComplaintFiled": "03/14/2021", "crash": False}
+
+
+def stub_nhtsa(monkeypatch, recalls=None, complaints=None, variants=None, rating=None):
+    """Stand in for comparison._nhtsa with the three NHTSA endpoints it calls."""
+    def fake(url, params, limit=None):
+        if "recallsByVehicle" in url:
+            return {"results": recalls or []}
+        if "complaintsByVehicle" in url:
+            return {"results": complaints or []}
+        if "/SafetyRatings/VehicleId/" in url:
+            return {"Results": [rating or {}]}
+        return {"Results": variants or []}
+    monkeypatch.setattr(comparison, "_nhtsa", fake)
+
+
 @pytest.fixture(autouse=True)
 def offline(monkeypatch):
     def forbidden(*args, **kwargs):
@@ -136,6 +159,50 @@ class TestNHTSASafetyData:
         monkeypatch.setattr(comparison, "_nhtsa", lambda *a, **k: (_ for _ in ()).throw(Exception("Network error")))
         result = fetch_nhtsa_safety(2020, "BMW", "M2")
         assert result is None
+
+    def test_fetch_nhtsa_safety_links_recalls_to_campaign_pages(self, monkeypatch):
+        stub_nhtsa(monkeypatch, recalls=[recall_row("21V421000"), recall_row("22V103000")])
+        data = fetch_nhtsa_safety(2020, "BMW", "M2")
+        assert data.recalls_count == 2
+        assert [r.campaign_number for r in data.recalls] == ["21V421000", "22V103000"]
+        assert data.recalls[0].url == "https://www.nhtsa.gov/recalls?nhtsaId=21V421000"
+        assert data.recalls[0].component == "AIR BAGS"
+        assert data.recalls[0].report_date == "10/06/2021"
+
+    def test_fetch_nhtsa_safety_skips_recalls_without_campaign_number(self, monkeypatch):
+        stub_nhtsa(monkeypatch, recalls=[{"Component": "SEATS", "Summary": "No campaign id."}, recall_row("21V421000")])
+        data = fetch_nhtsa_safety(2020, "BMW", "M2")
+        assert data.recalls_count == 2
+        assert [r.campaign_number for r in data.recalls] == ["21V421000"]
+
+    def test_fetch_nhtsa_safety_lists_complaints_without_inventing_urls(self, monkeypatch):
+        stub_nhtsa(monkeypatch, complaints=[complaint_row(11111111), complaint_row(22222222)])
+        data = fetch_nhtsa_safety(2020, "BMW", "M2")
+        assert data.complaints_count == 2
+        assert [r.odi_number for r in data.complaints] == ["11111111", "22222222"]
+        assert data.complaints[0].component == "ENGINE"
+        assert data.complaints[0].date_filed == "03/14/2021"
+        assert all(r.url is None for r in data.complaints)
+
+    def test_fetch_nhtsa_safety_caps_detail_lists_but_keeps_full_counts(self, monkeypatch):
+        stub_nhtsa(monkeypatch,
+                   recalls=[recall_row(f"21V42100{i}") for i in range(8)],
+                   complaints=[complaint_row(10000000 + i) for i in range(9)])
+        data = fetch_nhtsa_safety(2020, "BMW", "M2")
+        assert (data.recalls_count, data.complaints_count) == (8, 9)
+        assert (len(data.recalls), len(data.complaints)) == (5, 5)
+
+    def test_fetch_nhtsa_safety_sets_vehicle_url_from_safety_ratings(self, monkeypatch):
+        stub_nhtsa(monkeypatch, variants=[{"VehicleId": 12345}], rating={"OverallRating": "5"})
+        data = fetch_nhtsa_safety(2020, "BMW", "M2")
+        assert data.vehicle_url == "https://www.nhtsa.gov/vehicle/12345"
+        assert data.overall_rating == "5"
+
+    def test_fetch_nhtsa_safety_omits_vehicle_url_when_model_year_unrated(self, monkeypatch):
+        stub_nhtsa(monkeypatch, recalls=[recall_row("21V421000")], variants=[])
+        data = fetch_nhtsa_safety(2020, "BMW", "M2")
+        assert data.vehicle_url is None
+        assert data.overall_rating is None
 
     def test_nhtsa_data_populated_on_report(self, monkeypatch):
         mock_data = NHTSASafetyData(

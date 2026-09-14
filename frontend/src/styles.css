@@ -148,4 +148,7 @@
 .nhtsa-counts{margin:8px 0 0;font-size:13px;color:#33475c}
 .nhtsa-top{margin:6px 0 0;font-size:12.5px;color:#44566b}
 .nhtsa-list{margin:8px 0 0;padding-left:1.1rem;font-size:12.5px;color:#44566b}
+.nhtsa-list li+li{margin-top:6px}
+.nhtsa-link{color:#1d5fa8;text-decoration:underline;text-underline-offset:2px}
+.nhtsa-link:hover{color:#14406f}
 .tag.recovery-tag{background:#eef5ff;color:#355275}
