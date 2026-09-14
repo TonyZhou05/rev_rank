@@ -11,7 +11,18 @@ from .vehicle_data import ProviderError, get_json
 
 NHTSA = "https://api.nhtsa.gov"
 NHTSA_RECALL_PAGE = "https://www.nhtsa.gov/recalls?nhtsaId={campaign}"
-NHTSA_VEHICLE_PAGE = "https://www.nhtsa.gov/vehicle/{vehicle_id}"
+# Vehicle Detail Search, the page that carries the recalls and complaints tabs for one trim.
+# `/vehicle/{VehicleId}` (the SafetyRatings id) returns "Page not found", so it is never linked.
+# NHTSA's own links percent-encode a space in these path segments three times ("4 DR" -> "4%252520DR");
+# that exact shape is what opens in a browser, so it is reproduced rather than normalised to %20.
+NHTSA_TRIM_PAGE = "https://www.nhtsa.gov/vehicle/{year}/{make}/{model}/{body}/{drive}{anchor}"
+# Fallback when body style or drive type is unknown: the year/make/model search landing, which
+# lists recalls, investigations and complaints for the model year (no per-tab anchor available).
+NHTSA_YMM_SEARCH = "https://www.nhtsa.gov/recalls?vymm={vymm}"
+NHTSA_DRIVE_CODES = {"FWD", "RWD", "AWD", "4WD", "4X2", "4X4"}
+# Body styles NHTSA puts in VehicleDescription; "DR" arrives as a door count plus "DR" ("4 DR").
+NHTSA_BODY_WORDS = {"DR", "SUV", "VAN", "MINIVAN", "WAGON", "PICKUP", "TRUCK", "COUPE", "SEDAN",
+                    "HATCHBACK", "CONVERTIBLE", "CROSSOVER"}
 NHTSA_ITEM_LIMIT = 5
 _NHTSA_CACHE: dict = {}
 
@@ -51,9 +62,62 @@ def _recall_items(rows: list[dict]) -> list[NHTSARecall]:
     return items
 
 
+def _trim_segment(value: str) -> str:
+    """Encode one Vehicle Detail Search path segment the way NHTSA does (space -> %252520)."""
+    return quote(str(value).strip().upper(), safe="").replace("%20", "%252520")
+
+
+def nhtsa_ymm_search(year, make, model) -> str | None:
+    """Year/make/model landing page on nhtsa.gov/recalls, or None when identity is incomplete."""
+    if not year or not make or not model:
+        return None
+    return NHTSA_YMM_SEARCH.format(vymm=quote(f"{int(year)} {str(make).strip()} {str(model).strip()}", safe=""))
+
+
+def _trim_parts(description, make) -> tuple[str, str, str] | None:
+    """Split a SafetyRatings VehicleDescription into (model, body, drive) path segments.
+
+    "2020 Toyota Camry 4 DR FWD" with make "Toyota" gives ("CAMRY", "4 DR", "FWD"). The model is
+    read from the description rather than from our own field so multi-word trims stay in the model
+    segment ("2020 BMW M2 Competition 2 DR RWD" keeps "M2 COMPETITION"). Returns None whenever the
+    body style or drive type cannot be identified; callers then fall back to the search landing.
+    """
+    tokens = re.sub(r"\s+", " ", str(description or "")).strip().upper().split()
+    if len(tokens) < 4 or tokens[-1] not in NHTSA_DRIVE_CODES:
+        return None
+    if re.fullmatch(r"(19|20)\d{2}", tokens[0]):
+        tokens = tokens[1:]
+    make_tokens = str(make or "").strip().upper().split()
+    if make_tokens and tokens[:len(make_tokens)] == make_tokens:
+        tokens = tokens[len(make_tokens):]
+    drive, tokens = tokens[-1], tokens[:-1]
+    body_start = len(tokens) - 1
+    if tokens[body_start] not in NHTSA_BODY_WORDS:
+        return None
+    if tokens[body_start] == "DR" and body_start and tokens[body_start - 1].isdigit():
+        body_start -= 1
+    model_tokens, body_tokens = tokens[:body_start], tokens[body_start:]
+    if not model_tokens or not body_tokens:
+        return None
+    return " ".join(model_tokens), " ".join(body_tokens), drive
+
+
+def nhtsa_vehicle_page(year, make, model, description=None, anchor: str = "") -> str | None:
+    """Best usable NHTSA consumer page for a model year: trim deep link when the body style and
+    drive type are known, otherwise the year/make/model search landing."""
+    if not year or not make or not model:
+        return None
+    parts = _trim_parts(description, make)
+    if not parts:
+        return nhtsa_ymm_search(year, make, model)
+    trim_model, body, drive = parts
+    return NHTSA_TRIM_PAGE.format(year=int(year), make=_trim_segment(make), model=_trim_segment(trim_model),
+                                  body=_trim_segment(body), drive=_trim_segment(drive), anchor=anchor)
+
+
 def _complaint_items(rows: list[dict]) -> list[NHTSAComplaint]:
     """NHTSA publishes no stable permalink per ODI number, so `url` stays null and the
-    UI links complaints through `vehicle_url` instead."""
+    UI links complaint rows through `complaints_url` (the model-year page) instead."""
     items = []
     for row in rows[:NHTSA_ITEM_LIMIT]:
         odi = re.sub(r"[^0-9]", "", _nhtsa_field(row, "odiNumber", "ODINumber"))[:12]
@@ -87,10 +151,14 @@ def fetch_nhtsa_safety(year: int, make: str, model: str) -> NHTSASafetyData | No
         path = f"{NHTSA}/SafetyRatings/modelyear/{int(year)}/make/{quote(make, safe='')}/model/{quote(model, safe='')}"
         variants = [v for v in (_nhtsa(path, {}).get("Results") or []) if isinstance(v, dict) and str(v.get("VehicleId", "")).isdigit()]
 
-        overall_rating = frontal_rating = side_rating = rollover_rating = vehicle_url = None
+        # A variant description unlocks the trim deep link; without one the URLs stay on the
+        # year/make/model landing, which still works for unrated model years.
+        description = next((str(v.get("VehicleDescription", "")) for v in variants if v.get("VehicleDescription")), None)
+        recalls_url = nhtsa_vehicle_page(year, make, model, description, "#recalls")
+        complaints_url = nhtsa_vehicle_page(year, make, model, description, "#complaints")
+        overall_rating = frontal_rating = side_rating = rollover_rating = None
         if variants:
             vehicle_id = int(variants[0]["VehicleId"])
-            vehicle_url = NHTSA_VEHICLE_PAGE.format(vehicle_id=vehicle_id)
             row = (_nhtsa(f"{NHTSA}/SafetyRatings/VehicleId/{vehicle_id}", {}).get("Results") or [{}])[0]
             overall_rating = str(row.get("OverallRating")) if row.get("OverallRating") else None
             frontal_rating = str(row.get("OverallFrontCrashRating")) if row.get("OverallFrontCrashRating") else None
@@ -102,7 +170,7 @@ def fetch_nhtsa_safety(year: int, make: str, model: str) -> NHTSASafetyData | No
             recalls_count=len(recall_rows), complaints_count=len(complaint_rows),
             overall_rating=overall_rating, frontal_rating=frontal_rating,
             side_rating=side_rating, rollover_rating=rollover_rating,
-            vehicle_url=vehicle_url,
+            recalls_url=recalls_url, complaints_url=complaints_url,
             recalls=_recall_items(recall_rows), complaints=_complaint_items(complaint_rows)
         )
     except (ProviderError, Exception):

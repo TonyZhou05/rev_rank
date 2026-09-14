@@ -3,13 +3,14 @@
 Tests recovery_status vocabulary, new comparison metrics, NHTSA safety data,
 DOM fields, MSRP calculations, and cross_model detection.
 """
+import re
 import socket
 from typing import get_args
 
 import pytest
 
 from backend.app import comparison, vehicle_data
-from backend.app.comparison import create_report, fetch_nhtsa_safety
+from backend.app.comparison import create_report, fetch_nhtsa_safety, nhtsa_vehicle_page, nhtsa_ymm_search
 from backend.app.config import Settings
 from backend.app.models import (
     Candidate, Evidence, ImportResponse, NHTSASafetyData, Preferences,
@@ -192,17 +193,62 @@ class TestNHTSASafetyData:
         assert (data.recalls_count, data.complaints_count) == (8, 9)
         assert (len(data.recalls), len(data.complaints)) == (5, 5)
 
-    def test_fetch_nhtsa_safety_sets_vehicle_url_from_safety_ratings(self, monkeypatch):
-        stub_nhtsa(monkeypatch, variants=[{"VehicleId": 12345}], rating={"OverallRating": "5"})
-        data = fetch_nhtsa_safety(2020, "BMW", "M2")
-        assert data.vehicle_url == "https://www.nhtsa.gov/vehicle/12345"
+    def test_fetch_nhtsa_safety_links_counts_to_trim_page_tabs(self, monkeypatch):
+        stub_nhtsa(monkeypatch, variants=[{"VehicleId": 14855, "VehicleDescription": "2020 Toyota Camry 4 DR FWD"}],
+                   rating={"OverallRating": "5"})
+        data = fetch_nhtsa_safety(2020, "Toyota", "Camry")
+        assert data.recalls_url == "https://www.nhtsa.gov/vehicle/2020/TOYOTA/CAMRY/4%252520DR/FWD#recalls"
+        assert data.complaints_url == "https://www.nhtsa.gov/vehicle/2020/TOYOTA/CAMRY/4%252520DR/FWD#complaints"
         assert data.overall_rating == "5"
 
-    def test_fetch_nhtsa_safety_omits_vehicle_url_when_model_year_unrated(self, monkeypatch):
+    def test_fetch_nhtsa_safety_falls_back_to_ymm_search_when_model_year_unrated(self, monkeypatch):
+        """No variants means no body style or drive type, so the counts use the search landing."""
         stub_nhtsa(monkeypatch, recalls=[recall_row("21V421000")], variants=[])
-        data = fetch_nhtsa_safety(2020, "BMW", "M2")
-        assert data.vehicle_url is None
+        data = fetch_nhtsa_safety(2020, "Toyota", "Camry")
+        assert data.recalls_url == "https://www.nhtsa.gov/recalls?vymm=2020%20Toyota%20Camry"
+        assert data.complaints_url == "https://www.nhtsa.gov/recalls?vymm=2020%20Toyota%20Camry"
         assert data.overall_rating is None
+
+    def test_fetch_nhtsa_safety_never_emits_safety_ratings_vehicle_id_urls(self, monkeypatch):
+        """/vehicle/{VehicleId} returns "Page not found", so the numeric id must never be linked."""
+        stub_nhtsa(monkeypatch, variants=[{"VehicleId": 19433, "VehicleDescription": "2020 BMW M2 2 DR RWD"}])
+        data = fetch_nhtsa_safety(2020, "BMW", "M2")
+        for url in (data.recalls_url, data.complaints_url, *(r.url for r in data.recalls)):
+            assert "19433" not in (url or "")
+            # A bare numeric path segment is the broken shape; /vehicle/{year}/... is the good one.
+            assert not re.fullmatch(r"https://www\.nhtsa\.gov/vehicle/\d+/?", url or "")
+
+
+class TestNHTSAConsumerUrls:
+    """URL construction for the pages buyers actually open."""
+
+    def test_trim_deep_link_encodes_body_style_the_way_nhtsa_does(self):
+        url = nhtsa_vehicle_page(2020, "Toyota", "Camry", "2020 Toyota Camry 4 DR FWD", "#recalls")
+        assert url == "https://www.nhtsa.gov/vehicle/2020/TOYOTA/CAMRY/4%252520DR/FWD#recalls"
+
+    def test_trim_deep_link_keeps_multi_word_trims_in_the_model_segment(self):
+        url = nhtsa_vehicle_page(2020, "BMW", "M2", "2020 BMW M2 Competition 2 DR RWD")
+        assert url == "https://www.nhtsa.gov/vehicle/2020/BMW/M2%252520COMPETITION/2%252520DR/RWD"
+
+    def test_trim_deep_link_handles_single_word_body_styles(self):
+        url = nhtsa_vehicle_page(2020, "Kia", "Telluride", "2020 Kia Telluride SUV AWD", "#complaints")
+        assert url == "https://www.nhtsa.gov/vehicle/2020/KIA/TELLURIDE/SUV/AWD#complaints"
+
+    @pytest.mark.parametrize("description", [
+        None, "", "2020 Toyota Camry", "2020 Toyota Camry 4 DR", "2020 Toyota Camry FWD",
+        "2020 Toyota Camry 4 DR HYBRID",
+    ])
+    def test_falls_back_to_ymm_search_when_body_or_drive_is_unusable(self, description):
+        url = nhtsa_vehicle_page(2020, "Toyota", "Camry", description, "#recalls")
+        assert url == "https://www.nhtsa.gov/recalls?vymm=2020%20Toyota%20Camry"
+
+    def test_ymm_search_encodes_spaces_in_the_query(self):
+        assert nhtsa_ymm_search(2019, "Mazda", "CX-5") == "https://www.nhtsa.gov/recalls?vymm=2019%20Mazda%20CX-5"
+
+    @pytest.mark.parametrize("year,make,model", [(None, "BMW", "M2"), (2020, "", "M2"), (2020, "BMW", None)])
+    def test_returns_none_when_identity_incomplete(self, year, make, model):
+        assert nhtsa_vehicle_page(year, make, model, "2020 BMW M2 2 DR RWD") is None
+        assert nhtsa_ymm_search(year, make, model) is None
 
     def test_nhtsa_data_populated_on_report(self, monkeypatch):
         mock_data = NHTSASafetyData(

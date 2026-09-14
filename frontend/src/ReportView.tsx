@@ -3,7 +3,6 @@ import { Check, CircleAlert, Sparkles } from 'lucide-react';
 import { allSame, comparable, delta, isCrossModel, metric, mileageValue, msrpPctDelta, msrpValue, mustHaveMetrics, numberIn, pctOfMsrp, pctOfMsrpText, priceValue, sharedAnnual, tradeOff, type DeltaKind } from './compare';
 import { SourceTable } from './Review';
 import type { AIAnalysis, Candidate, Claim, NHTSASafetyData, Report } from './types';
-import { rankShortlist, type RankFactorId, type RankingResult } from './rank';
 import { carName, dateLabel, money, safeUrl, unresolvedConflicts } from './utils';
 
 interface Row {
@@ -259,10 +258,14 @@ function nhtsaComplaints(data: NHTSASafetyData) {
 function nhtsaOverall(data: NHTSASafetyData) {
   return data.overall_rating ?? data.rating?.overall_rating ?? null;
 }
-// Model-year landing page: the per-vehicle page when NHTSA gave us an id, else their lookup page.
+// Last-resort target: NHTSA's own recall/complaint search. Reached only when the backend could not
+// build a model-year link (missing year, make or model) — never a /vehicle/{VehicleId} URL, which 404s.
 const NHTSA_LOOKUP = 'https://www.nhtsa.gov/recalls';
-function nhtsaHub(data: NHTSASafetyData) {
-  return safeUrl(data.vehicle_url ?? null) ?? NHTSA_LOOKUP;
+function nhtsaRecallsHub(data: NHTSASafetyData) {
+  return safeUrl(data.recalls_url ?? null) ?? safeUrl(data.recalls?.[0]?.url ?? null) ?? NHTSA_LOOKUP;
+}
+function nhtsaComplaintsHub(data: NHTSASafetyData) {
+  return safeUrl(data.complaints_url ?? null) ?? NHTSA_LOOKUP;
 }
 function NhtsaLink({ href, children }: { href: string; children: ReactNode }) {
   return <a className="nhtsa-link" href={href} target="_blank" rel="noopener noreferrer">{children}</a>;
@@ -281,9 +284,9 @@ function NhtsaSection({ report }: { report: Report }) {
         {!data ? <p className="muted-cell">No model-year NHTSA block for this car.</p> : <>
           <p className="nhtsa-label">{nhtsaScope(data)}</p>
           <p className="nhtsa-counts">
-            <NhtsaLink href={nhtsaHub(data)}><strong>{nhtsaRecalls(data)}</strong> recalls</NhtsaLink>
+            <NhtsaLink href={nhtsaRecallsHub(data)}><strong>{nhtsaRecalls(data)}</strong> recalls</NhtsaLink>
             {' · '}
-            <NhtsaLink href={nhtsaHub(data)}><strong>{nhtsaComplaints(data)}</strong> complaints</NhtsaLink>
+            <NhtsaLink href={nhtsaComplaintsHub(data)}><strong>{nhtsaComplaints(data)}</strong> complaints</NhtsaLink>
             {nhtsaOverall(data) != null && <> · NHTSA overall {nhtsaOverall(data)}</>}
           </p>
           {!!data.recalls?.[0] && <p className="nhtsa-top">Top recall component: {data.recalls[0].component}</p>}
@@ -293,69 +296,18 @@ function NhtsaSection({ report }: { report: Report }) {
             <ul className="nhtsa-list">
               {(data.recalls ?? []).slice(0, 5).map(r => <li key={r.campaign_number}>
                 <strong>{r.component || 'Recall'}</strong> — {r.summary}{' '}
-                <NhtsaLink href={safeUrl(r.url ?? null) ?? nhtsaHub(data)}>Recall {r.campaign_number} on NHTSA</NhtsaLink>
+                <NhtsaLink href={safeUrl(r.url ?? null) ?? nhtsaRecallsHub(data)}>Recall {r.campaign_number} on NHTSA</NhtsaLink>
               </li>)}
+              {/* NHTSA has no per-ODI permalink, so complaint rows land on the model-year complaints tab. */}
               {(data.complaints ?? []).slice(0, 5).map(r => <li key={r.odi_number}>
                 <strong>{r.component || 'Complaint'}</strong> — {r.summary}{' '}
-                <NhtsaLink href={safeUrl(r.url ?? null) ?? nhtsaHub(data)}>Complaint {r.odi_number} on NHTSA</NhtsaLink>
+                <NhtsaLink href={safeUrl(r.url ?? null) ?? nhtsaComplaintsHub(data)}>Complaint {r.odi_number} on NHTSA</NhtsaLink>
               </li>)}
             </ul>
           </details>}
         </>}
       </article>)}
     </div>
-  </section>;
-}
-
-function RankingSection({ report }: { report: Report }) {
-  const base = rankShortlist(report);
-  const [weights, setWeights] = useState(base.weights);
-  const result: RankingResult = rankShortlist(report, weights);
-  const active = (Object.keys(result.weights) as RankFactorId[]).filter(id => result.weights[id] > 0);
-
-  return <section className="ranking-block">
-    <div className="ranking-head">
-      <div>
-        <p className="eyebrow">DETERMINISTIC · YOUR WEIGHTS</p>
-        <h3>Your ranking</h3>
-      </div>
-      <p className="muted ranking-lede">Ordered by must-have flags first, then a transparent fit score you can reweight below. Missing inputs are omitted — never invented.</p>
-    </div>
-    {result.notes.map(n => <p className="ranking-note" key={n}><CircleAlert size={14}/> {n}</p>)}
-    <div className="rank-weights">
-      {active.map(id => <label key={id} className="rank-weight">
-        <span>{result.ranked[0]?.factors.find(f => f.id === id)?.label ?? id} <em>{result.weights[id]}%</em></span>
-        <input type="range" min={0} max={100} value={result.weights[id]}
-          onChange={e => {
-            const next = { ...weights, [id]: Number(e.target.value) };
-            setWeights(next);
-          }}/>
-      </label>)}
-    </div>
-    <ol className="rank-cards">
-      {result.ranked.map((row, place) => <li key={row.candidate.id} className={`rank-card${row.softFlags ? ' flagged' : ''}`}>
-        <div className="rank-card-top">
-          <span className="rank-place">#{place + 1}</span>
-          <div>
-            <strong>{carName(row.candidate)}</strong>
-            <p className="rank-fit">{row.fit == null ? 'Not enough inputs to score' : `Fit ${row.fit}`}</p>
-          </div>
-        </div>
-        {row.softFlags > 0 && <p className="rank-knock">
-          Must-have not mentioned: {row.knockouts.map(k => k.label).join(', ')} — unknown, not a confirmed miss.
-        </p>}
-        {row.contributions[0] && <p className="rank-why">Top factors: {row.contributions.slice(0, 3).map(c => `${c.label} (${c.points})`).join(' · ')}</p>}
-        <details className="rank-breakdown">
-          <summary>Score breakdown</summary>
-          <ul>
-            {row.contributions.map(c => <li key={c.id}><span>{c.label}</span><span>{c.weight}% → {c.points} pts</span></li>)}
-            {row.omitted.map(o => <li key={o} className="omitted">Omitted: {o}</li>)}
-            {!row.contributions.length && !row.omitted.length && <li className="omitted">No scorable factors for this car.</li>}
-          </ul>
-        </details>
-      </li>)}
-    </ol>
-    {result.sensitivity && <p className="rank-sensitivity">{result.sensitivity}</p>}
   </section>;
 }
 
@@ -422,10 +374,6 @@ export function ReportView({ report, onBack, onReset }: { report: Report; onBack
       {ai && ai.status !== 'unavailable' ? <AIComparison ai={ai} cars={cars}/>
         : <div className="ai-off"><Sparkles size={16}/><div><strong>AI comparison not generated</strong>
             <p>{ai?.message || 'Add an LLM API key on the server to get a cited, side-by-side verdict.'} The table below is computed directly from your reviewed details.</p></div></div>}
-
-      <section className="report-section">
-        <RankingSection report={report}/>
-      </section>
 
       <NhtsaSection report={report}/>
 

@@ -37,7 +37,10 @@ export interface NHTSASafetyData {
   rating?: NHTSARating | null;
   recalls?: NHTSARecall[];
   complaints?: NHTSAComplaint[];
-  vehicle_url?: string | null;
+  // Model-year pages for the clickable counts: a trim deep link with a #recalls / #complaints tab
+  // anchor when NHTSA gave us a body style and drive type, else the year/make/model search landing.
+  recalls_url?: string | null;
+  complaints_url?: string | null;
 }
 
 export type EvidenceStatus = 'seller_claim' | 'user_confirmed' | 'extracted' | 'synthetic';
