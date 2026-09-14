@@ -65,7 +65,7 @@ export interface Candidate {
   generation: string | null;
   year: number | null;
   price: number | null;
-  // Buyer-entered original MSRP (FE-local until backend PR); never invent.
+  // Original MSRP: buyer-entered, or decoded from a known VIN by MarketCheck NeoVIN; never invented.
   msrp?: number | null;
   // Derived at compare: (price/msrp)*100; NOT user-editable. Prefer API value when present.
   percent_of_msrp?: number | null;
@@ -142,7 +142,7 @@ export interface ImportResult {
   message: string;
 }
 export interface SourceInfo { sources: { domain: string; name: string; status: string; reason: string }[]; live_fetch_enabled: boolean }
-export interface Health { status: string; api_revision?: number; llm_enabled: boolean; market_enabled: boolean; search_enabled?: boolean; search_provider?: string; licensed_inventory_enabled?: boolean; vin_decode_enabled?: boolean; usage?: Record<string, ProviderUsage> }
+export interface Health { status: string; api_revision?: number; llm_enabled: boolean; market_enabled: boolean; search_enabled?: boolean; search_provider?: string; licensed_inventory_enabled?: boolean; vin_decode_enabled?: boolean; neovin_msrp_enabled?: boolean; usage?: Record<string, ProviderUsage> }
 export interface ProviderUsage { used: number; limit: number; unit: string; month: string }
 export interface ImportSlot {
   id: string;

@@ -1,4 +1,5 @@
 import { ArrowRight, CircleAlert, LoaderCircle, Trash2 } from 'lucide-react';
+import { msrpOrigin } from './compare';
 import type { Candidate } from './types';
 import { carName, dateLabel, fieldOptions, hostOf, provenance, readableField, safeUrl, sourceLabel, unresolvedConflicts } from './utils';
 
@@ -48,6 +49,8 @@ function FieldInput({ candidate, field, flagged, onEdit, wide }: { candidate: Ca
 
 function ReviewCard({ candidate, index, onEdit, onRemove }: { candidate: Candidate; index: number; onEdit: Edit; onRemove: () => void }) {
   const attention = attentionItems(candidate);
+  // A VIN decode filled the MSRP and the buyer has not touched it yet.
+  const decodedMsrp = candidate.msrp != null && !candidate.verified_fields.includes('msrp') && msrpOrigin(candidate) !== null;
   const flagged = new Set(attention.map(item => item.field));
   const link = safeUrl(candidate.source_url);
   const vin = candidate.evidence.vin?.value;
@@ -112,10 +115,12 @@ function ReviewCard({ candidate, index, onEdit, onRemove }: { candidate: Candida
           </span>
         </label>
         <label className="field">
-          <span className="field-label">Original MSRP <Badge candidate={candidate} field="msrp"/><span className="field-optional">you enter</span></span>
+          <span className="field-label">Original MSRP <Badge candidate={candidate} field="msrp"/><span className="field-optional">{msrpOrigin(candidate) ?? 'you enter'}</span></span>
           <input type="number" value={candidate.msrp ?? ''} placeholder="Optional — never invented"
                  onChange={e => onEdit(candidate.id, 'msrp', e.target.value)}/>
-          <span className="field-hint">Used for % of original MSRP in the report. Leave blank if you do not know it.</span>
+          <span className="field-hint">{decodedMsrp
+            ? 'Decoded from this VIN by MarketCheck NeoVIN: the factory sticker for the car as built, not the listing price. Change it if you know better.'
+            : 'Used for % of original MSRP in the report. Leave blank if you do not know it.'}</span>
         </label>
       </div>
     </section>

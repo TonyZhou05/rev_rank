@@ -76,11 +76,22 @@ export const numberIn = (text: string | undefined) => {
 export const allSame = (values: string[]) => values.every(v => v === values[0]);
 
 
-export const msrpValue = (c: Candidate) =>
-  c.msrp != null && c.msrp > 0 && c.currency !== 'UNK' && c.verified_fields.includes('msrp') ? c.msrp : null;
+// How the backend labels an MSRP it decoded from the VIN; see docs/API_CONTRACT.md.
+const NEOVIN_MSRP = /^MarketCheck NeoVIN (?:msrp labeled )?(oem_msrp|original_msrp|combined_msrp)\b/;
+const NEOVIN_FIELDS: Record<string, string> = { oem_msrp: 'OEM', original_msrp: 'original', combined_msrp: 'combined' };
 
-// Prefer Candidate.percent_of_msrp from compare (PR #2). FE fallback uses the same gates:
-// price+msrp set, currency not UNK, msrp in verified_fields. Not a user-editable input.
+// Short, honest note on where the shown MSRP came from; null when nothing sourced it.
+export function msrpOrigin(c: Candidate): string | null {
+  if (c.verified_fields.includes('msrp')) return 'you entered';
+  const decoded = c.evidence.msrp && NEOVIN_MSRP.exec(c.evidence.msrp.source);
+  return decoded ? `from NeoVIN ${NEOVIN_FIELDS[decoded[1]]} MSRP` : null;
+}
+
+export const msrpValue = (c: Candidate) =>
+  c.msrp != null && c.msrp > 0 && c.currency !== 'UNK' && msrpOrigin(c) !== null ? c.msrp : null;
+
+// Prefer Candidate.percent_of_msrp from compare. FE fallback uses the same gates: price+msrp set,
+// currency not UNK, MSRP buyer-confirmed or NeoVIN-sourced. Not a user-editable input.
 export function pctOfMsrp(c: Candidate): number | null {
   if (c.percent_of_msrp != null && Number.isFinite(c.percent_of_msrp)) return c.percent_of_msrp;
   return derivePercentOfMsrp(c);
@@ -94,7 +105,7 @@ export function derivePercentOfMsrp(c: Candidate): number | null {
 
 export function pctOfMsrpText(c: Candidate): string | null {
   const pct = pctOfMsrp(c);
-  return pct === null ? null : `${pct}% of original MSRP (you entered)`;
+  return pct === null ? null : `${pct}% of original MSRP (${msrpOrigin(c) ?? 'sourced'})`;
 }
 
 export function isCrossModel(cars: Candidate[]): boolean {

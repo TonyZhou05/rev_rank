@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Check, CircleAlert, Sparkles } from 'lucide-react';
-import { allSame, comparable, delta, isCrossModel, metric, mileageValue, msrpPctDelta, msrpValue, mustHaveMetrics, numberIn, pctOfMsrp, pctOfMsrpText, priceValue, sharedAnnual, tradeOff, type DeltaKind } from './compare';
+import { allSame, comparable, delta, isCrossModel, metric, mileageValue, msrpOrigin, msrpPctDelta, msrpValue, mustHaveMetrics, numberIn, pctOfMsrp, pctOfMsrpText, priceValue, sharedAnnual, tradeOff, type DeltaKind } from './compare';
 import { SourceTable } from './Review';
 import type { AIAnalysis, Candidate, Claim, NHTSASafetyData, Report } from './types';
 import { carName, dateLabel, money, safeUrl, unresolvedConflicts } from './utils';
@@ -34,10 +34,10 @@ function rowsFor(report: Report, bench: Candidate, crossModel: boolean): Row[] {
     { label: 'Asking price', text: priceText, rank: priceValue, best: 'min', delta: 'money' },
     {
       label: '% of original MSRP', always: true, best: 'min',
-      hint: 'you entered',
+      hint: 'you entered, or decoded from the VIN',
       text: (c, i) => {
         const fromMetric = metric(report, '% of original MSRP')?.values[i];
-        if (fromMetric && fromMetric !== 'N/A' && fromMetric !== 'MSRP not confirmed') return `${fromMetric} of original MSRP (you entered)`;
+        if (fromMetric && fromMetric !== 'N/A' && fromMetric !== 'MSRP not confirmed') return `${fromMetric} of original MSRP (${msrpOrigin(c) ?? 'sourced'})`;
         if (fromMetric === 'MSRP not confirmed') return 'MSRP not confirmed';
         return pctOfMsrpText(c) ?? 'MSRP not entered — add it on Review';
       },
@@ -49,10 +49,10 @@ function rowsFor(report: Report, bench: Candidate, crossModel: boolean): Row[] {
       cell: (c, i) => {
         const fromMetric = metric(report, '% of original MSRP')?.values[i];
         if (fromMetric && fromMetric !== 'N/A' && fromMetric !== 'MSRP not confirmed') {
-          return <span className="msrp-pct">{fromMetric} of original MSRP (you entered)</span>;
+          return <span className="msrp-pct">{fromMetric} of original MSRP ({msrpOrigin(c) ?? 'sourced'})</span>;
         }
         if (fromMetric === 'MSRP not confirmed') {
-          return <span className="muted-cell msrp-cta">MSRP present but not marked user-confirmed — re-enter on Review</span>;
+          return <span className="muted-cell msrp-cta">MSRP present but not sourced — confirm it on Review</span>;
         }
         const t = pctOfMsrpText(c);
         if (t) return <span className="msrp-pct">{t}</span>;
@@ -168,8 +168,8 @@ function ValueCards({ cars }: { cars: Candidate[] }) {
       return <article className="value-card" key={c.id}>
         <h4>{carName(c)}</h4>
         <p className="value-price">{priceText(c)}</p>
-        <p className={pct ? 'value-msrp' : 'value-msrp muted-cta'}>{pct ? pct : 'No MSRP entered — add original MSRP on Review to see % of sticker'}</p>
-        {msrp !== null && <p className="value-msrp-raw">MSRP you entered: {money(msrp, c.currency)}</p>}
+        <p className={pct ? 'value-msrp' : 'value-msrp muted-cta'}>{pct ? pct : 'No MSRP yet — add original MSRP on Review to see % of sticker'}</p>
+        {msrp !== null && <p className="value-msrp-raw">Original MSRP ({msrpOrigin(c)}): {money(msrp, c.currency)}</p>}
         <p className="value-miles">{mileageText(c)}</p>
         {(c.make || c.model) && <p className="value-model">{[c.year, c.make, c.model, c.trim].filter(Boolean).join(' ')}</p>}
       </article>;
