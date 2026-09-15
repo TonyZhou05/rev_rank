@@ -8,7 +8,7 @@ from backend.app import main
 from backend.app.config import Settings
 from backend.app.fetch import FetchError
 from backend.app.listing_url import (
-    identity_url, is_dealer_listing_url, is_listing_url, listing_id, normalize_input_url,
+    identity_url, is_dealer_vdp_url, is_listing_url, listing_id, normalize_input_url,
     same_listing, url_vin, vin_check_digit_ok,
 )
 
@@ -61,27 +61,31 @@ def test_check_digit():
     assert vin_check_digit_ok(VIN) and not vin_check_digit_ok(VIN[:8] + "5" + VIN[9:])
 
 
-BMW_VIN = "WB543CF0XTCV01817"  # Check-digit-valid VIN from a dealer inventory slug.
+BMW_VIN = "3MW89CW02T8G83036"  # Check-digit-valid VIN from the bmwbuffalo ship-gate listing.
 
 
 @pytest.mark.parametrize("url,expected", [
-    (f"https://www.bmwbuffalo.com/inventory/new-2026-bmw-ix-awd-4d-sport-utility-{BMW_VIN.lower()}/", True),
+    ("https://www.bmwbuffalo.com/inventory/new-2026-bmw-330i-awd-sedan-3mw89cw02t8g83036/", True),
     (f"https://www.bmwbuffalo.com/inventory/vehicle?vin={BMW_VIN}", True),
+    (f"https://www.example-dealer.com/vehicle/{BMW_VIN}", True),
+    ("https://www.bmwbuffalo.com/autos/18422", True),
     ("https://www.bmwbuffalo.com/used-vehicles/", False),
     ("https://www.bmwbuffalo.com/inventory/", False),
     ("https://www.bmwbuffalo.com/inventory/used/", False),
+    ("https://www.bmwbuffalo.com/inventory/sitemap.xml", False),
+    ("https://www.bmwbuffalo.com/", None),
     ("https://www.example.com/car/1", None),
     ("https://www.carmax.com/car/26789012", None),
 ])
-def test_is_dealer_listing_url(url, expected):
-    assert is_dealer_listing_url(url) is expected
+def test_is_dealer_vdp_url(url, expected):
+    assert is_dealer_vdp_url(url) is expected
 
 
 def test_is_listing_url_marketplaces_unchanged_and_dealer_vdp():
     assert is_listing_url("https://www.carmax.com/car/26789012") is True
     assert is_listing_url("https://www.carmax.com/cars/bmw") is False
     assert is_listing_url(
-        f"https://www.bmwbuffalo.com/inventory/new-2026-bmw-ix-awd-4d-sport-utility-{BMW_VIN}/") is True
+        "https://www.bmwbuffalo.com/inventory/new-2026-bmw-330i-awd-sedan-3mw89cw02t8g83036/") is True
     assert is_listing_url("https://www.bmwbuffalo.com/used-vehicles/") is False
     assert is_listing_url("https://www.example.com/car/1") is None
 

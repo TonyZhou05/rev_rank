@@ -100,12 +100,14 @@ def test_browser_recovery_defaults_off(monkeypatch):
     assert Settings.from_env().browser_recovery_enabled is False
 
 
-BMW_VIN = "WB543CF0XTCV01817"
+# Ship-gate example: Dealer.com inventory slug with a check-digit VIN in the path.
+BMW_VIN = "3MW89CW02T8G83036"
 DEALER_VDP = (
-    f"https://www.bmwbuffalo.com/inventory/new-2026-bmw-ix-awd-4d-sport-utility-{BMW_VIN.lower()}/"
+    "https://www.bmwbuffalo.com/inventory/new-2026-bmw-330i-awd-sedan-3mw89cw02t8g83036/"
 )
 DEALER_SRP = "https://www.bmwbuffalo.com/used-vehicles/"
 DEALER_INDEX = "https://www.bmwbuffalo.com/inventory/"
+DEALER_HOME = "https://www.bmwbuffalo.com/"
 
 
 def test_unknown_host_is_blocked_before_playwright(monkeypatch):
@@ -115,7 +117,7 @@ def test_unknown_host_is_blocked_before_playwright(monkeypatch):
     assert browse_vdp_allowed(unknown)[0] is False
     with pytest.raises(BrowseError) as err:
         browse.browse_listing(unknown, browsable())
-    assert err.value.status == "refused" and "allowlist" in err.value.message
+    assert err.value.status == "refused" and "single vehicle listing" in err.value.message
     assert launched == []
     result = recover(browsable(), url=unknown, recovery_source="browse")
     assert result.candidate is None
@@ -127,16 +129,16 @@ def test_dealer_inventory_vin_vdp_is_allowlisted(monkeypatch):
     launched = []
     allowed, reason = browse_vdp_allowed(DEALER_VDP)
     assert allowed is True and reason == ""
+    # VIN on a non-inventory path, and marketplace listing-id schemes, still work.
+    assert browse_vdp_allowed(f"https://www.example-dealer.com/vehicle/{BMW_VIN}")[0] is True
+    assert browse_vdp_allowed(URL)[0] is True
+    assert browse_vdp_allowed("https://www.carmax.com/cars/bmw")[0] is False
     monkeypatch.setattr(browse, "robots_decision", lambda *a, **k: (True, ""))
     monkeypatch.setattr(browse, "_playwright_open",
                         lambda url, host, token, timeout: launched.append(url) or Page(text=VDP_HTML, url=url))
-    settings = Settings(live_fetch_enabled=True, allowed_domains=("www.bmwbuffalo.com",),
-                        browser_recovery_enabled=True)
-    page = browse.browse_listing(DEALER_VDP, settings)
+    # Pattern gate only — the rooftop is not in allowed_domains or BROWSE_VDP_HOSTS.
+    page = browse.browse_listing(DEALER_VDP, Settings(live_fetch_enabled=True, browser_recovery_enabled=True))
     assert launched == [DEALER_VDP] and "BMW" in page.text
-    # Marketplace VDPs stay on the same allowlist.
-    assert browse_vdp_allowed(URL)[0] is True
-    assert browse_vdp_allowed("https://www.carmax.com/cars/bmw")[0] is False
 
 
 def test_dealer_search_and_inventory_index_are_refused_before_playwright(monkeypatch):
@@ -146,11 +148,18 @@ def test_dealer_search_and_inventory_index_are_refused_before_playwright(monkeyp
         allowed, message = browse_vdp_allowed(url)
         assert allowed is False and "not a search" in message.lower()
         with pytest.raises(BrowseError) as err:
-            browse.browse_listing(url, Settings(live_fetch_enabled=True,
-                                               allowed_domains=("www.bmwbuffalo.com",),
-                                               browser_recovery_enabled=True))
+            browse.browse_listing(url, Settings(live_fetch_enabled=True, browser_recovery_enabled=True))
         assert err.value.status == "refused" and "not a search" in err.value.message.lower()
+    home_ok, home_msg = browse_vdp_allowed(DEALER_HOME)
+    assert home_ok is False and "single vehicle listing" in home_msg
     assert launched == []
+
+
+def test_unsupported_direct_browses_dealer_vdp(monkeypatch):
+    stub_browse(monkeypatch)
+    result = recover(Settings(browser_recovery_enabled=True), url=DEALER_VDP, original_status="unsupported")
+    assert result.recovery_status == "recovered"
+    assert result.candidate.retrieval_method == "browse"
 
 
 def test_search_or_category_url_is_refused_before_playwright(monkeypatch):

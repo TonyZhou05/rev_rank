@@ -96,10 +96,11 @@ See [listing-browse-primary-addendum-20260915.md](listing-browse-primary-addendu
 What this is:
 
 - One private Chromium context per import, no stored cookies, no shared profile.
-- Host allowlist: CarMax, Carvana, and hosts already recognized in `listing_url`
-  `MARKETPLACES`, plus independent-dealer inventory VDPs that carry a VIN or a
-  year-make-model slug (`is_listing_url` / `is_dealer_listing_url`). Rooftops are
-  not enumerated. Review hosts and search/category/inventory-index pages are refused.
+- VDP-shape gate (not a growing dealer host list): `browse_vdp_allowed` is review
+  deny, then `is_listing_url` / `is_dealer_vdp_url`. Marketplace listing-id schemes
+  stay in `MARKETPLACES`. Indie/franchise pages are allowed when (a) a check-digit
+  VIN is in the path/query or (b) a conservative inventory/VDP path has a vehicle
+  token. Review hosts, homepage, `/inventory` indexes, SRP, and sitemaps are refused.
 - Navigate only to the validated user-supplied URL. Same-host subresources may load so JS can
   render. Review/complaint/social hosts are aborted. Document navigations off the listing's
   registrable domain are aborted.

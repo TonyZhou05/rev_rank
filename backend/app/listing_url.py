@@ -110,18 +110,27 @@ def url_vin(url: str) -> str | None:
 MARKETPLACES = frozenset(LISTING_ID) | {"truecar.com", "edmunds.com", "carfax.com", "autolist.com", "cargurus.com"}
 
 # Independent-dealer inventory / VDP sections (Dealer.com, DealerOn, Dealer Inspire, …).
-# A rooftop is not listed by hostname; identity is the path plus a VIN or vehicle slug.
+# Rooftops are not listed by hostname. Identity is (a) a check-digit VIN anywhere in the
+# URL, or (b) a conservative VDP path plus a vehicle token (stock/id or year-make-model slug).
 _DEALER_SECTION = (
     r"inventory|new-inventory|used-inventory|certified-inventory|"
     r"new-vehicles?|used-vehicles?|certified-pre-owned|"
-    r"vehicle-details?|vehicledetail|vdp"
+    r"vehicle-details?|vehicledetail|vdps?|"
+    r"used-cars?|new-cars?|autos"
 )
 DEALER_INVENTORY_PREFIX = re.compile(rf"^/(?:{_DEALER_SECTION})(?:/|$)", re.I)
 DEALER_INDEX_TAIL = frozenset({
     "", "new", "used", "certified", "cpo", "pre-owned", "all", "search", "shop", "browse", "results",
 })
+# Sitemap / feed / inventory-API paths are bulk harvest, not a single VDP.
+DEALER_BULK_PATH = re.compile(
+    r"(?:/sitemap\b|sitemap\.xml|\.xml$|/feed\b|/robots\.txt$|/api/|/graphql)", re.I)
+# ?q= / filters / pagination without a VIN is an SRP even on an inventory path.
+DEALER_SRP_QUERY = frozenset({"q", "query", "search", "page", "start", "sort", "filter", "make", "model"})
 # condition-year-make-model-… without requiring a VIN in the slug.
 DEALER_VDP_SLUG = re.compile(r"(?:^|-)(?:19|20)\d{2}-(?:[a-z0-9]+-){2,}", re.I)
+# Stock or listing id: digits required, not a model-year alone.
+DEALER_VEHICLE_TOKEN = re.compile(r"^(?!(?:19|20)\d{2}$)[a-z0-9]{4,}$", re.I)
 
 
 def dealer_vdp_slug(url: str) -> str | None:
@@ -140,22 +149,37 @@ def dealer_vdp_slug(url: str) -> str | None:
     return parts[-1]
 
 
-def is_dealer_listing_url(url: str) -> bool | None:
-    """True/False on dealer inventory/VDP paths; None when the path is not that section."""
+def _dealer_srp_query(url: str) -> bool:
+    return any(key.lower() in DEALER_SRP_QUERY for key, _ in parse_qsl(urlsplit(url).query))
+
+
+def is_dealer_vdp_url(url: str) -> bool | None:
+    """True/False for dealer VDP shape; None when the path is not a VDP/inventory family and has no VIN.
+
+    (a) A single check-digit VIN in path or query on a non-bulk URL.
+    (b) Conservative inventory/VDP path plus a vehicle token, and not an SRP/index.
+    """
+    if DEALER_BULK_PATH.search(urlsplit(url).path):
+        return False
+    if url_vin(url):
+        return True
     slug = dealer_vdp_slug(url)
     if slug is None:
         return None
-    if url_vin(url):
-        return True
-    if not slug:
+    if not slug or _dealer_srp_query(url):
         return False
-    if DEALER_VDP_SLUG.search(slug):
+    if DEALER_VDP_SLUG.search(slug) or DEALER_VEHICLE_TOKEN.fullmatch(slug):
         return True
-    return bool(len(slug) >= 8 and re.search(r"\d", slug))
+    return False
+
+
+def is_dealer_listing_url(url: str) -> bool | None:
+    """Alias for is_dealer_vdp_url (browse / listing identity)."""
+    return is_dealer_vdp_url(url)
 
 
 def is_listing_url(url: str) -> bool | None:
-    """True/False on known marketplaces and dealer inventory VDPs; None when the URL scheme is unknown."""
+    """True/False on known marketplaces and dealer VDP shapes; None when the URL scheme is unknown."""
     if bare_host(url) in MARKETPLACES:
         return bool(listing_id(url) or url_vin(url))
-    return is_dealer_listing_url(url)
+    return is_dealer_vdp_url(url)
