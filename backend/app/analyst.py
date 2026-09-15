@@ -29,9 +29,6 @@ MAX_TURNS, MAX_TOOL_CALLS, BUDGET_SECONDS = 24, 60, 170
 # How often finish may be turned away while nothing is recorded. A model that appends finish to
 # every batch still gets turns to record its findings, and one that only ever calls it still stops.
 MAX_FINISH_REFUSALS = 2
-# After evidence is in the workspace, finish-without-a-verdict is turned away more times so the
-# model can still be nudged into add_finding. Gathering batches do not spend this budget.
-MAX_RECORDING_REFUSALS = 4
 EVIDENCE_TOOLS = frozenset({
     "get_vehicle_facts", "get_recalls", "get_complaints", "get_safety_rating", "get_comparison_metrics",
 })
@@ -40,7 +37,12 @@ RECORD_FINDINGS = (
     "Record an overall verdict with add_finding (kind 'verdict', car 'all', citations listing ids "
     "from those results), then green_flag and red_flag statements, then call finish."
 )
-PROMPT_VERSION = "analyst-tools-v4"
+RESTATED = (
+    "The model fetched evidence but recorded no statement. "
+    "The comparison below restates tool results already returned in this run. "
+    "Every statement cites that evidence."
+)
+PROMPT_VERSION = "analyst-tools-v5"
 LIMITS = {"verdict": 1, "strength": 5, "risk": 5, "comparison": 5, "question": 2}
 # The model speaks in green and red flags; storage keeps the older strength/risk names, and both
 # spellings are accepted so a model that reaches for either is not punished for it.
@@ -63,7 +65,8 @@ Process:
 5. Call set_ranking once: order every car best-first for this buyer, with one cited reason per car. Lead with the
    buyer's stated constraints (the M.*.fit results) and use the other metrics to break ties. A rejected ranking
    tells you why; fix and retry it.
-6. Call finish.
+6. Call finish only after add_finding has accepted a verdict. Never attach finish to an
+   evidence-gathering turn, and never call finish instead of recording.
 
 What makes a good flag:
 - Be specific about THIS car and say why it matters to THIS buyer. Name the figure, the option, the campaign or the
@@ -128,7 +131,8 @@ def tool_schemas(labels: list[str]) -> list[dict]:
                                      "citations": {"type": "array", "items": {"type": "string"}}},
                                      "required": ["car", "text", "citations"]}}},
                  "required": ["order", "reasons"]}),
-        tool("finish", "Finish after recording your findings.", {"type": "object", "properties": {}}),
+        tool("finish", "Finish after add_finding has accepted a verdict. Do not call this while still fetching evidence.",
+             {"type": "object", "properties": {}}),
     ]
 
 
@@ -164,6 +168,7 @@ class Workspace:
         self.findings: list[dict] = []
         self.ranking: list[dict] = []
         self.rejected = 0
+        self.restated_verdict = False
         prefs = report.preferences
         buyer = {"budget": prefs.budget, "annual_mileage": prefs.annual_mileage, "ownership_years": prefs.ownership_years,
                  "priorities": prefs.priorities, "must_haves": prefs.must_haves, "location": prefs.location,
@@ -500,10 +505,15 @@ def assemble(ws: Workspace, settings: Settings) -> AIAnalysis:
     kept = [f["claim"] for f in ws.findings if "claim" in f] + [item["claim"] for item in ws.ranking]
     used = list(dict.fromkeys(cite for claim in kept for cite in claim.citations))
     status = "unavailable" if not kept else "complete" if verdict else "partial"
+    ranking_note = (
+        " The shortlist order below is the model's, and each position cites its evidence." if ranking else
+        " No model ranking survived the evidence checks, so the shortlist keeps its computed constraint-fit order.")
     if kept:
-        message = "Every statement cites the evidence it came from." + (
-            " The shortlist order below is the model's, and each position cites its evidence." if ranking else
-            " No model ranking survived the evidence checks, so the shortlist keeps its computed constraint-fit order.")
+        message = (RESTATED + ranking_note) if ws.restated_verdict else (
+            "Every statement cites the evidence it came from." + ranking_note)
+    elif fetched_evidence(ws):
+        message = ("The model fetched evidence but recorded no statement, and the tool results "
+                   "could not be turned into a cited comparison.")
     else:
         # An empty analysis has two different causes, and a reader cannot act on them the same way.
         message = ("No statement passed the evidence checks." if ws.rejected else
@@ -534,22 +544,90 @@ def fetched_evidence(ws: Workspace) -> bool:
     return bool(ws.sources.keys() - {"P.buyer"})
 
 
-def decide_finish(ws: Workspace, refusals: int, gathered: bool) -> tuple[bool, dict, int]:
+def decide_finish(ws: Workspace, refusals: int, gathered: bool, told: bool) -> tuple[bool, dict, int]:
     """Whether finish ends the run, the tool result, and the updated refusal count.
 
-    Finish tacked onto an evidence-gathering batch is never honoured and does not spend the
-    recording budget: that is how a live run fetched ~9 results and still exited empty. A
-    finish-only turn without a verdict is turned away up to the cap, then honoured so the
-    budget is not spent on an endless refusal loop.
+    Finish tacked onto an evidence-gathering batch is never honoured. After evidence exists, a
+    finish-only turn is refused once if the model has not yet been told to record, then honoured
+    so the loop can restate the fetched tool results instead of exiting empty. A model that only
+    ever calls finish (no evidence) still stops after MAX_FINISH_REFUSALS.
     """
     if verdict_recorded(ws):
         return True, {"ok": True}, refusals
-    cap = MAX_RECORDING_REFUSALS if fetched_evidence(ws) else MAX_FINISH_REFUSALS
-    if gathered or refusals < cap:
-        if not gathered:
+    if gathered:
+        return False, {"ok": False, "reason": next_step(ws)}, refusals
+    if fetched_evidence(ws):
+        if not told:
             refusals += 1
+            return False, {"ok": False, "reason": next_step(ws)}, refusals
+        return True, {"ok": True}, refusals
+    if refusals < MAX_FINISH_REFUSALS:
+        refusals += 1
         return False, {"ok": False, "reason": next_step(ws)}, refusals
     return True, {"ok": True}, refusals
+
+
+def _take_source(ws: Workspace, sid: str, sentences: list[str], citations: list[str]) -> None:
+    if sid in citations or sid not in ws.sources:
+        return
+    text = ws.sources[sid].detail.strip().rstrip(".")
+    if text:
+        sentences.append(text)
+        citations.append(sid)
+
+
+def restate_from_tools(ws: Workspace) -> bool:
+    """Record a cited verdict (and comparisons) copied from already-fetched tool results.
+
+    Used when the model gathered evidence and then called finish or went quiet without
+    add_finding. Numbers are copied from registered source details; nothing is computed here
+    beyond calling get_comparison_metrics if the model never did. Returns True if a verdict
+    was recorded.
+    """
+    if verdict_recorded(ws):
+        return True
+    if not any(sid.startswith("M.") for sid in ws.sources):
+        ws.get_comparison_metrics()
+    sentences, citations = [], []
+    for sid in ws.sources:
+        if sid.startswith(("M.price_gap.", "M.mileage_gap.", "M.year_gap.")):
+            _take_source(ws, sid, sentences, citations)
+    for label in ws.cars:
+        for suffix in ("fit", "budget", "msrp_pct", "mileage_per_year", "price"):
+            _take_source(ws, f"M.{label}.{suffix}", sentences, citations)
+    for size in range(min(4, len(sentences)), 0, -1):
+        reasons: list = []
+        claim = check(ws, ". ".join(sentences[:size]) + ".", citations[:size], reasons)
+        if claim:
+            ws.findings.append({"kind": "verdict", "scope": "all", "claim": claim, "topic": "verdict",
+                                "favors": None})
+            ws.restated_verdict = True
+            break
+    if not ws.restated_verdict:
+        return False
+
+    def keep(kind: str, scope: str, text: str, citations: list[str], topic: str | None = None,
+             favors: str | None = None) -> None:
+        reasons: list = []
+        claim = check(ws, text, citations, reasons)
+        if claim:
+            ws.findings.append({"kind": kind, "scope": scope, "claim": claim, "topic": topic or kind,
+                                "favors": favors if favors in ws.cars else None})
+
+    for sid, src in ws.sources.items():
+        if not sid.startswith(("M.price_gap.", "M.mileage_gap.")):
+            continue
+        who = re.search(r"\bCar ([ABC]) is\b", src.detail)
+        topic = "price" if "price_gap" in sid else "mileage"
+        keep("comparison", "all", src.detail, [sid], topic, who.group(1) if who else None)
+    for label in ws.cars:
+        budget = ws.sources.get(f"M.{label}.budget")
+        if budget is None:
+            continue
+        kind = "strength" if " under " in budget.detail else "risk" if " over " in budget.detail else None
+        if kind:
+            keep(kind, label, budget.detail, [f"M.{label}.budget"])
+    return True
 
 
 def parse_arguments(raw) -> dict:
@@ -587,7 +665,18 @@ def analyze(report: Report, settings: Settings, token: CancelToken | None = None
             message = chat(settings, messages, tools, timeout=min(120, remaining), token=token)
             calls = [c for c in (message.get("tool_calls") or []) if isinstance(c, dict) and isinstance(c.get("function"), dict)]
             if not calls:
-                if nudged or verdict_recorded(ws):
+                if verdict_recorded(ws):
+                    break
+                # After evidence, a quiet turn (prose instead of add_finding) must not end empty.
+                if fetched_evidence(ws):
+                    if recording_nudge or nudged:
+                        break
+                    recording_nudge = True
+                    nudged = True
+                    messages += [{"role": "assistant", "content": str(message.get("content") or "")[:4000]},
+                                 {"role": "user", "content": RECORD_FINDINGS}]
+                    continue
+                if nudged:
                     break
                 nudged = True
                 messages += [{"role": "assistant", "content": str(message.get("content") or "")[:4000]},
@@ -612,7 +701,7 @@ def analyze(report: Report, settings: Settings, token: CancelToken | None = None
                 if call["function"]["name"] != "finish":
                     continue
                 if finish_result is None:
-                    finished, finish_result, refusals = decide_finish(ws, refusals, gathered)
+                    finished, finish_result, refusals = decide_finish(ws, refusals, gathered, recording_nudge)
                 results[call["id"]] = finish_result
             for call in calls:
                 messages.append({"role": "tool", "tool_call_id": call["id"],
@@ -623,13 +712,15 @@ def analyze(report: Report, settings: Settings, token: CancelToken | None = None
             if finished:
                 break
     except LLMUnavailable as error:
-        if not ws.findings:
+        if not fetched_evidence(ws) and not ws.findings:
             return AIAnalysis(status="unavailable", message=str(error), tool_calls=ws.tool_calls)
     except Cancelled:
         # A client that walked away gets no report at all; a spent budget still reports what held up.
         if token is not None and token.reason == DISCONNECTED:
             raise
         stopped = True
+    if not verdict_recorded(ws) and fetched_evidence(ws):
+        restate_from_tools(ws)
     analysis = assemble(ws, settings)
     if stopped:
         analysis.status = "unavailable" if analysis.status == "unavailable" else "partial"

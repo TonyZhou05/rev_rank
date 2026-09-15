@@ -34,6 +34,20 @@ def call(name, **args):
     return {"id": f"c-{name}-{len(json.dumps(args))}", "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}
 
 
+# Live DeepSeek-flash batches the prompt's evidence sweep in one turn (~9 calls), then stops
+# recording. Tests that claim to match production must use this shape, not one tool per turn.
+def nine_evidence():
+    return [call("get_vehicle_facts", car="A"), call("get_vehicle_facts", car="B"),
+            call("get_recalls", car="A"), call("get_recalls", car="B"),
+            call("get_complaints", car="A"), call("get_complaints", car="B"),
+            call("get_safety_rating", car="A"), call("get_safety_rating", car="B"),
+            call("get_comparison_metrics")]
+
+
+VERDICT = call("add_finding", kind="verdict", car="all", citations=["M.price_gap.AB"],
+               text="Car B is 3,496 USD cheaper than Car A.")
+
+
 def scripted(turns):
     """Replays one assistant message per turn and records the tool results the model received."""
     seen = []
@@ -127,24 +141,12 @@ def test_a_model_that_only_calls_finish_still_stops(report, monkeypatch):
     assert len(seen) == turns and analysis.status == "unavailable"
 
 
-def test_nine_evidence_tools_then_finish_is_nudged_to_record_a_verdict(report, monkeypatch):
-    """Live residual after #24: ~9 evidence tools, then finish, empty analysis.
-
-    Finish tacked onto gathering batches used to spend MAX_FINISH_REFUSALS, so the next
-    finish-only turns ended the run before add_finding. The model must be told to record
-    the verdict instead, and that later add_finding must still be reached.
-    """
+def test_nine_evidence_tools_then_add_finding_keeps_the_model_verdict(report, monkeypatch):
+    """A model that records on the turn after the gathering-batch nudge still wins over restatement."""
     monkeypatch.setattr(analyst, "nhtsa", lambda *args, **kwargs: {"results": [], "Results": []})
     inner, seen = scripted([
-        [call("get_vehicle_facts", car="A"), call("get_vehicle_facts", car="B"),
-         call("get_recalls", car="A"), call("get_recalls", car="B"),
-         call("get_complaints", car="A"), call("get_complaints", car="B"),
-         call("get_safety_rating", car="A"), call("get_safety_rating", car="B"),
-         call("get_comparison_metrics"), call("finish")],
-        [call("finish")],
-        [call("finish")],
-        [call("add_finding", kind="verdict", car="all", citations=["M.price_gap.AB"],
-              text="Car B is 3,496 USD cheaper than Car A."), call("finish")],
+        [*nine_evidence(), call("finish")],
+        [VERDICT, call("finish")],
     ])
     users = []
 
@@ -155,32 +157,79 @@ def test_nine_evidence_tools_then_finish_is_nudged_to_record_a_verdict(report, m
     analysis = analyst.analyze(report, SETTINGS)
     assert analysis.status == "complete"
     assert analysis.verdict.text.startswith("2022 BMW M4 is 3,496 USD cheaper")
-    # 9 evidence fetches, then the add_finding the live run never made.
     assert analysis.tool_calls == 10 and analysis.dropped_claims == 0
-    # Gathering+finish is refused, and a user turn names add_finding rather than honouring finish.
     assert seen[1][-1]["ok"] is False and "add_finding with kind 'verdict'" in seen[1][-1]["reason"]
-    assert seen[2][-1]["ok"] is False and seen[3][-1]["ok"] is False
     assert any(analyst.RECORD_FINDINGS in text for turn in users for text in turn)
+    assert analyst.RESTATED not in analysis.message
 
 
-def test_finish_only_after_evidence_still_stops(report, monkeypatch):
-    # The recording nudge cannot loop until MAX_TURNS: finish-only turns after a fetch still
-    # hit a ceiling and the empty analysis stays honest.
+def test_one_evidence_batch_then_finish_only_restates_tool_results(report, monkeypatch):
+    """Live DeepSeek-flash: one ~9-tool evidence batch, then finish-only, never add_finding.
+
+    #27 refused gathering-then-finish and then honoured empty finish-only after a recording
+    cap. That output is identical to the pre-#27 failure (unavailable, dropped=0, the empty
+    copy). Restate the fetched metrics instead of exiting with nothing to check.
+    """
+    monkeypatch.setattr(analyst, "nhtsa", lambda *args, **kwargs: {"results": [], "Results": []})
     chat, seen = scripted([
-        [call("get_vehicle_facts", car="A"), call("get_vehicle_facts", car="B"),
-         call("get_comparison_metrics"), call("finish")],
-        *[[call("finish")]] * (analyst.MAX_RECORDING_REFUSALS + 4),
+        [*nine_evidence(), call("finish")],
+        *[[call("finish")]] * 8,
     ])
     monkeypatch.setattr(analyst, "chat", chat)
     analysis = analyst.analyze(report, SETTINGS)
-    assert len(seen) == 1 + analyst.MAX_RECORDING_REFUSALS + 1
+    assert len(seen) == 2
     assert len(seen) < analyst.MAX_TURNS
-    assert analysis.status == "unavailable" and analysis.dropped_claims == 0
-    assert analysis.message == "The model recorded no statement, so there was nothing to check."
+    assert analysis.status == "complete" and analysis.dropped_claims == 0
+    assert analysis.tool_calls == 9
+    assert analysis.verdict is not None
+    assert "3,496" in analysis.verdict.text
+    assert analysis.message.startswith(analyst.RESTATED)
+    assert analysis.comparisons and analysis.vehicles[0].strengths + analysis.vehicles[1].strengths
+
+
+def test_one_evidence_batch_then_silent_turns_restates_tool_results(report, monkeypatch):
+    """Same live gather, but the follow-up turns return prose / no tool calls instead of finish."""
+    monkeypatch.setattr(analyst, "nhtsa", lambda *args, **kwargs: {"results": [], "Results": []})
+    chat, seen = scripted([nine_evidence(), [], [], []])
+    monkeypatch.setattr(analyst, "chat", chat)
+    analysis = analyst.analyze(report, SETTINGS)
+    assert 2 <= len(seen) <= 3
+    assert analysis.status == "complete" and analysis.verdict is not None
+    assert "3,496" in analysis.verdict.text
+    assert analysis.message.startswith(analyst.RESTATED)
+
+
+def test_restated_verdict_copies_numbers_from_cited_tool_results(report):
+    ws = analyst.Workspace(report)
+    ws.run("get_vehicle_facts", {"car": "A"})
+    ws.run("get_vehicle_facts", {"car": "B"})
+    ws.run("get_comparison_metrics", {})
+    assert analyst.restate_from_tools(ws) is True
+    verdict = next(f["claim"] for f in ws.findings if f["kind"] == "verdict")
+    assert verdict.citations and all(c in ws.sources for c in verdict.citations)
+    # humanize() later puts model years into car names; the gate already ran on the raw text.
+    cited = " ".join(ws.sources[c].detail for c in verdict.citations)
+    assert "3,496" in cited and "3,496" in verdict.text
+    assert ws.restated_verdict is True
+
+
+def test_finish_only_after_evidence_still_stops(report, monkeypatch):
+    # Finish-only after a fetch must not loop until MAX_TURNS; it restates and ends.
+    chat, seen = scripted([
+        [call("get_vehicle_facts", car="A"), call("get_vehicle_facts", car="B"),
+         call("get_comparison_metrics"), call("finish")],
+        *[[call("finish")]] * 8,
+    ])
+    monkeypatch.setattr(analyst, "chat", chat)
+    analysis = analyst.analyze(report, SETTINGS)
+    assert len(seen) == 2
+    assert len(seen) < analyst.MAX_TURNS
+    assert analysis.status == "complete" and analysis.dropped_claims == 0
+    assert analysis.verdict is not None and analysis.message.startswith(analyst.RESTATED)
 
 
 def test_an_analysis_with_nothing_recorded_says_so_instead_of_blaming_the_checks(report, monkeypatch):
-    chat, _ = scripted([[call("get_vehicle_facts", car="A")], []])
+    chat, _ = scripted([[], []])
     monkeypatch.setattr(analyst, "chat", chat)
     analysis = analyst.analyze(report, SETTINGS)
     assert analysis.status == "unavailable" and analysis.dropped_claims == 0
@@ -199,8 +248,10 @@ def test_malformed_findings_are_counted_as_dropped_claims(report, monkeypatch):
     ])
     monkeypatch.setattr(analyst, "chat", chat)
     analysis = analyst.analyze(report, SETTINGS)
-    assert analysis.status == "unavailable" and analysis.dropped_claims == 3
-    assert analysis.message.startswith("No statement passed the evidence checks. 3 unsupported statement(s)")
+    assert analysis.status == "complete" and analysis.dropped_claims == 3
+    assert analysis.verdict is not None
+    assert analysis.message.startswith(analyst.RESTATED)
+    assert "3 unsupported statement(s)" in analysis.message
 
 
 def test_a_full_flag_slot_is_not_counted_as_a_rejected_claim(report):
