@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { Check, CircleAlert, LoaderCircle, Sparkles } from 'lucide-react';
+import { Check, CircleAlert, ExternalLink, LoaderCircle, Sparkles } from 'lucide-react';
 import { allSame, comparable, constraintMetrics, constraintTone, delta, isCrossModel, metric, mileageValue, msrpNeoVinKind, msrpOrigin, msrpPctDelta, msrpSourceNote, msrpValue, mustHaveMetrics, numberIn, pctOfMsrp, pctOfMsrpText, priceValue, sharedAnnual, tradeOff, type DeltaKind } from './compare';
 import { ConstraintPanel } from './ConstraintPanel';
 import { SourceTable } from './Review';
@@ -535,7 +535,10 @@ function DealerCard({ car, dealer, signals }: {
         <span className="dealer-label">Look up yourself</span>
         <ul className="dealer-lookup-list">
           {links.map(link => <li key={link.url}>
-            <a className="dealer-link" href={safeUrl(link.url)!} target="_blank" rel="noopener noreferrer">{link.label}</a>
+            <a className="dealer-link" href={safeUrl(link.url)!} target="_blank" rel="noopener noreferrer">
+              {link.label}<ExternalLink size={12} aria-hidden="true"/>
+              <span className="sr-only"> (opens on their site in a new tab)</span>
+            </a>
             {link.note && <span className="dealer-link-note">{link.note}</span>}
           </li>)}
         </ul>
@@ -565,8 +568,8 @@ function DealerSection({ report, activeId, onActive }: {
       <CircleAlert size={14}/>
       <span>Who is selling the car, not the car itself. {DEALER_CAVEAT} Contact details are as the licensed
         listing record reported them — not verified by RevRank, and not evidence about the vehicle. The
-        vehicle’s own green and red flags sit above; everything in this section is about the business,
-        and we won’t invent a dealer score.</span>
+        vehicle’s own green and red flags are above, with model-year safety; everything in this section
+        is about the business, and we won’t invent a dealer score.</span>
     </p>
     {narrow && cars.length > 1 && active && <div className="compare-controls dealer-focus">
       <span className="control-label" id="dealer-focus-label">Dealer for one car</span>
@@ -733,16 +736,16 @@ export function ReportView({ report, preferences, setPreferences, onApply, onCan
           </div></div>;
         })()}
 
-      {/* Directly under the per-car vehicle green/red flags in the AI block, and clearly labelled
-          Dealer, so the seller's record reads as adjacent to that car rather than as a vehicle flag. */}
-      <DealerSection report={report} activeId={activeCarId} onActive={setPickedCarId}/>
-
       <section className="report-section">
         <h3>Side by side</h3>
         <CompareTable report={report} activeId={activeCarId} onActive={setPickedCarId}/>
       </section>
 
+      {/* Per-car context, in one tier: model-year safety and then the seller. Both sit below the
+          vehicle green/red flags in the AI block, never above them, and the Dealer heading and its
+          own flag labels keep the seller's record from reading as a vehicle flag. */}
       <NhtsaSection report={report}/>
+      <DealerSection report={report} activeId={activeCarId} onActive={setPickedCarId}/>
 
       <ComingModule title="Depreciation" body="ownership-horizon depreciation from cited market observations." caveats={depCaveats}/>
       <ComingModule title="Condition & feature vs price" body="condition and option content weighed against asking price with evidence." caveats={condCaveats}/>

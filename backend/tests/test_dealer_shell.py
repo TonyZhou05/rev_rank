@@ -158,6 +158,8 @@ def test_lookup_links_are_constructed_searches_not_ratings():
     assert query_of(bbb.url)["find_text"] == [DEALER["name"]]
     assert query_of(bbb.url)["find_loc"] == ["Austin, TX"]
     assert query_of(dealerrater.url)["PostalCode"] == ["78701"]
+    # The note says both things a buyer needs: the link leaves RevRank, and we read nothing there.
+    assert all("Outbound search link" in link.note for link in links)
     assert all("does not read, quote or score" in link.note for link in links)
 
 

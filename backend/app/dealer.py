@@ -17,7 +17,8 @@ MAPS_SEARCH = "https://www.google.com/maps/search/?"
 BBB_SEARCH = "https://www.bbb.org/search?"
 # DealerRater has no name-search URL, only an area search, so the link is offered as one.
 DEALERRATER_SEARCH = "https://www.dealerrater.com/consumer/search/dealer/?"
-LOOKUP_NOTE = "Constructed search link. RevRank does not read, quote or score these pages."
+LOOKUP_NOTE = ("Outbound search link, opens on their site. RevRank does not read, quote or score "
+               "these pages.")
 SCOPE_NOTE = ("Dealer details are as the licensed inventory record reported them. They describe "
               "the business, not this VIN.")
 NAME_ONLY_NOTE = "The record carried no dealer address, so the map link searches the name alone."
