@@ -7,9 +7,13 @@ client disconnect) also closes the streams registered with it, so an in-flight r
 of waiting out its socket timeout.
 """
 from contextlib import contextmanager
+import logging
 import threading
 import time
+from typing import Callable
 from uuid import uuid4
+
+log = logging.getLogger("revrank.cancel")
 
 # Reason strings; they reach logs and honest user-facing messages, never provider detail.
 DISCONNECTED = "client_disconnected"
@@ -65,26 +69,26 @@ class CancelToken:
         for close in closers:
             try:
                 close()
-            except Exception:
+            except Exception as error:
                 # A stream that refuses to close still leaves the checkpoint checks in place.
-                pass
+                log.debug("cancel closer raised %s", type(error).__name__)
 
     def check(self) -> None:
         if self.cancelled:
             raise Cancelled(self.reason)
 
     @contextmanager
-    def closing(self, stream):
-        """Let a cancel close this stream while it is being read."""
+    def closing(self, close: Callable[[], None]):
+        """Let a cancel run this closer while a blocking read is in flight."""
         self.check()
         with self._lock:
-            self._closers.append(stream.close)
+            self._closers.append(close)
         try:
-            yield stream
+            yield
         finally:
             with self._lock:
-                if stream.close in self._closers:
-                    self._closers.remove(stream.close)
+                if close in self._closers:
+                    self._closers.remove(close)
 
 
 def budget(token: CancelToken | None, cap: float, minimum: float = 1.0) -> float:
@@ -102,10 +106,10 @@ def budget(token: CancelToken | None, cap: float, minimum: float = 1.0) -> float
 
 
 @contextmanager
-def closing(token: CancelToken | None, stream):
+def closing(token: CancelToken | None, close: Callable[[], None]):
     """token.closing for an optional token."""
     if token is None:
-        yield stream
+        yield
         return
-    with token.closing(stream):
-        yield stream
+    with token.closing(close):
+        yield

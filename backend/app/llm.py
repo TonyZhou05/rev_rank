@@ -1,6 +1,7 @@
 """Optional structured assistance. Raw model prose never becomes report evidence."""
 import json
 import re
+import socket
 from typing import NoReturn
 from urllib.parse import urlsplit
 
@@ -25,11 +26,27 @@ def check_endpoint(settings: Settings):
         raise LLMUnavailable("Invalid server-only model endpoint configuration.")
 
 
+def abort(response: httpx.Response) -> None:
+    """Break a read that is blocked on the provider, from another thread.
+
+    httpx's own close() cannot touch a socket a worker thread is reading, so the connection is shut
+    down first: that read then fails at once instead of waiting out its timeout, and the provider
+    sees the request go away rather than finishing an answer nobody will read.
+    """
+    stream = response.extensions.get("network_stream")
+    raw = stream.get_extra_info("socket") if stream is not None else None
+    try:
+        if raw is not None:
+            raw.shutdown(socket.SHUT_RDWR)
+    finally:
+        response.close()
+
+
 def completion(settings: Settings, body: dict, timeout: float, limit: int, token: CancelToken | None) -> bytes:
     """POST one chat completion and read its bounded body, abandoning it on cancel.
 
     Every call builds its own client, so concurrent requests share no connection or model state.
-    The read stops at the first chunk after a cancel, and a cancel from another thread closes the
+    The read stops at the first chunk after a cancel, and a cancel from the event loop aborts the
     stream so a stalled read does not have to wait out its socket timeout.
     """
     seconds = budget(token, timeout)
@@ -37,7 +54,7 @@ def completion(settings: Settings, body: dict, timeout: float, limit: int, token
                       follow_redirects=False, trust_env=False) as client:
         with client.stream("POST", settings.llm_base_url + "/chat/completions",
                            headers={"Authorization": "Bearer " + settings.llm_api_key}, json=body) as response:
-            with closing(token, response):
+            with closing(token, lambda: abort(response)):
                 response.raise_for_status()
                 chunks, size = [], 0
                 for chunk in response.iter_bytes():

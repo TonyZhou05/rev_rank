@@ -6,6 +6,7 @@ provider is touched.
 import asyncio
 from dataclasses import replace
 import json
+import socket
 import threading
 import time
 
@@ -90,22 +91,17 @@ def test_budget_never_exceeds_the_remaining_request_time():
         budget(CancelToken(timeout=0.01), 120, minimum=1)
 
 
-def test_a_cancel_closes_the_streams_it_was_lent():
-    class Stream:
-        closed = False
-
-        def close(self):
-            self.closed = True
-
-    token, stream = CancelToken(timeout=30), Stream()
-    with token.closing(stream):
-        assert not stream.closed
+def test_a_cancel_runs_the_closers_it_was_lent():
+    token, closed = CancelToken(timeout=30), []
+    with token.closing(lambda: closed.append("aborted")):
+        assert closed == []
         # A read blocked on the provider is broken instead of waiting out its socket timeout.
         token.cancel(DISCONNECTED)
-        assert stream.closed
+        assert closed == ["aborted"]
     with pytest.raises(Cancelled):
-        with token.closing(Stream()):
+        with token.closing(lambda: closed.append("never")):
             raise AssertionError("an abandoned request may not open another stream")
+    assert closed == ["aborted"]
 
 
 def test_tokens_are_independent_of_each_other():
@@ -167,6 +163,45 @@ def test_a_transport_error_without_a_cancel_stays_a_model_failure(monkeypatch):
     stub_transport(monkeypatch, lambda request: httpx.Response(200, content=body()))
     with pytest.raises(llm.LLMUnavailable):
         llm.chat(LLM_SETTINGS, [{"role": "user", "content": "x"}], [], timeout=60, token=CancelToken(timeout=30))
+
+
+def stalling_endpoint() -> tuple[str, threading.Thread]:
+    """A local socket that answers with headers and then never sends a body."""
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+
+    def serve():
+        connection, _ = listener.accept()
+        with connection, listener:
+            connection.recv(65536)
+            connection.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n")
+            while True:
+                try:
+                    if connection.recv(1) == b"":
+                        return
+                except OSError:
+                    return
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    return f"http://127.0.0.1:{listener.getsockname()[1]}/v1", thread
+
+
+def test_a_cancel_breaks_a_read_blocked_on_the_model():
+    """A blocked read must fail on the cancel, not on its own socket timeout minutes later."""
+    endpoint, server = stalling_endpoint()
+    settings = replace(LLM_SETTINGS, llm_base_url=endpoint)
+    token = CancelToken(timeout=120)
+    threading.Timer(0.3, lambda: token.cancel(DISCONNECTED)).start()
+    started = time.monotonic()
+    with pytest.raises(Cancelled) as stop:
+        llm.chat(settings, [{"role": "user", "content": "x"}], [], timeout=120, token=token)
+    assert stop.value.reason == DISCONNECTED
+    assert time.monotonic() - started < 5
+    server.join(timeout=5)
+    # The provider is told the request is gone instead of finishing an answer nobody reads.
+    assert not server.is_alive()
 
 
 def test_the_socket_timeout_is_clamped_to_the_remaining_budget(monkeypatch):
