@@ -1,7 +1,7 @@
-import type { Candidate, Health, ImportRequest, ImportResult, Preferences, Report, ReportSummary, SourceInfo } from './types';
+import type { Candidate, ConstraintResult, Health, ImportRequest, ImportResult, Preferences, Report, ReportSummary, SourceInfo } from './types';
 
 // Must match API_REVISION in backend/app/main.py.
-export const API_REVISION = 5;
+export const API_REVISION = 6;
 
 export class ApiError extends Error {
   constructor(message: string, public result: Partial<ImportResult>) { super(message); }
@@ -94,6 +94,20 @@ export const api = {
   sources: () => request<SourceInfo>('/sources'),
   demo: () => request<{ candidates: Candidate[] }>('/demo'),
   import: (body: ImportRequest) => request<ImportResult>('/import', body),
+  // Free-form constraints to validated preferences. The server maps language onto the preference
+  // schema only and never returns a vehicle fact, so one transport retry is safe here: it cannot
+  // duplicate anything or spend a paid listing lookup.
+  constraints: async (message: string, preferences: Preferences) => {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await request<ConstraintResult>('/constraints', { message, preferences }, 45_000);
+      } catch (error) {
+        const unreachable = error instanceof Error && error.message.startsWith('Could not reach');
+        if (attempt >= 1 || !unreachable) throw error;
+        await new Promise(resolve => window.setTimeout(resolve, 1200));
+      }
+    }
+  },
   // Client abort sits just above health.compare_timeout_seconds (App passes the ms); fallback 90s.
   compare: (candidates: Candidate[], preferences: Preferences, signal?: AbortSignal, timeoutMs = 90_000) =>
     request<Report>('/compare', { candidates, preferences }, timeoutMs, signal),

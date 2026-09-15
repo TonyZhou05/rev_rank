@@ -107,3 +107,67 @@ def test_recall_tool_scopes_and_cites_model_year(report, monkeypatch):
 
 def test_unconfigured_model_is_unavailable(report):
     assert analyst.analyze(report, Settings()).status == "unavailable"
+
+
+def test_green_and_red_flags_store_as_strengths_and_risks(report, monkeypatch):
+    # The prompt speaks in flags; the wire contract keeps strengths and risks.
+    chat, _ = scripted([
+        [call("get_vehicle_facts", car="A"), call("get_vehicle_facts", car="B"), call("get_comparison_metrics")],
+        [call("add_finding", kind="verdict", car="all", citations=["M.price_gap.AB"],
+              text="Car B is 3,496 USD cheaper than Car A."),
+         call("add_finding", kind="green_flag", car="A", citations=["M.A.mileage_per_year"],
+              text="Car A covers 16,151 mi over 5 years, about 3,230 mi per year."),
+         call("add_finding", kind="red_flag", car="A", citations=["M.A.budget"],
+              text="Car A leaves only 2,506 USD of the 70,000 budget for taxes and fees."),
+         # The older spelling still works, so a model that reaches for it is not punished.
+         call("add_finding", kind="strength", car="B", citations=["M.B.budget"],
+              text="Car B leaves 6,002 USD of the 70,000 budget."),
+         call("finish")],
+    ])
+    monkeypatch.setattr(analyst, "chat", chat)
+    analysis = analyst.analyze(report, SETTINGS)
+    corvette, bmw = analysis.vehicles
+    assert [c.text for c in corvette.strengths] == ["2021 Chevrolet Corvette covers 16,151 mi over 5 years, about 3,230 mi per year."]
+    assert [c.text for c in corvette.risks] == ["2021 Chevrolet Corvette leaves only 2,506 USD of the 70,000 budget for taxes and fees."]
+    assert len(bmw.strengths) == 1 and analysis.dropped_claims == 0
+
+
+def test_five_flags_fit_and_the_sixth_is_named_in_the_refusal(report, monkeypatch):
+    # Distinct wording, same cited figures: a flag may only use numbers from the result it cites.
+    flags = [call("add_finding", kind="green_flag", car="A", citations=["M.A.budget"],
+                  text=f"Car A leaves 2,506 USD of the 70,000 budget ({word}).")
+             for word in ("first", "second", "third", "fourth", "fifth", "sixth")]
+    chat, seen = scripted([
+        [call("get_vehicle_facts", car="A"), call("get_comparison_metrics")],
+        [call("add_finding", kind="verdict", car="all", citations=["M.A.budget"],
+              text="Car A fits the 70,000 budget."), *flags],
+        [call("finish")],
+    ])
+    monkeypatch.setattr(analyst, "chat", chat)
+    analysis = analyst.analyze(report, SETTINGS)
+    assert analyst.LIMITS["strength"] == 5 and analyst.LIMITS["risk"] == 5
+    assert len(analysis.vehicles[0].strengths) == 5
+    refusal = seen[2][-1]
+    assert refusal["ok"] is False and "green_flag" in refusal["reason"]
+
+
+def test_unknown_kinds_name_the_flag_vocabulary(report):
+    ws = analyst.Workspace(report)
+    assert "green_flag" in ws.add_finding({"kind": "pro", "car": "A", "text": "x", "citations": []})["reason"]
+
+
+def test_price_against_msrp_and_days_on_market_are_citable(monkeypatch):
+    def offline(*args, **kwargs):
+        raise AssertionError("offline test")
+    monkeypatch.setattr(socket, "getaddrinfo", offline)
+    priced = car("2021 Chevrolet Corvette", "Chevrolet", "Corvette", 2021, 67494, 16151, msrp=74000,
+                 dom=45, dom_active=12, first_seen_at="2026-08-01")
+    priced.verified_fields = ["msrp"]
+    plain = car("2022 BMW M4", "BMW", "M4", 2022, 63998, 29995)
+    ws = analyst.Workspace(create_report([priced, plain], Preferences(), SETTINGS))
+    ws.run("get_comparison_metrics", {})
+    assert "91.2% of its original MSRP" in ws.sources["M.A.msrp_pct"].detail
+    assert "45 days on market, 12 of them active" in ws.sources["M.A.dom"].detail
+    assert "not by itself evidence" in ws.sources["M.A.dom"].detail
+    # Neither metric is invented for a car that has no sourced MSRP or inventory dates.
+    assert "M.B.msrp_pct" not in ws.sources and "M.B.dom" not in ws.sources

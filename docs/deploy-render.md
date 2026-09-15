@@ -36,12 +36,25 @@ These are pre-set in the Dockerfile for try-out mode:
 | Variable | Purpose |
 |----------|---------|
 | `REVRANK_ALLOWED_DOMAINS` | Comma-separated hostnames to enable live fetching (requires `REVRANK_LIVE_FETCH_ENABLED=true`) |
-| `REVRANK_LLM_API_KEY` | OpenAI-compatible API key for AI analysis |
-| `REVRANK_LLM_BASE_URL` | Custom LLM endpoint (default: `https://api.openai.com/v1`) |
-| `REVRANK_LLM_MODEL` | Model name (e.g., `gpt-4o-mini`) |
+| `REVRANK_LLM_API_KEY` | DeepSeek (or other OpenAI-compatible) API key for constraint parsing, cited analysis and the cited re-rank |
+| `REVRANK_LLM_BASE_URL` | Model endpoint (default: `https://api.deepseek.com/v1`) |
+| `REVRANK_LLM_MODEL` | Model name (`deepseek-flash` for DeepSeek-V4.1-Flash) |
 | `REVRANK_MARKETCHECK_API_KEY` | Licensed inventory lookups |
 | `REVRANK_SEARCH_API_KEY` | Web search for vehicle recovery |
 | `REVRANK_SEARCH_PROVIDER` | `brave` or `tavily` |
+
+### Model provider
+
+Set `REVRANK_LLM_API_KEY` and `REVRANK_LLM_MODEL` together; either one alone leaves the app in
+deterministic rules mode. With both set, `GET /api/health` reports `llm_enabled: true` along with
+the non-secret `llm_model` and `llm_endpoint_host`, which the page shows in the constraint chat
+panel.
+
+Every model step falls back to deterministic output when a call fails, so an exhausted DeepSeek
+balance or a rate limit degrades the report rather than breaking it: constraint parsing falls back
+to phrase rules, extraction to rules extraction, and the cited analysis and cited re-rank simply do
+not appear (`analysis_mode` stays `rules` and the deterministic constraint-fit shortlist is still
+shown). See `docs/constraint-chat-cited-rerank.md`.
 
 ## Free Tier Notes
 

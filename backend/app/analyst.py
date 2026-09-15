@@ -17,7 +17,8 @@ from .cancel import DISCONNECTED, Cancelled, CancelToken
 from .comparison import usable
 from .config import Settings
 from .llm import LLMUnavailable, chat
-from .models import AIAnalysis, AIQuestion, Candidate, Claim, ComparisonPoint, Report, SourceRef, VehicleAnalysis, value_text
+from .models import (AIAnalysis, AIQuestion, Candidate, Claim, ComparisonPoint, RankedVehicle, Report, SourceRef,
+                     VehicleAnalysis, value_text)
 from .vehicle_data import ProviderError, get_json
 
 LABELS = "ABC"
@@ -25,8 +26,11 @@ FACT_FIELDS = ("year", "make", "model", "trim", "price", "currency", "mileage", 
                "engine", "drivetrain", "body", "fuel_type", "location", "features", "history")
 NHTSA = "https://api.nhtsa.gov"
 MAX_TURNS, MAX_TOOL_CALLS, BUDGET_SECONDS = 24, 60, 170
-PROMPT_VERSION = "analyst-tools-v2"
-LIMITS = {"verdict": 1, "strength": 3, "risk": 3, "comparison": 5, "question": 2}
+PROMPT_VERSION = "analyst-tools-v4"
+LIMITS = {"verdict": 1, "strength": 5, "risk": 5, "comparison": 5, "question": 2}
+# The model speaks in green and red flags; storage keeps the older strength/risk names, and both
+# spellings are accepted so a model that reaches for either is not punished for it.
+FLAG_KINDS = {"green_flag": "strength", "red_flag": "risk", "strength": "strength", "risk": "risk"}
 NUMBER = re.compile(r"(?<![A-Za-z])\d[\d,]*(?:\.\d+)?")
 CITATION_TOKEN = re.compile(r"\(?\[?\b(?:[ABCMP])\.[\w.\-]+\]?\)?")
 # Left of the request's hard wall so the loop stops itself and reports what it validated.
@@ -39,19 +43,39 @@ Process:
 1. Call get_vehicle_facts for every car.
 2. For every car with a known year, make and model, call get_recalls, get_complaints and get_safety_rating.
 3. Call get_comparison_metrics.
-4. Record each statement with add_finding: one overall verdict (car "all"), up to 3 strengths and 3 risks per car,
-   up to 5 comparisons, up to 2 seller questions per car. add_finding tells you if a statement was rejected and why;
-   fix and retry rejected statements.
-5. Call finish.
+4. Record each statement with add_finding: one overall verdict (car "all"), up to 5 green_flag and up to 5 red_flag
+   per car, up to 5 comparisons, up to 2 seller questions per car. add_finding tells you if a statement was rejected
+   and why; fix and retry rejected statements.
+5. Call set_ranking once: order every car best-first for this buyer, with one cited reason per car. Lead with the
+   buyer's stated constraints (the M.*.fit results) and use the other metrics to break ties. A rejected ranking
+   tells you why; fix and retry it.
+6. Call finish.
+
+What makes a good flag:
+- Be specific about THIS car and say why it matters to THIS buyer. Name the figure, the option, the campaign or the
+  constraint you are relying on.
+- Weak, do not write: "good value", "clean example", "higher mileage", "some recalls", "well equipped".
+- Strong, write like this: "Asks 27,500 USD, 2,500 under the stated 30,000 budget before taxes and fees."
+  "Covers 34,000 mi in 4 years, about 8,500 mi per year, below the buyer's 12,000 mi per year."
+  "Asks 92.1% of its original MSRP, so little of the first-owner depreciation has been passed on."
+  "Listed with Apple CarPlay and all-wheel drive, both stated must-haves; confirm them on the car."
+  "Model year has 3 NHTSA recall campaigns including AIR BAGS 21V421000; that is a model-year record, so check this
+  VIN's repair status with a dealer."
+- Reach for concrete evidence in this order: the buyer's stated constraints (M.*.fit), price against budget and
+  against original MSRP, mileage per year, listed equipment against must-haves, days on market, then NHTSA recalls,
+  complaints and 5-Star ratings as model-year caveats.
+- A missing or disputed field is a seller question, not a red flag. "Not mentioned in the listing" is never a
+  negative claim about the car.
+- Do not repeat the same evidence as both a green and a red flag, and do not restate one flag in two wordings.
+- If a car genuinely has fewer than five of either, record fewer. Padding with vague flags is worse than silence.
 
 Rules for add_finding:
 - citations lists the ids of the tool results that support the text, e.g. "A.price", "M.price_gap.AB", "B.recall.21V421000".
 - Copy numbers exactly as they appear in the cited results. Never compute new numbers, percentages or estimates; use M.* metrics for differences.
 - No outside knowledge: no reliability reputations, specifications, market values or opinions the tools did not return.
 - Recalls and complaints are model-year records, not proof about this specific car; say so when you use them.
-- Unknown or disputed fields are questions for the seller, not negatives.
 - A statement about Car B must cite Car B's evidence.
-- Be brief: one sentence per statement; the verdict may use up to 3 sentences.
+- One or two sentences per flag, whichever reads more clearly; the verdict may use up to 4 sentences.
 - Refer to cars as Car A, Car B, Car C."""
 
 
@@ -65,17 +89,31 @@ def tool_schemas(labels: list[str]) -> list[dict]:
         tool("get_recalls", "NHTSA recall campaigns for the car's model year, make and model.", car),
         tool("get_complaints", "NHTSA owner-complaint counts by component for the car's model year, make and model.", car),
         tool("get_safety_rating", "NHTSA 5-Star crash ratings for the car's model year, make and model.", car),
-        tool("get_comparison_metrics", "Deterministic comparisons: price and mileage gaps, age, mileage per year, budget.",
+        tool("get_comparison_metrics", "Deterministic comparisons: price and mileage gaps, age, mileage per year, "
+             "budget, and how each car reads against the buyer's stated constraints.",
              {"type": "object", "properties": {}}),
         tool("add_finding", "Record one cited statement. Returns ok, or the reason it was rejected.", {
             "type": "object", "properties": {
-                "kind": {"type": "string", "enum": ["verdict", "strength", "risk", "comparison", "question"]},
+                "kind": {"type": "string", "enum": ["verdict", "green_flag", "red_flag", "comparison", "question"],
+                         "description": "green_flag and red_flag are per-car; up to 5 of each."},
                 "car": {"type": "string", "enum": labels + ["all"], "description": "The car it is about; 'all' for verdict/comparison."},
-                "text": {"type": "string", "description": "One sentence (verdict: up to 3)."},
+                "text": {"type": "string", "description": "One or two specific sentences (verdict: up to 4)."},
                 "citations": {"type": "array", "items": {"type": "string"}, "description": "Ids from tool results."},
                 "topic": {"type": "string", "description": "Comparison topic, e.g. price, mileage, safety."},
                 "favors": {"type": "string", "enum": labels + ["none"], "description": "Comparison only: which car the evidence favors."}},
             "required": ["kind", "car", "text", "citations"]}),
+        tool("set_ranking", "Rank the shortlist best-first for this buyer, with one cited reason per car. "
+             "Returns ok, or the reason the whole ranking was rejected.", {
+                 "type": "object", "properties": {
+                     "order": {"type": "array", "items": {"type": "string", "enum": labels},
+                               "description": "Every car exactly once, best first."},
+                     "reasons": {"type": "array", "description": "One entry per car, each citing that car's evidence.",
+                                 "items": {"type": "object", "properties": {
+                                     "car": {"type": "string", "enum": labels},
+                                     "text": {"type": "string", "description": "One sentence on why it sits there."},
+                                     "citations": {"type": "array", "items": {"type": "string"}}},
+                                     "required": ["car", "text", "citations"]}}},
+                 "required": ["order", "reasons"]}),
         tool("finish", "Finish after recording your findings.", {"type": "object", "properties": {}}),
     ]
 
@@ -110,10 +148,12 @@ class Workspace:
         self.sources: dict[str, SourceRef] = {}
         self.tool_calls = 0
         self.findings: list[dict] = []
+        self.ranking: list[dict] = []
         self.rejected = 0
         prefs = report.preferences
         buyer = {"budget": prefs.budget, "annual_mileage": prefs.annual_mileage, "ownership_years": prefs.ownership_years,
-                 "priorities": prefs.priorities, "must_haves": prefs.must_haves, "location": prefs.location}
+                 "priorities": prefs.priorities, "must_haves": prefs.must_haves, "location": prefs.location,
+                 "max_mileage": prefs.max_mileage, "transmission": prefs.transmission, "excludes": prefs.excludes}
         self.buyer = {k: v for k, v in buyer.items() if v not in (None, "", [])}
         self.register("P.buyer", "Your stated preferences", json.dumps(self.buyer))
 
@@ -237,6 +277,18 @@ class Workspace:
                 gap = budget - c.price
                 add(f"M.{label}.budget", f"Car {label} is {abs(gap):,.0f} {c.currency} {'under' if gap >= 0 else 'over'} "
                                            f"the {budget:,.0f} budget (budget currency assumed {c.currency}).")
+            # Already derived at compare time from a buyer-confirmed or NeoVIN-decoded MSRP only.
+            if c.percent_of_msrp is not None and c.msrp is not None:
+                add(f"M.{label}.msrp_pct", f"Car {label} asks {c.percent_of_msrp:,.1f}% of its original MSRP "
+                                           f"({c.price:,.0f} {c.currency} against an original {c.msrp:,.0f} {c.currency}). "
+                                           "A lower share of the original sticker means more of the first owner's "
+                                           "depreciation has already been taken.")
+            if c.dom is not None or c.dom_active is not None:
+                parts = [f"{c.dom:,.0f} days on market" if c.dom is not None else None,
+                         f"{c.dom_active:,.0f} of them active" if c.dom_active is not None else None]
+                add(f"M.{label}.dom", f"Car {label} has been listed " + ", ".join(p for p in parts if p)
+                                      + (f", first seen {c.first_seen_at}." if c.first_seen_at else ".")
+                                      + " Time on market is not by itself evidence about the car or the price.")
         for (la, a), (lb, b) in combinations(self.cars.items(), 2):
             if usable(a, "price") and usable(b, "price") and a.currency == b.currency != "UNK":
                 low, high = sorted(((la, a), (lb, b)), key=lambda item: item[1].price)
@@ -250,18 +302,32 @@ class Workspace:
                 newer, older = ((la, a), (lb, b)) if a.year > b.year else ((lb, b), (la, a))
                 years = newer[1].year - older[1].year
                 add(f"M.year_gap.{la}{lb}", f"Car {newer[0]} is {years} model year{'s' if years != 1 else ''} newer than car {older[0]}.")
+        # Deterministic constraint fit, so a ranking reason can cite it instead of judging fit itself.
+        fit = {entry.candidate_id: entry for entry in self.report.shortlist}
+        for label, c in self.cars.items():
+            entry = fit.get(c.id)
+            if entry is None or not entry.checks:
+                continue
+            add(f"M.{label}.fit", f"Car {label} meets {entry.meets} of the buyer's {len(entry.checks)} stated "
+                                  f"constraints, {entry.open_items} cannot be established from the listing, and "
+                                  f"{entry.conflicts} conflict with it: "
+                                  + "; ".join(f"{check.constraint} \u2014 {check.status.replace('_', ' ')}"
+                                              for check in entry.checks)[:900] + ".")
         return {"metrics": items, "buyer": self.buyer, "buyer_id": "P.buyer"}
 
     def add_finding(self, args: dict) -> dict:
-        kind = str(args.get("kind", "")).lower().strip()
+        spoken = str(args.get("kind", "")).lower().strip()
+        # green_flag/red_flag are the prompt's vocabulary; strength/risk is what storage calls them.
+        kind = FLAG_KINDS.get(spoken, spoken)
         label = str(args.get("car", "all")).strip().upper().removeprefix("CAR ").strip()
         if kind not in LIMITS:
-            return {"ok": False, "reason": "kind must be verdict, strength, risk, comparison or question."}
+            return {"ok": False, "reason": "kind must be verdict, green_flag, red_flag, comparison or question."}
+        named = "green_flag" if kind == "strength" else "red_flag" if kind == "risk" else kind
         if kind in ("strength", "risk", "question") and label not in self.cars:
-            return {"ok": False, "reason": f"A {kind} must name one car: {', '.join(self.cars)}."}
+            return {"ok": False, "reason": f"A {named} must name one car: {', '.join(self.cars)}."}
         scope = label if kind in ("strength", "risk", "question") else "all"
         if sum(f["kind"] == kind and f["scope"] == scope for f in self.findings) >= LIMITS[kind]:
-            return {"ok": False, "reason": f"Limit reached for {kind}; move on or call finish."}
+            return {"ok": False, "reason": f"Limit reached for {named} on car {scope}; move on or call finish."}
         reasons: list = []
         if kind == "question":
             text = CITATION_TOKEN.sub("", str(args.get("text", ""))).strip()[:300]
@@ -280,6 +346,44 @@ class Workspace:
                               "favors": favors if favors in self.cars else None})
         return {"ok": True}
 
+    def set_ranking(self, args: dict) -> dict:
+        """Accept a re-rank only if it covers every car and every reason survives the citation gate.
+
+        A partly-supported ranking is worse than none: the report falls back to the deterministic
+        constraint-fit order rather than showing an order the evidence does not carry.
+        """
+        raw = args.get("order")
+        order = [str(item).strip().upper().removeprefix("CAR ").strip() for item in raw] if isinstance(raw, list) else []
+        if sorted(order) != sorted(self.cars):
+            return {"ok": False, "reason": f"order must list each car exactly once: {', '.join(self.cars)}."}
+        reasons = args.get("reasons")
+        if not isinstance(reasons, list):
+            return {"ok": False, "reason": "reasons must be a list with one cited entry per car."}
+        by_car: dict[str, dict] = {}
+        for item in reasons:
+            if not isinstance(item, dict):
+                continue
+            label = str(item.get("car", "")).strip().upper().removeprefix("CAR ").strip()
+            if label in self.cars:
+                by_car.setdefault(label, item)
+        ranked, rejected = [], []
+        for label in order:
+            item = by_car.get(label)
+            if item is None:
+                return {"ok": False, "reason": f"Car {label} is in the order but has no reason."}
+            claim = check(self, item.get("text"), item.get("citations"), rejected)
+            if not claim:
+                self.rejected += 1
+                reason = rejected[-1]["reason"] if rejected else "Empty statement."
+                return {"ok": False, "reason": f"Car {label}'s reason was rejected: {reason} The whole ranking was discarded."}
+            if not any(covers(cite, label) for cite in claim.citations):
+                self.rejected += 1
+                return {"ok": False, "reason": f"Car {label}'s reason must cite Car {label}'s own evidence. "
+                                               "The whole ranking was discarded."}
+            ranked.append({"label": label, "claim": claim})
+        self.ranking = ranked
+        return {"ok": True, "ranked": order}
+
     def run(self, name: str, args: dict) -> dict:
         # No provider request is started for a request the client abandoned or already ran out of time.
         if self.token is not None:
@@ -289,6 +393,8 @@ class Workspace:
             return {"error": "Tool budget exhausted. Call finish now."}
         if name == "add_finding":
             return self.add_finding(args)
+        if name == "set_ranking":
+            return self.set_ranking(args)
         try:
             if name == "get_comparison_metrics":
                 return self.get_comparison_metrics()
@@ -368,13 +474,18 @@ def assemble(ws: Workspace, settings: Settings) -> AIAnalysis:
                                 risks=[f["claim"] for f in of("risk", label)]) for label in ws.cars]
     comparisons = [ComparisonPoint(topic=f["topic"], claim=f["claim"], favors=ids.get(f["favors"] or "")) for f in of("comparison")]
     questions = [AIQuestion(candidate_id=ids[f["scope"]], text=f["text"]) for f in of("question")]
-    kept = [f["claim"] for f in ws.findings if "claim" in f]
+    ranking = [RankedVehicle(candidate_id=ids[item["label"]], position=position, claim=item["claim"])
+               for position, item in enumerate(ws.ranking, start=1)]
+    kept = [f["claim"] for f in ws.findings if "claim" in f] + [item["claim"] for item in ws.ranking]
     used = list(dict.fromkeys(cite for claim in kept for cite in claim.citations))
     status = "unavailable" if not kept else "complete" if verdict else "partial"
     message = ("Every statement cites the evidence it came from." if kept else "No statement passed the evidence checks.") + (
+        " The shortlist order below is the model's, and each position cites its evidence." if ranking else
+        " No model ranking survived the evidence checks, so the shortlist keeps its computed constraint-fit order."
+        if kept else "") + (
         f" {ws.rejected} unsupported statement(s) were rejected during analysis." if ws.rejected else "")
     return AIAnalysis(status=status, message=message, model=f"{settings.llm_model} / {PROMPT_VERSION}", verdict=verdict,
-                      vehicles=vehicles, comparisons=comparisons, questions=questions,
+                      vehicles=vehicles, comparisons=comparisons, questions=questions, ranking=ranking,
                       # Car labels are for the model; readers see names. Validation already ran on the raw text.
                       sources=[ws.sources[i].model_copy(update={"detail": humanize(ws, ws.sources[i].detail)}) for i in used],
                       tool_calls=ws.tool_calls, dropped_claims=ws.rejected)

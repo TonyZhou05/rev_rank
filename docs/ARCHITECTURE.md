@@ -16,11 +16,16 @@ access, quotas, retention controls, and deployment-specific review before releas
 2. The backend checks source policy before any live page access.
 3. Structured data and conservative text extraction produce a candidate with
    field-level evidence and warnings; an optional configured LLM can assist.
-4. The buyer reviews and edits extracted details. Comparison preferences are not
-   collected in the page: the browser sends the default ownership assumptions, and
-   the report's ranking weights can be adjusted there instead.
+4. The buyer reviews and edits extracted details, and states constraints as chips or
+   as a sentence. `/api/constraints` maps free-form language onto the preference
+   schema only (`backend/app/constraints.py`): deterministic phrase rules always
+   run, and a configured model's JSON mapping is accepted only where it quotes the
+   buyer's own words. It can never write a candidate field.
 5. `/api/compare` validates candidates, calculates differences, checks available
-   market evidence, and generates evidence-grounded findings.
+   market evidence, generates evidence-grounded findings, and orders the shortlist
+   by how many stated constraints each car meets.
+   With a model configured, the analyst may re-rank that shortlist, but only when
+   every position cites evidence its tools fetched; otherwise the computed order stands.
 6. A saved report preserves the candidates, preferences, result, and evidence dates.
 7. The browser can revisit, print, or export that report.
 
@@ -38,7 +43,10 @@ See [API_CONTRACT.md](API_CONTRACT.md) for the shared JSON interface.
 - Market evidence comes from a separate permitted data source. A few candidates or
   synthetic examples cannot establish market value or forecast depreciation.
 - Without an LLM configuration, the application declares rules-based analysis.
-  Language-model output never replaces validated facts or arithmetic.
+  Language-model output never replaces validated facts or arithmetic. DeepSeek is the
+  configured OpenAI-compatible provider; every model step falls back to deterministic
+  output when a call fails. See
+  [constraint chat and cited re-rank](constraint-chat-cited-rerank.md).
 - Raw external text is untrusted input, not executable code or agent instructions.
 - Credentials remain server-side. `.env`, `.local`, dependencies, and builds are ignored.
 - A compare is scoped to its request (`backend/app/cancel.py`): its deterministic and model

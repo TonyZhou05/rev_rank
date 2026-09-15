@@ -6,6 +6,7 @@ export const evidenceLabels: Record<EvidenceStatus, string> = {
 export const defaultPreferences: Preferences = {
   budget: null, annual_mileage: 12000, ownership_years: 3, location: '',
   priorities: ['Lower asking price', 'Lower mileage'], must_haves: [],
+  max_mileage: null, transmission: null, excludes: [],
 };
 export const freshSlot = (): ImportSlot => ({ id: crypto.randomUUID(), url: '', text: '', vin: '', recover: true, candidate: null });
 // Saved drafts may come from an older page version: fill missing fields, never trust shapes.

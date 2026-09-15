@@ -61,6 +61,18 @@ export function metric(report: Report, prefix: string) {
 }
 export const mustHaveMetrics = (report: Report) => report.metrics.filter(m => m.label.startsWith('Must-have: '));
 
+// Rows the backend adds for the newer constraint fields (odometer ceiling, gearbox, exclusions).
+const CONSTRAINT_PREFIXES = ['Mileage ceiling:', 'Transmission wanted:', 'Exclude: '];
+export const constraintMetrics = (report: Report) =>
+  report.metrics.filter(m => CONSTRAINT_PREFIXES.some(prefix => m.label.startsWith(prefix)));
+
+// How a constraint cell reads. "not established" is silence in the listing, never a "no".
+export const constraintTone = (value: string | undefined): 'listed' | 'conflict' | 'unknown' => {
+  if (value === 'within' || value === 'matches' || value === 'listing denies it') return 'listed';
+  if (value === 'over' || value === 'does not match' || value === 'present') return 'conflict';
+  return 'unknown';
+};
+
 // The yearly distance in the shared unit; only defined when the backend projected the odometer.
 export function sharedAnnual(report: Report): number | null {
   return metric(report, 'Projected odometer after') ? report.preferences.annual_mileage : null;
@@ -85,6 +97,13 @@ export function msrpOrigin(c: Candidate): string | null {
   if (c.verified_fields.includes('msrp')) return 'you entered';
   const decoded = c.evidence.msrp && NEOVIN_MSRP.exec(c.evidence.msrp.source);
   return decoded ? 'Factory MSRP · NeoVIN' : null;
+}
+
+// "Factory MSRP · NeoVIN" is the badge. Inside prose that already says "original MSRP" it reads
+// twice, so sentences use this shorter note instead.
+export function msrpSourceNote(c: Candidate): string | null {
+  if (c.verified_fields.includes('msrp')) return 'you entered';
+  return c.evidence.msrp && NEOVIN_MSRP.test(c.evidence.msrp.source) ? 'NeoVIN decode' : null;
 }
 
 /** Plain NeoVIN field kind under the MSRP input (OEM build / original / combined). */
@@ -112,7 +131,7 @@ export function derivePercentOfMsrp(c: Candidate): number | null {
 
 export function pctOfMsrpText(c: Candidate): string | null {
   const pct = pctOfMsrp(c);
-  return pct === null ? null : `${pct}% of original MSRP (${msrpOrigin(c) ?? 'sourced'})`;
+  return pct === null ? null : `${pct}% of original MSRP (${msrpSourceNote(c) ?? 'sourced'})`;
 }
 
 export function isCrossModel(cars: Candidate[]): boolean {

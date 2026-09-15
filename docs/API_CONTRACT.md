@@ -51,8 +51,11 @@ this confirms user input, NOT independent factual verification of seller claims.
 
 ## Endpoints
 
-- `GET /api/health` -> `{status: 'ok', llm_enabled: boolean, market_enabled: boolean, api_revision: number,
-  licensed_inventory_enabled: boolean, vin_decode_enabled: boolean, neovin_msrp_enabled: boolean, usage: {...}}`.
+- `GET /api/health` -> `{status: 'ok', llm_enabled: boolean, llm_model: string, llm_endpoint_host: string,
+  market_enabled: boolean, api_revision: number, licensed_inventory_enabled: boolean,
+  vin_decode_enabled: boolean, neovin_msrp_enabled: boolean, usage: {...}}`.
+  `llm_model` and `llm_endpoint_host` name the configured model (DeepSeek by default); the API key
+  is never exposed.
 - `GET /api/sources` -> `{sources: [{domain,name,status,reason}], live_fetch_enabled: boolean}`.
   Source status strings: `allowed | restricted | unsupported` (not "unreviewed"). Restricted/unsupported do not fetch.
   Note: Local allowlist ≠ reuse license; verify source-specific rights before integration.
@@ -65,6 +68,8 @@ this confirms user input, NOT independent factual verification of seller claims.
   recovery) and `neovin_msrp_enabled`, one MarketCheck NeoVIN decode fills `candidate.msrp`. It runs once
   per import, is skipped when an MSRP is already present, and is reported as a `licensed` attempt.
   `recovery_source: 'search'` suppresses it, like every other MarketCheck call.
+- `POST /api/constraints` body `{message: string, preferences?: Preferences}` -> ConstraintResponse.
+  Maps free-form buyer language onto Preferences and nothing else; it never returns a vehicle fact.
 - `POST /api/compare` body `{candidates: Candidate[2..3], preferences: Preferences}` -> Report.
   Cancellable and time-bounded; see "Compare cancellation and timeout" below.
 - `GET /api/reports` -> `{reports: [{id,title,created_at,analysis_mode}]}`.
@@ -144,7 +149,39 @@ server enforces its own budget instead of trusting the disconnect.
 | unavailable        | "Unavailable"   | gray    |
 
 Preferences: `{budget: number|null, annual_mileage: number, ownership_years: number,
-location: string, priorities: string[], must_haves: string[]}`.
+location: string, priorities: string[], must_haves: string[], max_mileage: number|null,
+transmission: 'manual'|'automatic'|null, excludes: string[]}`.
+
+`max_mileage` (odometer ceiling in the listing's own unit), `transmission` and `excludes` are
+optional with defaults, so an older page that omits them still validates.
+
+### ConstraintResponse
+
+```
+{
+  mode: 'llm'|'rules',              // 'rules' whenever the model is absent or failed validation
+  preferences: Preferences,         // validated; the only thing this endpoint may write
+  constraints: Constraint[],
+  reply: string,                    // composed from the accepted constraints, never model prose
+  unmapped: string[],               // phrases from the message that were not mapped
+  notes: string[]                   // which layer ran, and why the model result was discarded
+}
+
+{  // Constraint
+  field: 'budget'|'annual_mileage'|'ownership_years'|'max_mileage'|'transmission'|'location'
+       |'must_haves'|'excludes'|'priorities',
+  label: string,
+  value: string,                    // display text, e.g. "32,000" or "all-wheel drive"
+  quote: string,                    // contiguous phrase from the buyer's own message
+  source: 'rules'|'llm'
+}
+```
+
+A model-proposed constraint is accepted only if `field` is one of the nine above, `quote` is a
+contiguous substring of the message, and a numeric value is recoverable from its own quote (the
+digits of the value, of value/1000, or of value/100 appear in the quote). One unusable item
+discards the whole model result: `mode` returns `rules` and `notes` says so. The endpoint can never
+write a Candidate field.
 
 ### Report
 
@@ -164,9 +201,51 @@ location: string, priorities: string[], must_haves: string[]}`.
   warnings: string[],
   ai_analysis: AIAnalysis|null,
   cross_model: boolean,
-  nhtsa_data: Record<candidate_id, NHTSASafetyData>
+  nhtsa_data: Record<candidate_id, NHTSASafetyData>,
+  shortlist: ShortlistEntry[]
 }
 ```
+
+### ShortlistEntry
+
+Deterministic constraint-fit order, always present, and what the report shows when the model has no
+ranking. There is no composite score: `checks` is the whole basis for a position.
+
+```
+{
+  candidate_id: string,
+  position: number,                 // 1-based
+  meets: number,
+  conflicts: number,
+  open_items: number,               // not_established + unknown
+  checks: ConstraintCheck[],
+  rationale: string                 // states that this is constraint fit, not a value judgement
+}
+
+{  // ConstraintCheck
+  field: ConstraintField,
+  constraint: string,               // e.g. "Budget 26,000"
+  status: 'meets'|'conflicts'|'not_established'|'unknown',
+  detail: string
+}
+```
+
+`not_established` means the listing is silent; it is never displayed as "no" and never counts as
+met. `unknown` means the field is missing, disputed between sources, or in an unusable unit.
+
+Ordering: conflicts ascending, then `open_items` ascending, then `meets` descending, then the lower
+asking price when every price is comparable, then input order. With no constraints stated, the input
+order stands and no price tiebreak is applied.
+
+Constraint metric rows added to `metrics` when the matching preference is set: `Mileage ceiling: {n}`
+(`within|over|unknown`), `Transmission wanted: {manual|automatic}` (`matches|does not match|unknown`),
+`Exclude: {item}` (`present|listing denies it|not established`), and `Constraint fit`
+(`{n} met · {n} open · {n} conflicting`).
+
+**AIAnalysis.ranking**: `[{candidate_id, position, claim}]`, present only when the model ordered
+every car and every position's claim passed the citation gate (cites tool results from that run,
+every number appears in them, and it cites the car it is about). A partly-supported ranking is
+discarded whole and the array stays empty.
 
 **cross_model**: `true` if any make/model differs across candidates (case-insensitive comparison).
 
@@ -243,6 +322,10 @@ LLM explanations are optional via backend configuration and must never replace a
 Without a key, full deterministic extraction/comparison works and mode is explicitly rules.
 No current market observations are fabricated: unconfigured market returns unavailable.
 Responses include an honest evidence report even without licensed market access.
+
+Depreciation, future sell value and condition-versus-price are not computed. Two `warnings` entries
+name the evidence each needs and contain no figure; the report renders them as visible, empty
+sections. See `docs/constraint-chat-cited-rerank.md`.
 
 ## Working boundaries
 

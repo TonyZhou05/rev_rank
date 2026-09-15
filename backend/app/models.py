@@ -125,13 +125,50 @@ class Preferences(Model):
     location: Short = ""
     priorities: Annotated[list[Nonempty], Field(max_length=20)] = Field(default_factory=list)
     must_haves: Annotated[list[Nonempty], Field(max_length=30)] = Field(default_factory=list)
+    # Odometer ceiling the buyer will accept, in the candidate's own unit; null means no ceiling.
+    max_mileage: Scalar | None = None
+    transmission: Literal["manual", "automatic"] | None = None
+    # Things the buyer rules out. A listing that stays silent is never treated as passing one.
+    excludes: Annotated[list[Nonempty], Field(max_length=30)] = Field(default_factory=list)
 
-    @field_validator("budget", "annual_mileage", "ownership_years", mode="before")
+    @field_validator("budget", "annual_mileage", "ownership_years", "max_mileage", mode="before")
     @classmethod
     def finite_numbers(cls, value):
         if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(value)):
             raise ValueError("Use a finite JSON number")
         return value
+
+
+# The only fields the constraint chat may write. A listing fact is never one of them.
+CONSTRAINT_FIELDS = ("budget", "annual_mileage", "ownership_years", "max_mileage",
+                     "transmission", "location", "must_haves", "excludes", "priorities")
+ConstraintField = Literal["budget", "annual_mileage", "ownership_years", "max_mileage",
+                          "transmission", "location", "must_haves", "excludes", "priorities"]
+
+
+class Constraint(Model):
+    """One preference the chat recognised, with the buyer's own words behind it."""
+    field: ConstraintField
+    label: Short
+    value: Short
+    # A contiguous phrase from the buyer's message. Empty when the value was carried in unchanged.
+    quote: Short = ""
+    source: Literal["rules", "llm"]
+
+
+class ConstraintRequest(Model):
+    message: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=2000)]
+    preferences: Preferences = Field(default_factory=Preferences)
+
+
+class ConstraintResponse(Model):
+    mode: Literal["llm", "rules"]
+    preferences: Preferences
+    constraints: Annotated[list[Constraint], Field(max_length=60)] = Field(default_factory=list)
+    # Composed from the accepted constraints, never model prose.
+    reply: Annotated[str, StringConstraints(max_length=2000)]
+    unmapped: Annotated[list[Short], Field(max_length=10)] = Field(default_factory=list)
+    notes: Annotated[list[Short], Field(max_length=10)] = Field(default_factory=list)
 
 
 class ImportRequest(Model):
@@ -213,8 +250,9 @@ class Claim(Model):
 class VehicleAnalysis(Model):
     candidate_id: Short
     summary: Claim | None = None
-    strengths: Annotated[list[Claim], Field(max_length=4)] = Field(default_factory=list)
-    risks: Annotated[list[Claim], Field(max_length=4)] = Field(default_factory=list)
+    # The report calls these green and red flags; up to five each, and only ones that were cited.
+    strengths: Annotated[list[Claim], Field(max_length=5)] = Field(default_factory=list)
+    risks: Annotated[list[Claim], Field(max_length=5)] = Field(default_factory=list)
 
 
 class ComparisonPoint(Model):
@@ -235,6 +273,13 @@ class SourceRef(Model):
     detail: Annotated[str, StringConstraints(max_length=1500)] = ""
 
 
+class RankedVehicle(Model):
+    """One position in the model's re-rank. The reason is citation-gated like any other claim."""
+    candidate_id: Short
+    position: Annotated[int, Field(ge=1, le=3)]
+    claim: Claim
+
+
 class AIAnalysis(Model):
     status: Literal["complete", "partial", "unavailable"]
     message: Short = ""
@@ -243,6 +288,8 @@ class AIAnalysis(Model):
     vehicles: list[VehicleAnalysis] = Field(default_factory=list)
     comparisons: Annotated[list[ComparisonPoint], Field(max_length=8)] = Field(default_factory=list)
     questions: Annotated[list[AIQuestion], Field(max_length=12)] = Field(default_factory=list)
+    # Empty unless the model ordered every car and every reason passed the citation gate.
+    ranking: Annotated[list[RankedVehicle], Field(max_length=3)] = Field(default_factory=list)
     sources: list[SourceRef] = Field(default_factory=list)
     tool_calls: int = 0
     dropped_claims: int = 0
@@ -283,6 +330,29 @@ class NHTSASafetyData(Model):
     complaints: Annotated[list[NHTSAComplaint], Field(max_length=10)] = Field(default_factory=list)
 
 
+class ConstraintCheck(Model):
+    """How one stated constraint reads against one car's reviewed evidence.
+
+    `not_established` means the listing is silent, which is never shown as a "no"; `unknown` means
+    the field is missing, conflicting or in an unusable unit.
+    """
+    field: ConstraintField
+    constraint: Short
+    status: Literal["meets", "conflicts", "not_established", "unknown"]
+    detail: Annotated[str, StringConstraints(max_length=600)]
+
+
+class ShortlistEntry(Model):
+    """Deterministic constraint-fit position. The checks are the whole basis; there is no score."""
+    candidate_id: Short
+    position: Annotated[int, Field(ge=1, le=3)]
+    meets: Annotated[int, Field(ge=0, le=100)]
+    conflicts: Annotated[int, Field(ge=0, le=100)]
+    open_items: Annotated[int, Field(ge=0, le=100)]
+    checks: Annotated[list[ConstraintCheck], Field(max_length=80)] = Field(default_factory=list)
+    rationale: Annotated[str, StringConstraints(max_length=900)]
+
+
 class Report(Model):
     id: str
     created_at: str
@@ -299,6 +369,8 @@ class Report(Model):
     ai_analysis: AIAnalysis | None = None
     cross_model: bool = False
     nhtsa_data: dict[str, NHTSASafetyData] = Field(default_factory=dict)
+    # Deterministic constraint-fit order; always present, and the fallback when the model has no ranking.
+    shortlist: Annotated[list[ShortlistEntry], Field(max_length=3)] = Field(default_factory=list)
 
 
 def now() -> str:
