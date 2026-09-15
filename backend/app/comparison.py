@@ -6,8 +6,8 @@ from uuid import uuid4
 
 from .cancel import CancelToken
 from .config import Settings
-from .models import (Candidate, Evidence, Finding, Market, Metric, NHTSAComplaint, NHTSARecall, NHTSASafetyData,
-                     Preferences, Questions, Report, now, value_text)
+from .models import (Candidate, ConstraintCheck, Evidence, Finding, Market, Metric, NHTSAComplaint, NHTSARecall,
+                     NHTSASafetyData, Preferences, Questions, Report, ShortlistEntry, now, value_text)
 from .vehicle_data import NEOVIN_SOURCE, ProviderError, get_json
 
 NHTSA = "https://api.nhtsa.gov"
@@ -285,6 +285,141 @@ def requirement_match(c: Candidate, wanted: str) -> str:
     return "not established"
 
 
+NEGATED_IN_LISTING = re.compile(r"\b(no|not|without|absent|lacks|lacking|never|free of|zero)\b")
+
+
+def exclusion_match(c: Candidate, unwanted: str) -> tuple[str, str]:
+    """Whether something the buyer ruled out shows up in the reviewed evidence.
+
+    Silence is `not_established`, never a pass: a listing that does not mention a salvage title has
+    not established that the title is clean.
+    """
+    text = re.sub(r"\s+", " ", unwanted.strip().casefold())
+    pattern = re.compile(r"(?<!\w)" + re.escape(text) + r"(?!\w)")
+    haystack = [v for v in (c.title, c.make, c.model, c.trim, c.generation, c.body, c.engine,
+                            c.drivetrain, c.fuel_type, c.transmission, c.history) if v] + c.features
+    for entry in haystack:
+        lowered = entry.casefold()
+        if not pattern.search(lowered):
+            continue
+        if NEGATED_IN_LISTING.search(lowered):
+            return "meets", f"The listing states this is not present: \u201c{entry[:160]}\u201d. That remains a seller claim."
+        return "conflicts", f"\u201c{unwanted}\u201d appears in the supplied evidence: \u201c{entry[:160]}\u201d."
+    return "not_established", (f"The supplied evidence does not mention \u201c{unwanted}\u201d. "
+                               "Absence from a listing is not proof; ask the seller.")
+
+
+def transmission_match(c: Candidate, wanted: str) -> tuple[str, str]:
+    families = {"manual": ("manual", "stick", "mt", "6mt", "5mt"),
+                "automatic": ("automatic", "auto", "cvt", "dct", "dual-clutch", "dual clutch", "pdk", "tiptronic", "at")}
+    if not c.transmission or not usable(c, "transmission"):
+        return "unknown", "The supplied evidence does not confirm the transmission."
+    text = re.sub(r"[^a-z0-9 ]", " ", c.transmission.casefold())
+    words = set(text.split())
+    hit = lambda key: any(term in words or term in text for term in families[key])
+    if hit(wanted):
+        return "meets", f"Listed transmission: {c.transmission}."
+    other = "automatic" if wanted == "manual" else "manual"
+    if hit(other):
+        return "conflicts", f"Listed transmission is {c.transmission}, not {wanted}."
+    return "unknown", f"Listed transmission \u201c{c.transmission}\u201d does not clearly say {wanted} or {other}."
+
+
+def constraint_checks(c: Candidate, prefs: Preferences) -> list[ConstraintCheck]:
+    """One check per stated constraint. Priorities and location are weights, not pass/fail tests."""
+    checks: list[ConstraintCheck] = []
+
+    def add(field, constraint, status, detail):
+        checks.append(ConstraintCheck(field=field, constraint=constraint[:1000], status=status, detail=detail[:600]))
+
+    if prefs.budget is not None:
+        label = f"Budget {fmt(prefs.budget)}"
+        if usable(c, "price") and usable(c, "currency") and c.currency != "UNK" and asking(c):
+            gap = dec(prefs.budget) - dec(c.price)
+            add("budget", label, "meets" if gap >= 0 else "conflicts",
+                f"Asking price {c.currency} {fmt(c.price)} is {fmt(abs(gap))} {'under' if gap >= 0 else 'over'} the "
+                f"stated budget (budget currency assumed {c.currency}; taxes and fees excluded).")
+        else:
+            add("budget", label, "unknown",
+                "The asking price, its currency or its price type is unknown or conflicting, so budget fit is not calculated.")
+    if prefs.max_mileage is not None:
+        label = f"Mileage at most {fmt(prefs.max_mileage)}"
+        if usable(c, "mileage") and known_unit(c):
+            gap = dec(prefs.max_mileage) - dec(c.mileage)
+            add("max_mileage", label, "meets" if gap >= 0 else "conflicts",
+                f"Odometer {fmt(c.mileage)} {c.mileage_unit} is {fmt(abs(gap))} {c.mileage_unit} "
+                f"{'under' if gap >= 0 else 'over'} the stated ceiling (compared in the listing's own unit).")
+        else:
+            add("max_mileage", label, "unknown",
+                "The odometer reading or its unit is unknown or conflicting, so the mileage ceiling is not applied.")
+    if prefs.transmission:
+        status, detail = transmission_match(c, prefs.transmission)
+        add("transmission", f"Transmission {prefs.transmission}", status, detail)
+    for wanted in prefs.must_haves:
+        listed = requirement_match(c, wanted) == "listed"
+        add("must_haves", f"Must have {wanted}", "meets" if listed else "not_established",
+            f"\u201c{wanted}\u201d is listed in the supplied equipment or transmission; confirm it on the actual car."
+            if listed else
+            f"\u201c{wanted}\u201d is not in the supplied equipment or transmission. Absence from a listing is not "
+            "proof the car lacks it; ask the seller.")
+    for unwanted in prefs.excludes:
+        status, detail = exclusion_match(c, unwanted)
+        add("excludes", f"No {unwanted}", status, detail)
+    return checks
+
+
+def build_shortlist(candidates: list[Candidate], prefs: Preferences) -> list[ShortlistEntry]:
+    """Order the shortlist by how the buyer's own constraints read against reviewed evidence.
+
+    Conflicts first, then items that cannot be established, then met constraints, then the lower
+    asking price when every price is comparable. Every entry carries the checks behind it; there is
+    no composite score, and nothing here is a condition, value or reliability judgement.
+    """
+    comparable_prices = (len({c.currency for c in candidates}) == 1 and all(
+        c.currency != "UNK" and usable(c, "price") and asking(c) for c in candidates))
+    by_car = [(c, constraint_checks(c, prefs)) for c in candidates]
+    # With nothing stated, the import order stands: a price tiebreak would imply a preference
+    # the buyer never expressed.
+    tiebreak = comparable_prices and any(checks for _, checks in by_car)
+    rows = []
+    for index, (c, checks) in enumerate(by_car):
+        meets = sum(check.status == "meets" for check in checks)
+        conflicts = sum(check.status == "conflicts" for check in checks)
+        open_items = sum(check.status in ("not_established", "unknown") for check in checks)
+        price = float(c.price) if tiebreak and c.price is not None else 0.0
+        rows.append((conflicts, open_items, -meets, price, index, c, checks, meets))
+    rows.sort(key=lambda row: row[:5])
+    entries = []
+    for position, row in enumerate(rows, start=1):
+        conflicts, open_items, _, _, _, c, checks, meets = row
+        total = len(checks)
+        if not total:
+            rationale = ("You have not stated any constraints yet, so this is the order you imported the cars. "
+                         "Use the constraint chat to say what matters, then refresh the report.")
+        else:
+            rationale = (f"Meets {meets} of your {total} stated constraint{'s' if total != 1 else ''}; "
+                         f"{open_items} cannot be established from the reviewed evidence; {conflicts} conflict"
+                         f"{'s' if conflicts == 1 else ''} with it. This ordering reflects constraint fit only: "
+                         "it is not a value, condition or reliability judgement, and it uses asking prices.")
+            if tiebreak:
+                rationale += " Equal constraint fit is broken by the lower asking price."
+        entries.append(ShortlistEntry(candidate_id=c.id, position=position, meets=meets, conflicts=conflicts,
+                                      open_items=open_items, checks=checks, rationale=rationale))
+    return entries
+
+
+# Caveats for the report's two deliberately empty sections. The frontend picks these out of
+# `warnings` by topic, so each one names the evidence its section needs and states no figure.
+DEPRECIATION_CAVEAT = (
+    "Depreciation and future sell value are not computed. A resale figure needs dated, licensed transaction "
+    "evidence and generation/variant cohort matching; today's asking prices for cars of different ages are not "
+    "a depreciation curve, so no number is estimated from your hold period or annual mileage.")
+CONDITION_CAVEAT = (
+    "Condition and feature-versus-price are not scored. Weighing condition or option content against an asking "
+    "price needs a pre-purchase inspection or condition report and a permitted option-value source; listing "
+    "photos, seller claims and an unverified equipment list establish neither, so no score is shown.")
+
+
 def create_report(candidates: list[Candidate], prefs: Preferences, settings: Settings,
                   token: CancelToken | None = None) -> Report:
     warnings = [
@@ -407,6 +542,27 @@ def create_report(candidates: list[Candidate], prefs: Preferences, settings: Set
                 + ("Confirm it on the actual vehicle." if value == "listed" else "Absence from the listing is not proof the vehicle lacks it; ask the seller."),
                 [c.id], ["features", "transmission"])
 
+    # Constraints the buyer stated in the chat, each as its own metric row and finding.
+    if prefs.max_mileage is not None:
+        checks = [next(check for check in constraint_checks(c, prefs) if check.field == "max_mileage") for c in candidates]
+        metrics.append(Metric(label=f"Mileage ceiling: {fmt(prefs.max_mileage)}",
+                              values=[{"meets": "within", "conflicts": "over", "unknown": "unknown"}[check.status] for check in checks]))
+        for c, check in zip(candidates, checks):
+            add("Mileage ceiling · " + c.title[:100], check.detail, [c.id], ["mileage", "mileage_unit"])
+    if prefs.transmission:
+        checks = [next(check for check in constraint_checks(c, prefs) if check.field == "transmission") for c in candidates]
+        metrics.append(Metric(label=f"Transmission wanted: {prefs.transmission}",
+                              values=[{"meets": "matches", "conflicts": "does not match", "unknown": "unknown"}[check.status] for check in checks]))
+        for c, check in zip(candidates, checks):
+            add("Transmission · " + c.title[:100], check.detail, [c.id], ["transmission"])
+    for unwanted in prefs.excludes:
+        results = [exclusion_match(c, unwanted) for c in candidates]
+        metrics.append(Metric(label="Exclude: " + unwanted,
+                              values=[{"meets": "listing denies it", "conflicts": "present",
+                                       "not_established": "not established"}[status] for status, _ in results]))
+        for c, (status, detail) in zip(candidates, results):
+            add("Exclusion · " + unwanted[:100], f"{c.title}: {detail}", [c.id], ["features", "history", "title"])
+
     priorities = " ".join(prefs.priorities).casefold()
     if any(k in priorities for k in ("performance", "sport", "handling", "track")):
         add("Performance evidence gap",
@@ -442,6 +598,12 @@ def create_report(candidates: list[Candidate], prefs: Preferences, settings: Set
             q.append("Is the displayed odometer in miles or kilometers?")
         for wanted in prefs.must_haves:
             q.append(f"Can you demonstrate and document this requirement on the actual car: {wanted}?")
+        for unwanted in prefs.excludes:
+            q.append(f"Can you confirm in writing, with documentation, that this car has no {unwanted}?")
+        if prefs.transmission and transmission_match(c, prefs.transmission)[0] != "meets":
+            q.append(f"Is this car a {prefs.transmission}, and can you show the transmission on a test drive?")
+        if prefs.max_mileage is not None and not (usable(c, "mileage") and known_unit(c)):
+            q.append("What is the current odometer reading, and is it displayed in miles or kilometers?")
         if any("conflict" in w.lower() for w in c.warnings):
             q.append("Can you reconcile the conflicting source fields before I rely on the comparison?")
         questions.append(Questions(candidate_id=c.id, questions=q))
@@ -482,6 +644,22 @@ def create_report(candidates: list[Candidate], prefs: Preferences, settings: Set
                 nhtsa_data[c.id] = safety
                 c.nhtsa_safety = safety.model_dump()
 
+    # Deterministic constraint-fit order. The optional model may re-rank with citations on top of
+    # this; when it cannot, this ordering is what the report shows.
+    shortlist = build_shortlist(candidates, prefs)
+    by_id = {entry.candidate_id: entry for entry in shortlist}
+    if any(entry.checks for entry in shortlist):
+        metrics.append(Metric(label="Constraint fit", values=[
+            f"{by_id[c.id].meets} met · {by_id[c.id].open_items} open · {by_id[c.id].conflicts} conflicting"
+            for c in candidates]))
+        # Deliberately avoids the words the report's placeholder sections filter on, so this
+        # caveat stays with the shortlist instead of being filed under condition-versus-price.
+        warnings.append("The shortlist order counts how many of your stated constraints each car meets. It is not a "
+                        "quality, value or reliability score, and a constraint a listing never mentions is counted as "
+                        "unestablished rather than met.")
+    warnings.append(DEPRECIATION_CAVEAT)
+    warnings.append(CONDITION_CAVEAT)
+
     market = Market(message=(
         "MarketCheck key is configured, but no licensed adapter/data-use scope has been validated; enrichment remains unavailable."
         if settings.marketcheck_api_key else
@@ -491,9 +669,12 @@ def create_report(candidates: list[Candidate], prefs: Preferences, settings: Set
         summary += f" Budget comparisons assume {budget_currency}; fees are excluded."
     if prefs.must_haves:
         summary += " Must-have equipment is distinguished as listed or not established."
-    summary += " Market valuation is unavailable; review unknowns and seller questions before deciding."
+    if any(entry.checks for entry in shortlist):
+        summary += " The shortlist is ordered by how many of your stated constraints each car meets."
+    summary += (" Market valuation, depreciation and condition-versus-price are unavailable; review unknowns and "
+                "seller questions before deciding.")
     return Report(id=str(uuid4()), created_at=now(),
                   title=" / ".join((c.make or "Unknown") + " " + (c.model or "vehicle") for c in candidates)[:300] + " comparison",
                   summary=summary, preferences=prefs, candidates=candidates, findings=findings,
                   metrics=metrics, questions=questions, market=market, warnings=list(dict.fromkeys(warnings)),
-                  cross_model=cross_model, nhtsa_data=nhtsa_data)
+                  cross_model=cross_model, nhtsa_data=nhtsa_data, shortlist=shortlist)
