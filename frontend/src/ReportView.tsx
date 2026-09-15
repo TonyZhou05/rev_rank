@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Check, CircleAlert, LoaderCircle, Sparkles } from 'lucide-react';
-import { allSame, comparable, delta, isCrossModel, metric, mileageValue, msrpNeoVinKind, msrpOrigin, msrpPctDelta, msrpValue, mustHaveMetrics, numberIn, pctOfMsrp, pctOfMsrpText, priceValue, sharedAnnual, tradeOff, type DeltaKind } from './compare';
+import { allSame, comparable, constraintMetrics, constraintTone, delta, isCrossModel, metric, mileageValue, msrpNeoVinKind, msrpOrigin, msrpPctDelta, msrpValue, mustHaveMetrics, numberIn, pctOfMsrp, pctOfMsrpText, priceValue, sharedAnnual, tradeOff, type DeltaKind } from './compare';
 import { ConstraintPanel } from './ConstraintPanel';
 import { SourceTable } from './Review';
 import type { AIAnalysis, Candidate, Claim, NHTSASafetyData, Preferences, Report } from './types';
@@ -146,6 +146,16 @@ function rowsFor(report: Report, bench: Candidate, crossModel: boolean): Row[] {
     label: m.label, text: (_, i) => m.values[i] ?? 'not established',
     // "Not established" means the listing doesn't say; it is never shown as "no".
     cell: (_, i) => m.values[i] === 'listed' ? <span className="req listed">Listed</span> : <span className="req unknown">Not mentioned</span>,
+  });
+  // Odometer ceiling, gearbox and rule-outs, as the server read them against reviewed evidence.
+  for (const m of constraintMetrics(report)) rows.push({
+    label: m.label, text: (_, i) => m.values[i] ?? 'unknown',
+    cell: (_, i) => <span className={`req ${constraintTone(m.values[i])}`}>{m.values[i] ?? 'unknown'}</span>,
+  });
+  const fit = metric(report, 'Constraint fit');
+  if (fit) rows.push({
+    label: 'Your constraints', always: true, hint: 'met · open · conflicting',
+    text: (_, i) => fit.values[i] ?? '—',
   });
   if (budget && report.preferences.budget !== null) rows.push({ label: 'Budget headroom', text: (_, i) => budget.values[i] ?? '—' });
   return rows;
@@ -362,9 +372,21 @@ function Cites({ claim, index }: { claim: Claim; index: Map<string, number> }) {
 function AIComparison({ ai, cars }: { ai: AIAnalysis; cars: Candidate[] }) {
   const index = new Map(ai.sources.map((s, i) => [s.id, i + 1]));
   const name = (id: string | null) => cars.find(c => c.id === id);
+  // Present only when the model ordered every car and every position passed the citation gate.
+  const ranking = [...(ai.ranking ?? [])].sort((a, b) => a.position - b.position);
   return <section className="ai-block">
     <p className="eyebrow"><Sparkles size={13}/> AI COMPARISON · CITED</p>
     {ai.verdict && <p className="verdict">{ai.verdict.text} <Cites claim={ai.verdict} index={index}/></p>}
+    {ranking.length > 0 && <div className="ai-ranking">
+      <p className="constraint-label">Shortlist order for your constraints · each position cites its evidence</p>
+      <ol>{ranking.map(entry => {
+        const car = name(entry.candidate_id);
+        return <li key={entry.candidate_id}>
+          <strong>{car ? carName(car) : 'Car'}</strong>
+          <span>{entry.claim.text} <Cites claim={entry.claim} index={index}/></span>
+        </li>;
+      })}</ol>
+    </div>}
     <div className="ai-cars">{ai.vehicles.filter(v => v.strengths.length || v.risks.length || v.summary).map(v => {
       const car = name(v.candidate_id);
       return <div className="ai-car" key={v.candidate_id}>

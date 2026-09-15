@@ -99,6 +99,47 @@ export interface Preferences {
   location: string;
   priorities: string[];
   must_haves: string[];
+  // Odometer ceiling in the listing's own unit; null means no ceiling.
+  max_mileage?: number | null;
+  transmission?: 'manual' | 'automatic' | null;
+  // Things the buyer rules out. A silent listing is never counted as passing one of these.
+  excludes?: string[];
+}
+// Which preference field the constraint chat wrote. Never a listing fact.
+export type ConstraintField = 'budget' | 'annual_mileage' | 'ownership_years' | 'max_mileage'
+  | 'transmission' | 'location' | 'must_haves' | 'excludes' | 'priorities';
+export interface Constraint {
+  field: ConstraintField;
+  label: string;
+  value: string;
+  // The buyer's own contiguous phrase behind the value; the backend requires it for LLM mappings.
+  quote: string;
+  source: 'rules' | 'llm';
+}
+export interface ConstraintResult {
+  mode: 'llm' | 'rules';
+  preferences: Preferences;
+  constraints: Constraint[];
+  // Composed by the backend from the accepted constraints, never model prose.
+  reply: string;
+  unmapped: string[];
+  notes: string[];
+}
+export interface ConstraintCheck {
+  field: ConstraintField;
+  constraint: string;
+  // 'not_established' means the listing is silent, which is never shown as a "no".
+  status: 'meets' | 'conflicts' | 'not_established' | 'unknown';
+  detail: string;
+}
+export interface ShortlistEntry {
+  candidate_id: string;
+  position: number;
+  meets: number;
+  conflicts: number;
+  open_items: number;
+  checks: ConstraintCheck[];
+  rationale: string;
 }
 export interface Report {
   id: string;
@@ -116,6 +157,8 @@ export interface Report {
   cross_model?: boolean;
   // Optional map from candidate id → model-year NHTSA block (PR #1).
   nhtsa_data?: Record<string, NHTSASafetyData | null>;
+  // Deterministic constraint-fit order, and what the cited re-rank falls back to.
+  shortlist?: ShortlistEntry[];
   warnings: string[];
   ai_analysis?: AIAnalysis | null;
 }
@@ -129,6 +172,8 @@ export interface AIAnalysis {
   vehicles: { candidate_id: string; summary: Claim | null; strengths: Claim[]; risks: Claim[] }[];
   comparisons: { topic: string; claim: Claim; favors: string | null }[];
   questions: { candidate_id: string; text: string }[];
+  // Present only when the model ordered every car and every position passed the citation gate.
+  ranking?: { candidate_id: string; position: number; claim: Claim }[];
   sources: SourceRef[];
   tool_calls: number;
   dropped_claims: number;
@@ -142,7 +187,8 @@ export interface ImportResult {
   message: string;
 }
 export interface SourceInfo { sources: { domain: string; name: string; status: string; reason: string }[]; live_fetch_enabled: boolean }
-export interface Health { status: string; api_revision?: number; llm_enabled: boolean; market_enabled: boolean; search_enabled?: boolean; search_provider?: string; licensed_inventory_enabled?: boolean; vin_decode_enabled?: boolean; neovin_msrp_enabled?: boolean; compare_timeout_seconds?: number; usage?: Record<string, ProviderUsage> }
+// llm_model and llm_endpoint_host name the configured model; the API key never leaves the server.
+export interface Health { status: string; api_revision?: number; llm_enabled: boolean; llm_model?: string; llm_endpoint_host?: string; market_enabled: boolean; search_enabled?: boolean; search_provider?: string; licensed_inventory_enabled?: boolean; vin_decode_enabled?: boolean; neovin_msrp_enabled?: boolean; compare_timeout_seconds?: number; usage?: Record<string, ProviderUsage> }
 export interface ProviderUsage { used: number; limit: number; unit: string; month: string }
 export interface ImportSlot {
   id: string;

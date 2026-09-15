@@ -61,6 +61,18 @@ export function metric(report: Report, prefix: string) {
 }
 export const mustHaveMetrics = (report: Report) => report.metrics.filter(m => m.label.startsWith('Must-have: '));
 
+// Rows the backend adds for the newer constraint fields (odometer ceiling, gearbox, exclusions).
+const CONSTRAINT_PREFIXES = ['Mileage ceiling:', 'Transmission wanted:', 'Exclude: '];
+export const constraintMetrics = (report: Report) =>
+  report.metrics.filter(m => CONSTRAINT_PREFIXES.some(prefix => m.label.startsWith(prefix)));
+
+// How a constraint cell reads. "not established" is silence in the listing, never a "no".
+export const constraintTone = (value: string | undefined): 'listed' | 'conflict' | 'unknown' => {
+  if (value === 'within' || value === 'matches' || value === 'listing denies it') return 'listed';
+  if (value === 'over' || value === 'does not match' || value === 'present') return 'conflict';
+  return 'unknown';
+};
+
 // The yearly distance in the shared unit; only defined when the backend projected the odometer.
 export function sharedAnnual(report: Report): number | null {
   return metric(report, 'Projected odometer after') ? report.preferences.annual_mileage : null;
