@@ -127,6 +127,58 @@ def test_a_model_that_only_calls_finish_still_stops(report, monkeypatch):
     assert len(seen) == turns and analysis.status == "unavailable"
 
 
+def test_nine_evidence_tools_then_finish_is_nudged_to_record_a_verdict(report, monkeypatch):
+    """Live residual after #24: ~9 evidence tools, then finish, empty analysis.
+
+    Finish tacked onto gathering batches used to spend MAX_FINISH_REFUSALS, so the next
+    finish-only turns ended the run before add_finding. The model must be told to record
+    the verdict instead, and that later add_finding must still be reached.
+    """
+    monkeypatch.setattr(analyst, "nhtsa", lambda *args, **kwargs: {"results": [], "Results": []})
+    inner, seen = scripted([
+        [call("get_vehicle_facts", car="A"), call("get_vehicle_facts", car="B"),
+         call("get_recalls", car="A"), call("get_recalls", car="B"),
+         call("get_complaints", car="A"), call("get_complaints", car="B"),
+         call("get_safety_rating", car="A"), call("get_safety_rating", car="B"),
+         call("get_comparison_metrics"), call("finish")],
+        [call("finish")],
+        [call("finish")],
+        [call("add_finding", kind="verdict", car="all", citations=["M.price_gap.AB"],
+              text="Car B is 3,496 USD cheaper than Car A."), call("finish")],
+    ])
+    users = []
+
+    def chat(settings, messages, tools, timeout, token=None):
+        users.append([m["content"] for m in messages if m["role"] == "user"])
+        return inner(settings, messages, tools, timeout, token)
+    monkeypatch.setattr(analyst, "chat", chat)
+    analysis = analyst.analyze(report, SETTINGS)
+    assert analysis.status == "complete"
+    assert analysis.verdict.text.startswith("2022 BMW M4 is 3,496 USD cheaper")
+    # 9 evidence fetches, then the add_finding the live run never made.
+    assert analysis.tool_calls == 10 and analysis.dropped_claims == 0
+    # Gathering+finish is refused, and a user turn names add_finding rather than honouring finish.
+    assert seen[1][-1]["ok"] is False and "add_finding with kind 'verdict'" in seen[1][-1]["reason"]
+    assert seen[2][-1]["ok"] is False and seen[3][-1]["ok"] is False
+    assert any(analyst.RECORD_FINDINGS in text for turn in users for text in turn)
+
+
+def test_finish_only_after_evidence_still_stops(report, monkeypatch):
+    # The recording nudge cannot loop until MAX_TURNS: finish-only turns after a fetch still
+    # hit a ceiling and the empty analysis stays honest.
+    chat, seen = scripted([
+        [call("get_vehicle_facts", car="A"), call("get_vehicle_facts", car="B"),
+         call("get_comparison_metrics"), call("finish")],
+        *[[call("finish")]] * (analyst.MAX_RECORDING_REFUSALS + 4),
+    ])
+    monkeypatch.setattr(analyst, "chat", chat)
+    analysis = analyst.analyze(report, SETTINGS)
+    assert len(seen) == 1 + analyst.MAX_RECORDING_REFUSALS + 1
+    assert len(seen) < analyst.MAX_TURNS
+    assert analysis.status == "unavailable" and analysis.dropped_claims == 0
+    assert analysis.message == "The model recorded no statement, so there was nothing to check."
+
+
 def test_an_analysis_with_nothing_recorded_says_so_instead_of_blaming_the_checks(report, monkeypatch):
     chat, _ = scripted([[call("get_vehicle_facts", car="A")], []])
     monkeypatch.setattr(analyst, "chat", chat)
