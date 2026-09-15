@@ -31,7 +31,7 @@ from . import usage
 
 settings = Settings.from_env()
 # Bump when the wire contract changes; the page warns when it talks to an older API process.
-API_REVISION = 6
+API_REVISION = 7
 REQUEST_ID_HEADER = "X-RevRank-Request-Id"
 # How often a long compare looks up from its worker thread to see whether the client is still there.
 POLL_SECONDS = 0.25
