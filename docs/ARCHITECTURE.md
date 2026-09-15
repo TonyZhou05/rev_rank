@@ -60,16 +60,17 @@ See [API_CONTRACT.md](API_CONTRACT.md) for the shared JSON interface.
 ## Agent ownership
 
 Implemented, **flag-off by default**: [listing recovery](search-pipeline-investigation.md)
-after blocked, failed, or thin direct imports (`backend/app/retrieval.py`). When
-`REVRANK_BROWSER_RECOVERY_ENABLED` is on, order for an allowlisted pasted VDP is a
-private in-app headless browse of **that URL only** (`browse.py`, Playwright), then
-licensed inventory (`vehicle_data.py`, MarketCheck), then search excerpts (`search.py`,
-Brave/Tavily), then an optional NHTSA VIN decode. The flag stays off until Research
-rights guidance and Tongli opt-in; this is not counsel clearance. Browse refuses
-unknown hosts, review sites, dealer boards, and search/category pages; it does not
-scrape dealer-signals targets; a bot-manager challenge is reported as blocked and the
-buyer is asked to paste price, mileage, and VIN. Licensed and search still do not
-re-request the blocked page. With none of these configured, recovery reports `unavailable`.
+after blocked, failed, or thin direct imports (`backend/app/retrieval.py`). Order:
+licensed inventory (`vehicle_data.py`, MarketCheck), then a private in-app headless
+browse of **the buyer-supplied VDP only** (`browse.py`, Playwright,
+`REVRANK_BROWSER_RECOVERY_ENABLED`) when MarketCheck misses or is unavailable, then
+search excerpts (`search.py`, Brave/Tavily), then an optional NHTSA VIN decode. A
+MarketCheck hit is never replaced by browse. The flag stays off until Tongli/Lead
+opt-in; this is not counsel clearance. Browse refuses unknown hosts, review sites,
+dealer boards, and search/category pages; it does not scrape dealer-signals targets;
+a bot-manager challenge is reported as blocked and the buyer is asked to paste price,
+mileage, and VIN. Licensed and search still do not re-request the blocked page. With
+none of these configured, recovery reports `unavailable`.
 
 - Frontend: `frontend/` and [frontend brief](agents/frontend.md).
 - Backend: `backend/` and [data-processing brief](agents/data-processing.md).

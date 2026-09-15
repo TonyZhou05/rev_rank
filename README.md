@@ -90,25 +90,17 @@ editing `.env`. Re-run the checks with `.venv/bin/python scripts/check_sources.p
   than invented. Each call is logged under one `X-RevRank-Request-Id`, also returned as a header.
 - CarMax (Akamai) and Carvana (Cloudflare challenge) deny RevRank's fetcher on
   every page, not just listings. RevRank does not evade bot managers. After a
-<<<<<<< HEAD
-  blocked import it can recover the vehicle from other sources. Licensed inventory
-  runs first (`REVRANK_MARKETCHECK_API_KEY`: listing URL, stock number, VIN, with
-  provider dates). If that misses, a private in-app browse of **only the listing
-  URL the buyer pasted** may run (`REVRANK_BROWSER_RECOVERY_ENABLED`, Playwright on
-  the server). Active inventory drops a car the moment it stops being listed, so
-  when every active lookup is empty one scoped call goes to MarketCheck's expired
-  listings (`REVRANK_MARKETCHECK_PAST_INVENTORY_ENABLED`, default on). Those rows bind
-  the VIN and show a dated last-listed price; they never supply a current price or
-  mileage, and a listing leaving the market is never reported as a sale.
-  Search runs next (`REVRANK_SEARCH_PROVIDER`, `REVRANK_SEARCH_API_KEY`).
-=======
   blocked, failed, or thin import it can recover the vehicle from other sources.
-  When `REVRANK_BROWSER_RECOVERY_ENABLED` is on (default **off**; Tongli opt-in
-  after Research rights guidance; not counsel clearance), a private in-app browse
-  of **only the listing URL the buyer pasted** runs first (Playwright on the
-  server; allowlisted VDPs only). Licensed inventory and search are secondary
-  (`REVRANK_MARKETCHECK_API_KEY`, `REVRANK_SEARCH_PROVIDER`).
->>>>>>> fff61b0 (feat: browse-first VDP recovery behind a default-off flag)
+  When `REVRANK_BROWSER_RECOVERY_ENABLED` is on (default **off** until Tongli
+  opts in; not counsel clearance), a private in-app browse of **only the listing
+  URL the buyer pasted** runs first (Playwright; allowlisted VDPs only).
+  Licensed inventory and search are secondary (`REVRANK_MARKETCHECK_API_KEY`,
+  `REVRANK_SEARCH_PROVIDER`). Active inventory drops a car the moment it stops
+  being listed, so when every active lookup is empty one scoped call goes to
+  MarketCheck's expired listings (`REVRANK_MARKETCHECK_PAST_INVENTORY_ENABLED`,
+  default on). Those rows bind the VIN and show a dated last-listed price; they
+  never supply a current price or mileage, and a listing leaving the market is
+  never reported as a sale.
   `REVRANK_VIN_DECODE_ENABLED=true` adds a free NHTSA VIN decode that cross-checks
   year/make/model. See [recovery findings](docs/search-pipeline-investigation.md).
 - One `POST /api/import` is bounded by `REVRANK_IMPORT_TIMEOUT_SECONDS` (55s) and

@@ -86,11 +86,11 @@ recovery carries on to search exactly as before; nothing regresses.
 Lead ask: after Direct is blocked, recover by opening the listing the buyer pasted in a
 **server-side headless session** (Playwright), not by spawning a Cursor/cloud agent per import.
 
-Implemented in `backend/app/browse.py`, wired into `recover_listing` **before** licensed
-inventory and search when the flag is on. `REVRANK_BROWSER_RECOVERY_ENABLED` defaults **off**.
-Enablement waits on Research rights guidance and Tongli opt-in; this is not counsel
-clearance. Docker and Render must not set the flag on. CI stubs the launcher; Chromium is
-installed in the Docker image so a later flag-on does not need a rebuild.
+Implemented in `backend/app/browse.py`, wired into `recover_listing` **after** a licensed
+miss and before search. `REVRANK_BROWSER_RECOVERY_ENABLED` defaults **off**. Enablement
+waits on Tongli/Lead flag-on; this is not counsel clearance. Docker and Render must not
+set the flag on. CI stubs the launcher; Chromium is installed in the Docker image so a
+later flag-on does not need a rebuild. Ship-gate: [listing-browse-rights-20260915.md](listing-browse-rights-20260915.md).
 
 What this is:
 
@@ -161,21 +161,22 @@ is not such a service.
 
 ### Implemented recovery order
 
-1. Private browse of the buyer-supplied listing URL, if `REVRANK_BROWSER_RECOVERY_ENABLED=true`
-   (default off) and Direct was blocked, failed, or thin (`partial`). Playwright
-   Chromium, one allowlisted VDP, no review sites, unknown hosts blocked, one attempt.
-   A challenge or 403 is recorded as blocked and the buyer is asked to paste price,
-   mileage, and VIN; MarketCheck/search may still run. Flag-on waits on Research
-   rights guidance and Tongli opt-in; this is not counsel clearance.
-2. Licensed inventory, if browse missed or the flag is off and `REVRANK_MARKETCHECK_API_KEY`
-   is set. Look up the query-stripped listing URL. Only a record whose `vdp_url` has
-   the same host and path binds identity. If none matches and the seller URL has a
-   stock pattern, look up the stock number, accepting only records on the seller's
-   own host with the same `stock_no`. Several VINs, or a VIN that differs from the
-   user's, stop with `identity_conflict`. Then look up the bound VIN with
-   `nodedup=true` for syndicated copies. At most 3 requests. The provider's last-seen
-   date becomes `observed_at`.
-3. Search, only if browse and licensed inventory found nothing. Same identity rules as before. Up to
+1. Licensed inventory, if `REVRANK_MARKETCHECK_API_KEY` is set. Look up the
+   query-stripped listing URL. Only a record whose `vdp_url` has the same host and
+   path binds identity. If none matches and the seller URL has a stock pattern, look
+   up the stock number, accepting only records on the seller's own host with the
+   same `stock_no`. Several VINs, or a VIN that differs from the user's, stop with
+   `identity_conflict`. Then look up the bound VIN with `nodedup=true` for
+   syndicated copies. At most 3 requests. The provider's last-seen date becomes
+   `observed_at`. A MarketCheck hit skips browse.
+2. Private browse of the buyer-supplied listing URL, if Direct was blocked, failed,
+   or thin, MarketCheck missed or is unavailable, and
+   `REVRANK_BROWSER_RECOVERY_ENABLED=true` (default off). Playwright Chromium, one
+   allowlisted VDP, no review sites, unknown hosts blocked, one attempt. A challenge
+   or 403 is recorded as blocked and the buyer is asked to paste price, mileage, and
+   VIN; search may still run. Flag-on waits on Tongli/Lead; this is not counsel
+   clearance. CarMax is high ToS / high bot-wall — prefer MC; browse is last resort.
+3. Search, only if licensed inventory and browse found nothing. Same identity rules as before. Up to
    three queries: seller-scoped, then VIN, then VIN + "price". A fourth seller-focused query
    runs only for a missing CarMax location (see `docs/parsing-notes.md`).
 4. NHTSA decode, if `REVRANK_VIN_DECODE_ENABLED=true`. Year/make/model must agree

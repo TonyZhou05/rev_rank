@@ -31,7 +31,7 @@ compare is module state, so concurrent compares cannot cancel or time out each o
 covers Direct plus recovery. A private-browse session registers Chromium close as a
 closer. A disconnect is 499; a spent budget that cannot finish is 503; a browse that
 stops at its own timeout is recorded as a `browse` attempt and recovery may fall through
-to licensed inventory, then search. `REVRANK_BROWSER_RECOVERY_ENABLED` defaults off.
+to search. Browse itself runs only after a MarketCheck miss. `REVRANK_BROWSER_RECOVERY_ENABLED` defaults off.
 
 ## Run and test
 

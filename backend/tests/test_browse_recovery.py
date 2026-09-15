@@ -184,6 +184,7 @@ def test_browse_recovers_core_fields_after_direct_blocked(monkeypatch):
     assert any(a.method == "browse" and a.status == "completed" and digest in a.detail
                and a.detail.startswith("user_vdp_browse") for a in result.attempts)
     assert car.history is None and car.features == [] and car.engine is None
+    assert car.evidence["stock_no"].value == STOCK
     assert "private browse" in result.message
 
 
@@ -207,17 +208,10 @@ def test_browse_blocked_falls_through_to_search(monkeypatch):
     assert any(a.method == "browse" and a.status == "blocked" for a in result.attempts)
 
 
-def test_browse_hit_skips_licensed(monkeypatch):
-    licensed = []
-    monkeypatch.setattr(retrieval, "inventory_search", lambda *a, **k: licensed.append(1) or [])
-    stub_browse(monkeypatch)
-    result = recover(browsable(marketcheck_api_key="test"))
-    assert result.candidate.retrieval_method == "browse" and licensed == []
-
-
-def test_browse_miss_falls_through_to_licensed(monkeypatch):
+def test_licensed_hit_does_not_browse(monkeypatch):
     from backend.app.vehicle_data import InventoryListing
-    stub_browse(monkeypatch, error=BrowseError("blocked", "The private browse received HTTP 403."))
+    browsed = []
+    monkeypatch.setattr(retrieval, "browse_listing", lambda *a, **k: browsed.append(1))
 
     def inventory_search(settings, timeout=10, **query):
         return [InventoryListing(vin=VIN, source_url=URL, stock_no=STOCK, heading="2017 BMW M2",
@@ -225,8 +219,15 @@ def test_browse_miss_falls_through_to_licensed(monkeypatch):
 
     monkeypatch.setattr(retrieval, "inventory_search", inventory_search)
     result = recover(browsable(marketcheck_api_key="test"))
-    assert result.candidate.retrieval_method == "licensed"
-    assert any(a.method == "browse" and a.status == "blocked" for a in result.attempts)
+    assert result.candidate.retrieval_method == "licensed" and browsed == []
+
+
+def test_licensed_miss_falls_through_to_browse(monkeypatch):
+    stub_browse(monkeypatch)
+    monkeypatch.setattr(retrieval, "inventory_search", lambda *a, **k: [])
+    result = recover(browsable(marketcheck_api_key="test"))
+    assert result.candidate.retrieval_method == "browse"
+    assert any(a.method == "licensed" and a.status == "not_found" for a in result.attempts)
 
 
 def test_recovery_source_browse_skips_licensed_and_search(monkeypatch):

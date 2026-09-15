@@ -1,10 +1,10 @@
 """Listing recovery with conservative identity binding and explicit disagreements.
 
-Order for an allowlisted pasted VDP: private browse of that URL (rendered HTML, seller-primary)
--> licensed inventory (structured, provider-dated) -> search excerpts (undated) -> NHTSA VIN
-decode as an identity cross-check. Browse runs only when the feature flag is on and Direct
-was blocked, failed, or thin. Licensed and search do not re-request the blocked page. Browse
-opens only that one user-supplied URL; it is not a review-site scrape.
+Order: licensed inventory (structured, provider-dated) -> private browse of the buyer-supplied
+VDP (rendered HTML) -> search excerpts (undated) -> NHTSA VIN decode. Browse runs only when
+the feature flag is on, Direct was blocked/failed/thin, and MarketCheck missed or is
+unavailable. A MarketCheck hit is never replaced by browse. Licensed and search do not
+re-request the blocked page. Browse opens only that one user-supplied URL.
 """
 from dataclasses import dataclass
 import hashlib
@@ -383,6 +383,10 @@ def browse_records(url, host, target, request, settings, attempts, token, deadli
             method='browse', status='not_found',
             detail=_paste_detail('Private browse opened the listing but found no year, make, model, price or mileage.')))
         return [], target
+    stock = listing_id(request.url) or listing_id(page.url)
+    if stock and 'stock_no' not in candidate.evidence:
+        candidate.evidence['stock_no'] = Evidence(
+            value=stock, source='Listing identity in the URL you supplied', status='extracted')
     observed = now()
     for evidence in candidate.evidence.values():
         evidence.source = (
@@ -482,8 +486,8 @@ def recover_listing(request: ImportRequest, settings: Settings, original: Import
     source = request.recovery_source
     use_licensed = settings.marketcheck_enabled and source in ('auto', 'marketcheck')
     browse_configured = settings.browser_recovery_enabled and source in ('auto', 'browse')
-    # Tongli: for an allowlisted pasted VDP, browse before MarketCheck/search when Direct
-    # was blocked, failed, or thin. Restricted/unsupported stay Direct-policy misses.
+    # Research checklist: browse only after Direct fail and a MarketCheck miss/unavailable.
+    # Restricted/unsupported stay Direct-policy misses. Explicit `browse` source skips MC.
     thin_or_blocked = original.status in ('blocked', 'failed', 'partial')
     use_browse = browse_configured and (source == 'browse' or thin_or_blocked)
     use_search = settings.search_enabled and source in ('auto', 'search')
@@ -521,28 +525,31 @@ def recover_listing(request: ImportRequest, settings: Settings, original: Import
     # failure is all the buyer reads, and a licensed lookup that held nothing reads as progress.
     preface = ''
     try:
-        if use_browse:
-            records, target = browse_records(url, host, target, request, settings, result.attempts, token, deadline)
-        if not records and use_licensed:
+        if use_licensed:
             records, target = licensed_records(url, host, stock, target, settings, result.attempts, deadline)
         if not records:
             licensed_failed = any(a.method == 'licensed' and a.status == 'failed' for a in result.attempts)
             licensed_used = use_licensed
-            browse_attempt = next((a for a in reversed(result.attempts) if a.method == 'browse'), None)
-            if use_search:
+            if use_browse:
                 if licensed_used and not licensed_failed:
                     preface = LICENSED_MISS + ' '
-                records, target = search_records(url, host, stock, target, request, settings, result.attempts, deadline)
-            elif licensed_failed:
-                raise Stop('failed', _paste_detail('Licensed inventory lookup failed.'))
-            elif use_licensed:
-                raise Stop('not_found', _paste_detail(LICENSED_MISS))
-            elif use_browse:
-                status = browse_attempt.status if browse_attempt else 'not_found'
-                detail = _paste_detail(browse_attempt.detail if browse_attempt else 'Private browse found no listing details.')
-                if status in ('blocked', 'failed', 'timeout', 'cancelled'):
-                    raise Stop('failed', detail)
-                raise Stop('not_found', detail)
+                records, target = browse_records(url, host, target, request, settings, result.attempts, token, deadline)
+            if not records:
+                browse_attempt = next((a for a in reversed(result.attempts) if a.method == 'browse'), None)
+                if use_search:
+                    if licensed_used and not licensed_failed:
+                        preface = LICENSED_MISS + ' '
+                    records, target = search_records(url, host, stock, target, request, settings, result.attempts, deadline)
+                elif licensed_failed:
+                    raise Stop('failed', _paste_detail('Licensed inventory lookup failed.'))
+                elif use_licensed and not use_browse:
+                    raise Stop('not_found', _paste_detail(LICENSED_MISS))
+                elif use_browse:
+                    status = browse_attempt.status if browse_attempt else 'not_found'
+                    detail = _paste_detail(browse_attempt.detail if browse_attempt else 'Private browse found no listing details.')
+                    if status in ('blocked', 'failed', 'timeout', 'cancelled'):
+                        raise Stop('failed', detail)
+                    raise Stop('not_found', detail)
     except Stop as stop:
         # An identity conflict is about which car this is, not about who holds a record of it.
         detail = preface + stop.detail if stop.status in ('not_found', 'failed') else stop.detail
@@ -594,6 +601,10 @@ def recover_listing(request: ImportRequest, settings: Settings, original: Import
                        observations=observations[:150])
     if target:
         merged.evidence['vin'] = Evidence(value=target, source='Exact VIN bound to this listing by user input, seller listing, or seller/stock association', status='extracted')
+    stock_ev = next((r.candidate.evidence['stock_no'] for r in records
+                     if r.method == 'browse' and 'stock_no' in r.candidate.evidence), None)
+    if stock_ev:
+        merged.evidence['stock_no'] = stock_ev
     merged.evidence['price_type'] = Evidence(value='asking', source='Listing evidence; not a transaction', status='extracted')
     history_method = None
     for field in FIELDS:
