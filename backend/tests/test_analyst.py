@@ -7,7 +7,7 @@ import pytest
 from backend.app import analyst
 from backend.app.comparison import create_report
 from backend.app.config import Settings
-from backend.app.models import Candidate, Evidence, Preferences
+from backend.app.models import Candidate, Evidence, Preferences, value_text
 
 SETTINGS = Settings(llm_api_key="test", llm_model="scripted")
 
@@ -83,11 +83,14 @@ def test_only_cited_numbers_survive(report, monkeypatch):
     corvette, bmw = analysis.vehicles
     assert [c.text for c in corvette.strengths] == ["2021 Chevrolet Corvette has only 16,151 mi."]
     # Invented price, unfetched recall id, and Car B's claim citing Car A's price are all rejected.
-    assert bmw.strengths == [] and bmw.risks == []
-    assert analysis.comparisons[0].favors == corvette.candidate_id and analysis.comparisons[0].topic == "mileage"
-    assert [q.text for q in analysis.questions] == ["Can you share the service records?"]
+    assert bmw.risks == []
+    assert all("59,000" not in s.text and "priced at 67,494" not in s.text for s in bmw.strengths)
+    assert bmw.strengths, "empty BMW flags must be filled from fetched budget/usage evidence"
+    mileage = next(p for p in analysis.comparisons if p.topic == "mileage")
+    assert mileage.favors == corvette.candidate_id
+    assert "Can you share the service records?" in [q.text for q in analysis.questions]
     assert analysis.dropped_claims == 4
-    assert {s.id for s in analysis.sources} == {"M.price_gap.AB", "P.buyer", "A.mileage", "M.mileage_gap.AB"}
+    assert {"M.price_gap.AB", "P.buyer", "A.mileage", "M.mileage_gap.AB"} <= {s.id for s in analysis.sources}
     assert [r["ok"] for r in add_results] == [True, True, False, False, False, True, False, True]
     assert "59000" in add_results[2]["reason"] or "59,000" in add_results[2]["reason"]
 
@@ -175,7 +178,7 @@ def test_deepseek_flash_records_once_easy_tools_are_no_longer_listed(report, mon
     assert analysis.dropped_claims == 0 and analysis.tool_calls == 10
     assert "get_vehicle_facts" in offered[0] and "add_finding" in offered[0]
     assert "finish" not in offered[0]
-    assert offered[1] == ["add_finding", "set_ranking"]
+    assert offered[1] == ["add_finding", "cite_evidence", "set_ranking"]
 
 
 def test_add_finding_accepts_a_comma_separated_citation_string(report):
@@ -504,4 +507,150 @@ def test_three_demo_restatement_with_the_live_failing_preferences(live_demo_repo
     assert len(analysis.verdict.text) <= analyst.CLAIM_LIMIT
     assert analysis.message.startswith(analyst.RESTATED)
     assert any(v.risks for v in analysis.vehicles)
+
+
+def _rich_car(title, make, model, year, price, mileage, **extra):
+    c = car(title, make, model, year, price, mileage, **extra)
+    for field in ("trim", "generation", "transmission", "body", "engine", "drivetrain", "features", "history"):
+        value = getattr(c, field)
+        if value in (None, [], "UNK"):
+            continue
+        c.evidence[field] = Evidence(value=value_text(value), source="User-pasted listing text", status="extracted")
+    return c
+
+
+def test_citation_repair_attaches_the_metric_that_holds_the_extra_number(report):
+    ws = analyst.Workspace(report)
+    ws.run("get_vehicle_facts", {"car": "A"})
+    ws.run("get_comparison_metrics", {})
+    result = ws.add_finding({
+        "kind": "green_flag", "car": "A", "citations": ["A.price"],
+        "text": "Car A asks 67,494 USD, 2,506 under the 70,000 budget.",
+    })
+    assert result == {"ok": True}
+    claim = ws.findings[-1]["claim"]
+    assert "A.price" in claim.citations and "M.A.budget" in claim.citations
+
+
+def test_citation_repair_still_rejects_invented_figures(report):
+    ws = analyst.Workspace(report)
+    ws.run("get_vehicle_facts", {"car": "A"})
+    ws.run("get_comparison_metrics", {})
+    result = ws.add_finding({
+        "kind": "green_flag", "car": "A", "citations": ["A.price"],
+        "text": "Car A costs 59,000 USD.",
+    })
+    assert result["ok"] is False
+    assert "59000" in result["reason"] or "59,000" in result["reason"]
+
+
+def test_cite_evidence_copies_the_fetched_result(report):
+    ws = analyst.Workspace(report)
+    ws.run("get_vehicle_facts", {"car": "A"})
+    ws.run("get_comparison_metrics", {})
+    result = ws.cite_evidence({"kind": "green_flag", "car": "A", "id": "M.A.budget"})
+    assert result == {"ok": True}
+    assert "2,506" in ws.findings[-1]["claim"].text
+    assert ws.findings[-1]["claim"].citations == ["M.A.budget"]
+
+
+def test_generation_vin_and_unknowns_are_citable(monkeypatch):
+    def offline(*args, **kwargs):
+        raise AssertionError("offline test")
+    monkeypatch.setattr(socket, "getaddrinfo", offline)
+    z4 = _rich_car("2015 BMW Z4 sDrive35i", "BMW", "Z4", 2015, 27500, 62000,
+                   trim="sDrive35i", generation="E89", transmission="7-speed automatic",
+                   body="Convertible")
+    z4.evidence["vin"] = Evidence(value="WBALL5C50E0312345", source="User-pasted listing text", status="extracted")
+    is350 = _rich_car("2025 Lexus IS 350", "Lexus", "IS", 2025, 48900, 8200,
+                     trim="350 F Sport", generation="XE30", body="Sedan")
+    ws = analyst.Workspace(create_report([z4, is350], Preferences(), SETTINGS))
+    facts_a = ws.run("get_vehicle_facts", {"car": "A"})
+    fields = {f["field"] for f in facts_a["facts"]}
+    assert "generation" in fields and "vin" in fields
+    assert "A.generation" in ws.sources and "A.vin" in ws.sources
+    assert "history" in facts_a["unknown"] and "features" in facts_a["unknown"]
+    assert "A.unknowns" in ws.sources
+    assert "not a negative finding" in ws.sources["A.unknowns"].detail
+
+
+def test_z4_vs_is_restatement_fills_flags_and_nontrivial_comparisons(monkeypatch):
+    """Tongli sample class: ~2015 Z4 vs ~2025 IS, flash gather-then-finish, no model flags."""
+    def offline(*args, **kwargs):
+        raise AssertionError("offline test")
+    monkeypatch.setattr(socket, "getaddrinfo", offline)
+
+    def nhtsa(url, params=None, limit=0):
+        params = params or {}
+        if "recalls" in url:
+            if str(params.get("make", "")).upper() == "BMW":
+                return {"results": [{"NHTSACampaignNumber": "21V421000", "Component": "AIR BAGS",
+                                     "Summary": "Warning lamp may fail.", "Remedy": "Software update.",
+                                     "ReportReceivedDate": "10/06/2021"}]}
+            return {"results": []}
+        if "complaints" in url:
+            return {"results": []}
+        return {"Results": []}
+
+    monkeypatch.setattr(analyst, "nhtsa", nhtsa)
+    z4 = _rich_car("2015 BMW Z4 sDrive35i", "BMW", "Z4", 2015, 27500, 62000,
+                   trim="sDrive35i", generation="E89", transmission="7-speed automatic",
+                   body="Convertible", engine="3.0L I6", drivetrain="RWD",
+                   features=["Heated seats", "Navigation"])
+    is350 = _rich_car("2025 Lexus IS 350 F Sport", "Lexus", "IS", 2025, 48900, 8200,
+                     trim="350 F Sport", generation="XE30", transmission="8-speed automatic",
+                     body="Sedan", engine="3.5L V6", drivetrain="RWD",
+                     features=["Apple CarPlay", "Heated seats", "Blind spot monitor"],
+                     history="One owner, seller claim")
+    prefs = Preferences(budget=50000, must_haves=["Apple CarPlay"], annual_mileage=10000, ownership_years=3)
+    sample = create_report([z4, is350], prefs, SETTINGS)
+    chat, _ = scripted([[*nine_evidence(), call("finish")], *[[call("finish")]] * 4])
+    monkeypatch.setattr(analyst, "chat", chat)
+    analysis = analyst.analyze(sample, SETTINGS)
+    assert analysis.status == "complete" and analysis.message.startswith(analyst.RESTATED)
+    z4_card, is_card = analysis.vehicles
+    assert z4_card.strengths and is_card.strengths
+    assert z4_card.risks, "model-year recall evidence must become a red flag, not an empty card"
+    topics = {p.topic for p in analysis.comparisons}
+    assert "year" in topics
+    assert topics - {"price", "mileage"}, "comparisons must include more than price/mileage when year/spec evidence exists"
+    assert any("does not disclose" in q.text or "history" in q.text.lower() for q in analysis.questions)
+    assert any("Apple CarPlay" in c.text or "must have" in c.text.lower() for c in is_card.strengths)
+
+
+def test_restatement_does_not_wipe_model_vehicle_cards(report, monkeypatch):
+    monkeypatch.setattr(analyst, "nhtsa", lambda *args, **kwargs: {"results": [], "Results": []})
+    chat, _ = scripted([
+        [call("get_vehicle_facts", car="A"), call("get_vehicle_facts", car="B"), call("get_comparison_metrics")],
+        [call("add_finding", kind="verdict", car="all", citations=["M.price_gap.AB"],
+              text="Car B is 3,496 USD cheaper than Car A."),
+         call("add_finding", kind="green_flag", car="A", citations=["M.A.mileage_per_year"],
+              text="Car A covers 16,151 mi over 5 years, about 3,230 mi per year."),
+         call("finish")],
+    ])
+    monkeypatch.setattr(analyst, "chat", chat)
+    analysis = analyst.analyze(report, SETTINGS)
+    corvette, bmw = analysis.vehicles
+    assert [c.text for c in corvette.strengths] == [
+        "2021 Chevrolet Corvette covers 16,151 mi over 5 years, about 3,230 mi per year."]
+    assert bmw.strengths, "the other car's empty card is filled; the model's card is left intact"
+    assert analyst.RESTATED not in analysis.message
+
+
+def test_high_reject_rate_still_fills_cards_from_fetched_evidence(report, monkeypatch):
+    monkeypatch.setattr(analyst, "nhtsa", lambda *args, **kwargs: {"results": [], "Results": []})
+    invented = [call("add_finding", kind="green_flag", car="A", citations=["A.price"],
+                     text=f"Car A is worth {n} USD on the private market.")
+                for n in (111, 222, 333, 444, 555, 666, 777, 888, 999, 1010, 1212, 1313)]
+    chat, _ = scripted([
+        [call("get_vehicle_facts", car="A"), call("get_vehicle_facts", car="B"), call("get_comparison_metrics")],
+        [*invented, call("add_finding", kind="verdict", car="all", citations=["M.price_gap.AB"]),
+         call("finish")],
+    ])
+    monkeypatch.setattr(analyst, "chat", chat)
+    analysis = analyst.analyze(report, SETTINGS)
+    assert analysis.dropped_claims >= 12
+    assert analysis.status == "complete" and analysis.verdict is not None
+    assert all(v.strengths or v.risks for v in analysis.vehicles)
+    assert any(p.topic in {"year", "price", "mileage"} for p in analysis.comparisons)
 

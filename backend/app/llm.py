@@ -91,7 +91,7 @@ def chat(settings: Settings, messages: list[dict], tools: list[dict], timeout: f
     # instead of calling add_finding; thinking also rejects tool_choice=required with HTTP 400.
     if "deepseek.com" in host:
         body["thinking"] = {"type": "disabled"}
-        if "add_finding" in names and not names & {"get_vehicle_facts", "get_recalls", "get_complaints",
+        if ("add_finding" in names or "cite_evidence" in names) and not names & {"get_vehicle_facts", "get_recalls", "get_complaints",
                                                    "get_safety_rating", "get_comparison_metrics"}:
             body["tool_choice"] = "required"
     try:

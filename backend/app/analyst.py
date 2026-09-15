@@ -17,7 +17,7 @@ from urllib.parse import quote
 from pydantic import ValidationError
 
 from .cancel import DISCONNECTED, Cancelled, CancelToken
-from .comparison import usable
+from .comparison import msrp_sourced, usable
 from .config import Settings
 from .llm import LLMUnavailable, chat
 from .models import (AIAnalysis, AIQuestion, Candidate, Claim, ComparisonPoint, RankedVehicle, Report, SourceRef,
@@ -25,8 +25,9 @@ from .models import (AIAnalysis, AIQuestion, Candidate, Claim, ComparisonPoint, 
 from .vehicle_data import ProviderError, get_json
 
 LABELS = "ABC"
-FACT_FIELDS = ("year", "make", "model", "trim", "price", "currency", "mileage", "mileage_unit", "transmission",
-               "engine", "drivetrain", "body", "fuel_type", "location", "features", "history")
+FACT_FIELDS = ("year", "make", "model", "trim", "generation", "price", "currency", "mileage", "mileage_unit",
+               "transmission", "engine", "drivetrain", "body", "fuel_type", "location", "features", "history")
+SPEC_FIELDS = ("transmission", "drivetrain", "body", "engine", "fuel_type", "trim", "generation")
 NHTSA = "https://api.nhtsa.gov"
 log = logging.getLogger("revrank.analyst")
 MAX_TURNS, MAX_TOOL_CALLS, BUDGET_SECONDS = 24, 60, 170
@@ -39,14 +40,16 @@ EVIDENCE_TOOLS = frozenset({
 RECORD_FINDINGS = (
     "Evidence is already in the tool results. Do not call finish yet. "
     "Record an overall verdict with add_finding (kind 'verdict', car 'all', citations listing ids "
-    "from those results), then green_flag and red_flag statements, then call finish."
+    "from those results) or cite_evidence, then green_flag and red_flag statements per car — copy a "
+    "tool-result sentence with cite_evidence if you cannot paraphrase without new numbers — then call finish."
 )
 RESTATED = (
     "The model fetched evidence but recorded no statement. "
-    "The comparison below restates tool results already returned in this run. "
+    "The comparison below restates tool results already returned in this run, including per-car flags "
+    "and differences the listing and metrics already contained. "
     "Every statement cites that evidence."
 )
-PROMPT_VERSION = "analyst-tools-v5"
+PROMPT_VERSION = "analyst-tools-v6"
 LIMITS = {"verdict": 1, "strength": 5, "risk": 5, "comparison": 5, "question": 2}
 # The model speaks in green and red flags; storage keeps the older strength/risk names, and both
 # spellings are accepted so a model that reaches for either is not punished for it.
@@ -72,12 +75,14 @@ Process:
 3. Call get_comparison_metrics.
 4. Record each statement with add_finding: one overall verdict (car "all"), up to 5 green_flag and up to 5 red_flag
    per car, up to 5 comparisons, up to 2 seller questions per car. add_finding tells you if a statement was rejected
-   and why; fix and retry rejected statements.
+   and why; fix and retry rejected statements. If a paraphrase would introduce a new number, call cite_evidence
+   with that tool-result id instead — it copies the result text so the numbers stay exact.
 5. Call set_ranking once: order every car best-first for this buyer, with one cited reason per car. Lead with the
-   buyer's stated constraints (the M.*.fit results) and use the other metrics to break ties. A rejected ranking
-   tells you why; fix and retry it.
-6. After the tools return, you MUST record with add_finding. Do not write the analysis as
-   assistant text, and do not call finish until add_finding has accepted a verdict.
+   buyer's stated constraints (the M.*.fit and M.*.check.* results) and use the other metrics to break ties. A
+   rejected ranking tells you why; fix and retry it.
+6. After the tools return, you MUST record with add_finding or cite_evidence. Do not write the analysis as
+   assistant text, and do not call finish until a verdict has been accepted. Do not leave a car with neither a
+   flag nor a seller question if the tool results already contain one.
 
 What makes a good flag:
 - Be specific about THIS car and say why it matters to THIS buyer. Name the figure, the option, the campaign or the
@@ -89,16 +94,21 @@ What makes a good flag:
   "Listed with Apple CarPlay and all-wheel drive, both stated must-haves; confirm them on the car."
   "Model year has 3 NHTSA recall campaigns including AIR BAGS 21V421000; that is a model-year record, so check this
   VIN's repair status with a dealer."
-- Reach for concrete evidence in this order: the buyer's stated constraints (M.*.fit), price against budget and
-  against original MSRP, mileage per year, listed equipment against must-haves, days on market, then NHTSA recalls,
-  complaints and 5-Star ratings as model-year caveats.
+- Reach for concrete evidence in this order: the buyer's stated constraints (M.*.fit, M.*.check.*), price against
+  budget and against original MSRP, mileage per year versus the buyer's assumed annual miles, listed equipment
+  (including generation/trim/body/drivetrain) against must-haves, days on market, then NHTSA recalls, complaints
+  and 5-Star ratings as model-year caveats. Comparisons should include year and listed-spec differences when those
+  results exist, not only price and mileage.
 - A missing or disputed field is a seller question, not a red flag. "Not mentioned in the listing" is never a
-  negative claim about the car.
+  negative claim about the car. Unknown history, an unknown VIN, and a must-have the listing never mentions are
+  questions. Dealer identity is business-level, not a quality finding about this VIN.
 - Do not repeat the same evidence as both a green and a red flag, and do not restate one flag in two wordings.
 - If a car genuinely has fewer than five of either, record fewer. Padding with vague flags is worse than silence.
+  Copying a tool-result sentence is better than leaving the slot empty.
 
 Rules for add_finding:
-- citations is a comma-separated list of tool-result ids, e.g. "A.price, M.price_gap.AB".
+- citations is a comma-separated list of tool-result ids, e.g. "A.price, M.price_gap.AB". Cite every id that
+  supplied a number you used (listing fields AND M.* metrics).
 - Copy numbers exactly as they appear in the cited results. Never compute new numbers, percentages or estimates; use M.* metrics for differences.
 - No outside knowledge: no reliability reputations, specifications, market values or opinions the tools did not return.
 - Recalls and complaints are model-year records, not proof about this specific car; say so when you use them.
@@ -117,8 +127,9 @@ def tool_schemas(labels: list[str]) -> list[dict]:
         tool("get_recalls", "NHTSA recall campaigns for the car's model year, make and model.", car),
         tool("get_complaints", "NHTSA owner-complaint counts by component for the car's model year, make and model.", car),
         tool("get_safety_rating", "NHTSA 5-Star crash ratings for the car's model year, make and model.", car),
-        tool("get_comparison_metrics", "Deterministic comparisons: price and mileage gaps, age, mileage per year, "
-             "budget, and how each car reads against the buyer's stated constraints.",
+        tool("get_comparison_metrics", "Deterministic comparisons: price, mileage, year and listed-spec gaps, "
+             "age, mileage per year versus the buyer's assumed annual miles, budget, original-MSRP share, "
+             "and how each car reads against the buyer's stated constraints.",
              {"type": "object", "properties": {}}),
         tool("add_finding", "Record one cited statement. This is the only way a verdict, flag or comparison "
              "appears in the report. Returns ok, or the reason it was rejected.", {
@@ -130,6 +141,16 @@ def tool_schemas(labels: list[str]) -> list[dict]:
                 "citations": {"type": "string",
                               "description": "Comma-separated ids from tool results, e.g. A.price, M.price_gap.AB"}},
             "required": ["kind", "car", "text", "citations"]}),
+        tool("cite_evidence", "Copy one fetched tool result into the report as a verdict, flag, comparison or "
+             "question. Use this when you cannot paraphrase without introducing a new number. The copied text "
+             "is the result already returned; nothing is invented.", {
+            "type": "object", "properties": {
+                "kind": {"type": "string", "enum": ["verdict", "green_flag", "red_flag", "comparison", "question"],
+                         "description": "green_flag and red_flag are per-car."},
+                "car": {"type": "string", "enum": labels + ["all"],
+                        "description": "The car it is about; 'all' for verdict/comparison."},
+                "id": {"type": "string", "description": "A tool-result id from this run, e.g. M.A.budget or A.recalls."}},
+            "required": ["kind", "car", "id"]}),
         tool("set_ranking", "Rank the shortlist best-first for this buyer, with one cited reason per car. "
              "Returns ok, or the reason the whole ranking was rejected.", {
                  "type": "object", "properties": {
@@ -148,19 +169,20 @@ def tool_schemas(labels: list[str]) -> list[dict]:
 
 
 def tools_for(ws: "Workspace", labels: list[str]) -> list[dict]:
-    """Offer only the tools this phase can use, so flash cannot skip add_finding for finish.
+    """Offer only the tools this phase can use, so flash cannot skip recording for finish.
 
-    Evidence tools are a one-field `car` argument; finish is empty. add_finding is the only
-    complex schema. While those easy tools are listed, deepseek-flash calls them and never
-    records. After evidence exists, only recording tools are listed; finish returns once a
-    verdict has been accepted.
+    Evidence tools are a one-field `car` argument; finish is empty. add_finding is the complex
+    schema; cite_evidence copies a fetched result by id. While easy tools are listed,
+    deepseek-flash calls them and never records. After evidence exists, only recording tools
+    are listed; finish returns once a verdict has been accepted.
     """
     by_name = {t["function"]["name"]: t for t in tool_schemas(labels)}
     if not fetched_evidence(ws):
         return [t for t in tool_schemas(labels) if t["function"]["name"] != "finish"]
+    recording = [by_name["add_finding"], by_name["cite_evidence"], by_name["set_ranking"]]
     if not verdict_recorded(ws):
-        return [by_name["add_finding"], by_name["set_ranking"]]
-    return [by_name["add_finding"], by_name["set_ranking"], by_name["finish"]]
+        return recording
+    return recording + [by_name["finish"]]
 
 
 def remember_assistant(message: dict, calls: list[dict] | None = None) -> dict:
@@ -182,6 +204,12 @@ def numbers(text: str) -> set[float]:
         except ValueError:
             continue
     return found
+
+
+def _mileage_per_year(c: Candidate, this_year: int) -> float | None:
+    if not c.year or not usable(c, "mileage") or "mileage_unit" not in c.evidence:
+        return None
+    return c.mileage / max(this_year - c.year, 1)
 
 
 _NHTSA_CACHE: dict = {}
@@ -207,6 +235,7 @@ class Workspace:
         self.ranking: list[dict] = []
         self.rejected = 0
         self.restated_verdict = False
+        self.backfilled = False
         prefs = report.preferences
         buyer = {"budget": prefs.budget, "annual_mileage": prefs.annual_mileage, "ownership_years": prefs.ownership_years,
                  "priorities": prefs.priorities, "must_haves": prefs.must_haves, "location": prefs.location,
@@ -240,9 +269,41 @@ class Workspace:
             shown = f"{value:,.0f}" if field in ("price", "mileage") else value_text(value)
             self.register(fid, f"{self.name(label)}: {field.replace('_', ' ')}", f"{field}: {shown} ({basis})", url)
             facts.append({"id": fid, "field": field, "value": shown[:300], "basis": basis})
+        if "vin" in c.evidence:
+            vid = f"{label}.vin"
+            self.register(vid, f"{self.name(label)}: VIN",
+                          "A VIN is on file for this listing, so identity can be checked against the title. "
+                          "The characters are not repeated here.", None)
+            facts.append({"id": vid, "field": "vin", "value": "on file", "basis": "listing evidence"})
+        if c.msrp is not None and msrp_sourced(c):
+            mid = f"{label}.msrp"
+            self.register(mid, f"{self.name(label)}: original MSRP",
+                          f"original MSRP: {c.msrp:,.0f} {c.currency} (buyer-confirmed or NeoVIN-decoded factory sticker)",
+                          None)
+            facts.append({"id": mid, "field": "msrp", "value": f"{c.msrp:,.0f}", "basis": "sourced factory sticker"})
+        if c.dealer and c.dealer.name:
+            did = f"{label}.dealer"
+            place = ", ".join(p for p in (c.dealer.city, c.dealer.state) if p)
+            self.register(did, f"{self.name(label)}: selling business",
+                          f"Selling business listed as {c.dealer.name}"
+                          + (f" in {place}" if place else "")
+                          + ". Business-level listing data, not evidence about this VIN.",
+                          c.dealer.website)
+            facts.append({"id": did, "field": "dealer", "value": c.dealer.name[:300],
+                          "basis": "licensed inventory record"})
+        unknown = [f for f in ("price", "mileage", "year", "transmission", "history", "generation")
+                   if getattr(c, f) in (None, [], "UNK")]
+        if "vin" not in c.evidence:
+            unknown.append("vin")
+        if not c.features:
+            unknown.append("features")
+        if unknown:
+            uid = f"{label}.unknowns"
+            self.register(uid, f"{self.name(label)}: not in listing evidence",
+                          f"Not in the reviewed listing evidence for Car {label}: {', '.join(unknown)}. "
+                          "A missing field is a seller question, not a negative finding about the car.")
         return {"car": label, "title": c.title, "vin_known": "vin" in c.evidence, "facts": facts,
-                "unknown": [f for f in ("price", "mileage", "year", "transmission", "history") if getattr(c, f) in (None, [], "UNK")],
-                "sources_disagree": [f for f in c.conflicts if f not in c.verified_fields]}
+                "unknown": unknown, "sources_disagree": [f for f in c.conflicts if f not in c.verified_fields]}
 
     def get_recalls(self, label: str) -> dict:
         identity = self.identity(label)
@@ -329,6 +390,26 @@ class Workspace:
                     per_year = c.mileage / max(age, 1)
                     add(f"M.{label}.mileage_per_year", f"Car {label}: {c.mileage:,.0f} {c.mileage_unit} over {max(age, 1)} years, "
                                                          f"about {per_year:,.0f} {c.mileage_unit} per year.")
+                    annual = self.report.preferences.annual_mileage
+                    assumed = f"{annual:,.0f}"
+                    relation = "at or below" if per_year <= annual else "above"
+                    add(f"M.{label}.annual_vs_listed",
+                        f"Car {label} covers about {per_year:,.0f} {c.mileage_unit} per year, {relation} the buyer's "
+                        f"assumed {assumed} {c.mileage_unit} per year.")
+                    years = self.report.preferences.ownership_years
+                    hold = f"{years:g}"
+                    projected = c.mileage + annual * years
+                    add(f"M.{label}.projected_odometer",
+                        f"At the buyer's assumed {assumed} {c.mileage_unit} per year for {hold} years, Car {label}'s "
+                        f"odometer would be about {projected:,.0f} {c.mileage_unit}. This is a usage assumption, "
+                        f"not a resale or cost forecast.")
+            if usable(c, "history"):
+                add(f"M.{label}.history",
+                    f"Car {label} listing discloses history as: {str(c.history)[:400]}. Seller claim, not independent verification.")
+            else:
+                add(f"M.{label}.history",
+                    f"Car {label} listing does not disclose service or accident history. "
+                    "Missing history is not evidence of a clean record; ask the seller.")
             budget = self.report.preferences.budget
             if budget is not None and usable(c, "price") and c.currency != "UNK":
                 gap = budget - c.price
@@ -359,6 +440,30 @@ class Workspace:
                 newer, older = ((la, a), (lb, b)) if a.year > b.year else ((lb, b), (la, a))
                 years = newer[1].year - older[1].year
                 add(f"M.year_gap.{la}{lb}", f"Car {newer[0]} is {years} model year{'s' if years != 1 else ''} newer than car {older[0]}.")
+            if (a.percent_of_msrp is not None and b.percent_of_msrp is not None and a.msrp is not None
+                    and b.msrp is not None):
+                low, high = sorted(((la, a), (lb, b)), key=lambda item: item[1].percent_of_msrp)
+                add(f"M.msrp_pct_gap.{la}{lb}",
+                    f"Car {low[0]} asks {low[1].percent_of_msrp:,.1f}% of original MSRP; "
+                    f"Car {high[0]} asks {high[1].percent_of_msrp:,.1f}%. "
+                    "A lower share means more of the first-owner depreciation has already been taken. "
+                    "Not a forecast of future resale.")
+            a_mipy = _mileage_per_year(a, this_year)
+            b_mipy = _mileage_per_year(b, this_year)
+            if a_mipy is not None and b_mipy is not None and a.mileage_unit == b.mileage_unit:
+                low, high = sorted(((la, a_mipy), (lb, b_mipy)), key=lambda item: item[1])
+                add(f"M.mipy_gap.{la}{lb}",
+                    f"Car {low[0]} has been covering about {low[1]:,.0f} {a.mileage_unit} per year; "
+                    f"Car {high[0]} about {high[1]:,.0f} {a.mileage_unit} per year.")
+            for field in SPEC_FIELDS:
+                va, vb = getattr(a, field), getattr(b, field)
+                if va in (None, [], "UNK") or vb in (None, [], "UNK") or not usable(a, field) or not usable(b, field):
+                    continue
+                if value_text(va) == value_text(vb):
+                    continue
+                add(f"M.{field}_diff.{la}{lb}",
+                    f"Car {la} is listed as {value_text(va)}; Car {lb} is listed as {value_text(vb)}. "
+                    "Confirm both on the cars.")
         # Deterministic constraint fit, so a ranking reason can cite it instead of judging fit itself.
         fit = {entry.candidate_id: entry for entry in self.report.shortlist}
         for label, c in self.cars.items():
@@ -370,6 +475,9 @@ class Workspace:
                                   f"{entry.conflicts} conflict with it: "
                                   + "; ".join(f"{check.constraint} \u2014 {check.status.replace('_', ' ')}"
                                               for check in entry.checks)[:900] + ".")
+            for index, check in enumerate(entry.checks):
+                add(f"M.{label}.check.{check.field}.{index}",
+                    f"Car {label}: {check.constraint} \u2014 {check.status.replace('_', ' ')}. {check.detail}")
         return {"metrics": items, "buyer": self.buyer, "buyer_id": "P.buyer"}
 
     def refuse(self, reason: str) -> dict:
@@ -403,7 +511,8 @@ class Workspace:
                 return self.refuse("Questions may only use numbers from tool results.")
             self.findings.append({"kind": kind, "scope": scope, "text": humanize(self, text, QUESTION_LIMIT)})
             return {"ok": True}
-        claim = check(self, args.get("text"), args.get("citations"), reasons)
+        claim = check(self, args.get("text"), args.get("citations"), reasons,
+                      scope=label if label in self.cars else None)
         if not claim:
             return self.refuse(reasons[0]["reason"] if reasons else
                                "No text arrived with this call; send kind, car, text and citations together.")
@@ -437,7 +546,7 @@ class Workspace:
             item = by_car.get(label)
             if item is None:
                 return {"ok": False, "reason": f"Car {label} is in the order but has no reason."}
-            claim = check(self, item.get("text"), item.get("citations"), rejected)
+            claim = check(self, item.get("text"), item.get("citations"), rejected, scope=label)
             if not claim:
                 reason = rejected[-1]["reason"] if rejected else "Empty statement."
                 return self.refuse(f"Car {label}'s reason was rejected: {reason} The whole ranking was discarded.")
@@ -448,6 +557,28 @@ class Workspace:
         self.ranking = ranked
         return {"ok": True, "ranked": order}
 
+    def cite_evidence(self, args: dict) -> dict:
+        """Copy a fetched tool result into the report. Flash-friendly: no free-text numbers."""
+        sid = str(args.get("id", "")).strip()
+        if sid not in self.sources:
+            return self.refuse("id must be a tool-result id from this run.")
+        topic = str(args.get("topic") or "")
+        if not topic:
+            if "price_gap" in sid:
+                topic = "price"
+            elif "mileage_gap" in sid or sid.endswith("mileage_per_year") or "mipy_gap" in sid:
+                topic = "mileage"
+            elif "year_gap" in sid:
+                topic = "year"
+            elif "msrp" in sid:
+                topic = "msrp"
+            elif "_diff." in sid:
+                topic = sid.split(".")[1].removesuffix("_diff") if "." in sid else "spec"
+            else:
+                topic = str(args.get("kind") or "evidence")
+        return self.add_finding({"kind": args.get("kind"), "car": args.get("car"),
+                                 "text": self.sources[sid].detail, "citations": sid, "topic": topic[:80]})
+
     def run(self, name: str, args: dict) -> dict:
         # No provider request is started for a request the client abandoned or already ran out of time.
         if self.token is not None:
@@ -457,6 +588,8 @@ class Workspace:
             return {"error": "Tool budget exhausted. Call finish now."}
         if name == "add_finding":
             return self.add_finding(args)
+        if name == "cite_evidence":
+            return self.cite_evidence(args)
         if name == "set_ranking":
             return self.set_ranking(args)
         try:
@@ -501,21 +634,60 @@ def citation_list(raw) -> list[str]:
     return [str(item).strip().strip("[]()'\"") for item in raw if str(item).strip()] if isinstance(raw, list) else []
 
 
-def check(ws: Workspace, text, citations, rejected: list) -> Claim | None:
+def _source_numbers(ws: Workspace, cited: list[str]) -> set[float]:
+    return numbers(" ".join(ws.sources[c].detail for c in cited if c in ws.sources))
+
+
+def expand_citations(ws: Workspace, text: str, cited: list[str], labels: set[str]) -> list[str]:
+    """Attach fetched sources that already contain numbers the statement used but did not cite.
+
+    DeepSeek-flash often cites a listing field and then names a metric figure from the same car.
+    Filling in those ids keeps the claim grounded instead of dropping a true sentence.
+    """
+    cited = list(cited)
+    needed = numbers(text) - _source_numbers(ws, cited)
+    if not needed:
+        return cited
+    allowed = []
+    for sid in ws.sources:
+        if sid in cited:
+            continue
+        if sid == "P.buyer" or not labels or any(covers(sid, label) for label in labels):
+            hit = numbers(ws.sources[sid].detail) & needed
+            if hit:
+                allowed.append((len(hit), -len(sid), sid))
+    for _, _, sid in sorted(allowed, reverse=True):
+        if not needed or len(cited) >= 12:
+            break
+        cited.append(sid)
+        needed = numbers(text) - _source_numbers(ws, cited)
+    return cited
+
+
+def check(ws: Workspace, text, citations, rejected: list, scope: str | None = None) -> Claim | None:
     raw = re.sub(r"\s+", " ", str(text or "")).strip()
     text = CITATION_TOKEN.sub("", raw).replace(" .", ".").strip()[:CLAIM_LIMIT]
     cited = [c for c in dict.fromkeys(citation_list(citations)) if c in ws.sources]
     if not text:
         return None
+    mentioned = set(re.findall(r"\b[Cc]ar ([ABC])\b", text)) & set(ws.cars)
+    labels = mentioned or ({scope} if scope in ws.cars else set(ws.cars))
+    cited = expand_citations(ws, text, cited, labels)
     if not cited:
         rejected.append({"text": text[:160], "reason": "No citation matches an id returned by your tools."})
         return None
-    unsupported = numbers(text) - numbers(" ".join(ws.sources[c].detail for c in cited))
+    unsupported = numbers(text) - _source_numbers(ws, cited)
     if unsupported:
-        rejected.append({"text": text[:160], "reason": "Numbers not in the cited results: " + ", ".join(f"{n:g}" for n in sorted(unsupported))
-                         + ". Copy numbers exactly from the results you cite."})
+        hints = []
+        for n in sorted(unsupported):
+            found = [sid for sid, src in ws.sources.items() if n in numbers(src.detail)]
+            if found:
+                hints.append(f"{n:g} is in {', '.join(found[:4])}")
+        extra = (" Cite " + "; ".join(hints) + ".") if hints else " Copy numbers exactly from the results you cite."
+        rejected.append({"text": text[:160], "reason": "Numbers not in the cited results: "
+                         + ", ".join(f"{n:g}" for n in sorted(unsupported)) + "." + extra})
         return None
-    for label in set(re.findall(r"\b[Cc]ar ([ABC])\b", text)) & set(ws.cars):
+    for label in mentioned:
         if not any(covers(c, label) for c in cited):
             rejected.append({"text": text[:160], "reason": f"The statement mentions Car {label} but cites none of Car {label}'s evidence."})
             return None
@@ -638,24 +810,61 @@ def _take_source(ws: Workspace, sid: str, sentences: list[str], citations: list[
         citations.append(sid)
 
 
-def restate_from_tools(ws: Workspace) -> bool:
-    """Record a cited verdict (and comparisons) copied from already-fetched tool results.
+def _count(ws: Workspace, kind: str, scope: str) -> int:
+    return sum(1 for f in ws.findings if f["kind"] == kind and f["scope"] == scope)
 
-    Used when the model gathered evidence and then called finish or went quiet without
-    add_finding. Numbers are copied from registered source details; nothing is computed here
-    beyond calling get_comparison_metrics if the model never did. Returns True if a verdict
-    was recorded.
-    """
-    if verdict_recorded(ws):
-        return True
-    if not any(sid.startswith("M.") for sid in ws.sources):
-        ws.get_comparison_metrics()
+
+def _keep(ws: Workspace, kind: str, scope: str, text: str, citations: list[str], topic: str | None = None,
+          favors: str | None = None) -> bool:
+    cap = COMPARISON_CAP if kind == "comparison" else LIMITS.get(kind)
+    if cap is not None and _count(ws, kind, scope) >= cap:
+        return False
+    reasons: list = []
+    claim = check(ws, text, citations, reasons, scope=scope if scope in ws.cars else None)
+    if not claim:
+        return False
+    ws.findings.append({"kind": kind, "scope": scope, "claim": claim, "topic": topic or kind,
+                        "favors": favors if favors in ws.cars else None})
+    return True
+
+
+def _add_question(ws: Workspace, label: str, text: str) -> bool:
+    if _count(ws, "question", label) >= LIMITS["question"]:
+        return False
+    cleaned = CITATION_TOKEN.sub("", str(text or "")).strip()
+    cleaned = humanize(ws, cleaned, QUESTION_LIMIT)
+    if not cleaned or not numbers(cleaned) <= numbers(" ".join(s.detail for s in ws.sources.values())):
+        return False
+    if any(f["kind"] == "question" and f["scope"] == label and f["text"] == cleaned for f in ws.findings):
+        return False
+    ws.findings.append({"kind": "question", "scope": label, "text": cleaned})
+    return True
+
+
+def _comparison_topic(sid: str) -> str:
+    if "price_gap" in sid:
+        return "price"
+    if "mileage_gap" in sid:
+        return "mileage"
+    if "year_gap" in sid:
+        return "year"
+    if "msrp_pct_gap" in sid or sid.endswith("msrp_pct"):
+        return "msrp"
+    if "mipy_gap" in sid:
+        return "mileage_per_year"
+    if "_diff." in sid:
+        return sid.split(".")[1].removesuffix("_diff") if "." in sid else "spec"
+    return "comparison"
+
+
+def _restate_verdict(ws: Workspace) -> bool:
     sentences, citations = [], []
-    for sid in ws.sources:
-        if sid.startswith(("M.price_gap.", "M.mileage_gap.", "M.year_gap.")):
-            _take_source(ws, sid, sentences, citations)
+    for prefix in ("M.year_gap.", "M.price_gap.", "M.mileage_gap.", "M.msrp_pct_gap.", "M.mipy_gap."):
+        for sid in ws.sources:
+            if sid.startswith(prefix):
+                _take_source(ws, sid, sentences, citations)
     for label in ws.cars:
-        for suffix in ("fit", "budget", "msrp_pct", "mileage_per_year", "price"):
+        for suffix in ("fit", "budget", "msrp_pct", "annual_vs_listed", "mileage_per_year"):
             _take_source(ws, f"M.{label}.{suffix}", sentences, citations)
     for size in range(min(4, len(sentences)), 0, -1):
         reasons: list = []
@@ -664,34 +873,107 @@ def restate_from_tools(ws: Workspace) -> bool:
             ws.findings.append({"kind": "verdict", "scope": "all", "claim": claim, "topic": "verdict",
                                 "favors": None})
             ws.restated_verdict = True
-            break
-    if not ws.restated_verdict:
-        return False
+            return True
+    return False
 
-    def keep(kind: str, scope: str, text: str, citations: list[str], topic: str | None = None,
-             favors: str | None = None) -> None:
-        cap = COMPARISON_CAP if kind == "comparison" else LIMITS.get(kind)
-        if cap is not None and sum(f["kind"] == kind and f["scope"] == scope for f in ws.findings) >= cap:
-            return
-        reasons: list = []
-        claim = check(ws, text, citations, reasons)
-        if claim:
-            ws.findings.append({"kind": kind, "scope": scope, "claim": claim, "topic": topic or kind,
-                                "favors": favors if favors in ws.cars else None})
 
-    for sid, src in ws.sources.items():
-        if not sid.startswith(("M.price_gap.", "M.mileage_gap.")):
-            continue
-        who = re.search(r"\bCar ([ABC]) is\b", src.detail)
-        topic = "price" if "price_gap" in sid else "mileage"
-        keep("comparison", "all", src.detail, [sid], topic, who.group(1) if who else None)
+def _backfill_cards(ws: Workspace) -> bool:
+    """Fill empty per-car flags, extra comparison topics, and seller questions from fetched sources.
+
+    Existing model-accepted findings are left in place. Copied text is the registered source
+    detail, so no new numbers are introduced.
+    """
+    added = False
+
+    def already(kind, scope, sid) -> bool:
+        return any(sid in f["claim"].citations
+                   for f in ws.findings if f["kind"] == kind and f["scope"] == scope and "claim" in f)
+
+    def copy(kind, scope, sid, topic=None, favors=None) -> bool:
+        nonlocal added
+        if sid not in ws.sources or already(kind, scope, sid):
+            return False
+        who = re.search(r"\bCar ([ABC]) is\b", ws.sources[sid].detail)
+        ok = _keep(ws, kind, scope, ws.sources[sid].detail, [sid], topic,
+                   favors or (who.group(1) if who else None))
+        if ok:
+            added = True
+        return ok
+
+    comparison_order = []
+    for prefix in ("M.year_gap.", "M.price_gap.", "M.mileage_gap."):
+        comparison_order.extend(sid for sid in ws.sources if sid.startswith(prefix))
+    comparison_order.extend(sid for sid in ws.sources if "_diff." in sid)
+    comparison_order.extend(sid for sid in ws.sources if sid.startswith(("M.msrp_pct_gap.", "M.mipy_gap.")))
+    for sid in comparison_order:
+        topic = _comparison_topic(sid)
+        copy("comparison", "all", sid, topic)
+
     for label in ws.cars:
-        budget = ws.sources.get(f"M.{label}.budget")
-        if budget is None:
-            continue
-        kind = "strength" if " under " in budget.detail else "risk" if " over " in budget.detail else None
-        if kind:
-            keep(kind, label, budget.detail, [f"M.{label}.budget"])
+        if _count(ws, "strength", label) == 0:
+            for sid, src in ws.sources.items():
+                if not covers(sid, label) or already("strength", label, sid):
+                    continue
+                if ".check." in sid and " — meets" in src.detail:
+                    copy("strength", label, sid)
+            budget = ws.sources.get(f"M.{label}.budget")
+            if budget and " under " in budget.detail:
+                copy("strength", label, f"M.{label}.budget")
+            if f"M.{label}.annual_vs_listed" in ws.sources and "at or below" in ws.sources[f"M.{label}.annual_vs_listed"].detail:
+                copy("strength", label, f"M.{label}.annual_vs_listed")
+            copy("strength", label, f"{label}.features")
+            ncap = ws.sources.get(f"{label}.ncap")
+            if ncap and "has not published" not in ncap.detail and "Not rated" not in ncap.detail and ncap.detail:
+                copy("strength", label, f"{label}.ncap")
+        if _count(ws, "risk", label) == 0:
+            for sid, src in ws.sources.items():
+                if not covers(sid, label) or already("risk", label, sid):
+                    continue
+                if ".check." in sid and " — conflicts" in src.detail:
+                    copy("risk", label, sid)
+            if f"M.{label}.budget" in ws.sources and " over " in ws.sources[f"M.{label}.budget"].detail:
+                copy("risk", label, f"M.{label}.budget")
+            if f"M.{label}.annual_vs_listed" in ws.sources and " above " in ws.sources[f"M.{label}.annual_vs_listed"].detail:
+                copy("risk", label, f"M.{label}.annual_vs_listed")
+            recalls = ws.sources.get(f"{label}.recalls")
+            if recalls and not recalls.detail.startswith("0 "):
+                copy("risk", label, f"{label}.recalls")
+            complaints = ws.sources.get(f"{label}.complaints")
+            if complaints and not complaints.detail.startswith("0 "):
+                copy("risk", label, f"{label}.complaints")
+        if _count(ws, "question", label) == 0:
+            history = ws.sources.get(f"M.{label}.history")
+            if history and "does not disclose" in history.detail:
+                added = _add_question(ws, label, history.detail) or added
+            unknowns = ws.sources.get(f"{label}.unknowns")
+            if unknowns:
+                added = _add_question(ws, label, unknowns.detail) or added
+            for sid, src in ws.sources.items():
+                if covers(sid, label) and ".check." in sid and (
+                        "not established" in src.detail or " — unknown" in src.detail):
+                    added = _add_question(ws, label, src.detail) or added
+            if f"{label}.recalls" in ws.sources and not ws.sources[f"{label}.recalls"].detail.startswith("0 "):
+                added = _add_question(
+                    ws, label,
+                    "Can you confirm this VIN's recall repair status with a dealer? "
+                    "Campaigns listed are model-year records, not proof about this car.",
+                ) or added
+    return added
+
+
+def restate_from_tools(ws: Workspace) -> bool:
+    """Record a cited verdict if missing, and fill empty per-car / comparison slots from tools.
+
+    Used when the model gathered evidence and then called finish, went quiet, or had its
+    statements rejected. Numbers are copied from registered source details. Already-accepted
+    findings are not removed. Returns True if a verdict exists afterwards.
+    """
+    if not any(sid.startswith("M.") for sid in ws.sources):
+        ws.get_comparison_metrics()
+    if not verdict_recorded(ws) and not _restate_verdict(ws):
+        return False
+    if _backfill_cards(ws):
+        ws.backfilled = True
     return True
 
 
@@ -797,7 +1079,7 @@ def analyze(report: Report, settings: Settings, token: CancelToken | None = None
             message="AI analysis produced a statement that could not be stored. The comparison, metrics and evidence above are complete.",
             tool_calls=ws.tool_calls,
         )
-    if not verdict_recorded(ws) and fetched_evidence(ws):
+    if fetched_evidence(ws):
         restate_from_tools(ws)
     try:
         analysis = assemble(ws, settings)

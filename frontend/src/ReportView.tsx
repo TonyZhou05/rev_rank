@@ -586,7 +586,7 @@ function AIComparison({ ai, cars }: { ai: AIAnalysis; cars: Candidate[] }) {
         <FlagList tone="green" label="Green flags" claims={v.strengths} cites={cites}/>
         <FlagList tone="red" label="Red flags" claims={v.risks} cites={cites}/>
         {!v.strengths.length && !v.risks.length &&
-          <p className="flag-empty">No green or red flag passed the evidence checks for this car.</p>}
+          <p className="flag-empty">No green or red flag could be grounded in the fetched evidence for this car. Unknowns are listed as seller questions when they exist.</p>}
       </div>;
     })}</div>
     {ai.comparisons.length > 0 && <div className="ai-points">{ai.comparisons.map((p, i) => {
