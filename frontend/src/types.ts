@@ -250,7 +250,7 @@ export interface ImportResult {
 }
 export interface SourceInfo { sources: { domain: string; name: string; status: string; reason: string }[]; live_fetch_enabled: boolean }
 // llm_model and llm_endpoint_host name the configured model; the API key never leaves the server.
-export interface Health { status: string; api_revision?: number; llm_enabled: boolean; llm_model?: string; llm_endpoint_host?: string; market_enabled: boolean; search_enabled?: boolean; search_provider?: string; licensed_inventory_enabled?: boolean; vin_decode_enabled?: boolean; neovin_msrp_enabled?: boolean; compare_timeout_seconds?: number; usage?: Record<string, ProviderUsage> }
+export interface Health { status: string; api_revision?: number; llm_enabled: boolean; llm_model?: string; llm_endpoint_host?: string; market_enabled: boolean; search_enabled?: boolean; search_provider?: string; licensed_inventory_enabled?: boolean; vin_decode_enabled?: boolean; neovin_msrp_enabled?: boolean; past_inventory_enabled?: boolean; compare_timeout_seconds?: number; usage?: Record<string, ProviderUsage> }
 export interface ProviderUsage { used: number; limit: number; unit: string; month: string }
 export interface ImportSlot {
   id: string;
