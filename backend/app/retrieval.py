@@ -90,8 +90,16 @@ def listing_candidate(row: InventoryListing) -> Candidate:
 def licensed_records(url, host, stock, target, settings, attempts, deadline):
     # Only listing identity leaves the server: no zip codes, tracking or other query parameters.
     canonical = identity_url(url)
+    seller_page = lambda row: same_listing(row.source_url, url)
+    seller_stock = lambda row: row.stock_no == stock and bare_host(row.source_url) == host
 
-    def lookup(label, **query):
+    def lookup(label, usable, **query):
+        """One paid lookup, reported by what it produced rather than by its HTTP outcome.
+
+        `completed` means rows this listing can be built from. A provider that answered with nothing,
+        or with nothing that is this car, is `not_found`: calling that completed made a dead end read
+        as a step that had worked.
+        """
         if time.monotonic() >= deadline:
             return []
         try:
@@ -99,19 +107,23 @@ def licensed_records(url, host, stock, target, settings, attempts, deadline):
         except ProviderError as error:
             attempts.append(RetrievalAttempt(method='licensed', status='failed', detail=f'{label}: {error}'[:1000]))
             return []
-        attempts.append(RetrievalAttempt(method='licensed', status='completed', detail=f'{label}: {len(rows)} listings received.'))
+        kept = [row for row in rows if usable(row)]
+        detail = (f'{label}: {len(rows)} listings received, {len(kept)} matching this listing.' if kept
+                  else f'{label}: {len(rows)} listings received, none of them this listing.' if rows
+                  else f'{label}: the provider holds no listing under this identity.')
+        attempts.append(RetrievalAttempt(method='licensed', status='completed' if kept else 'not_found', detail=detail))
         return rows
 
     # Each lookup is a paid call, so stop at the first one that finds the seller's own listing.
     # A known VIN goes first: one call returns the seller's record and its syndicated copies.
-    rows = lookup('VIN lookup', vin=target) if target else []
-    own = [r for r in rows if same_listing(r.source_url, url)]
+    # Copies are usable even when the seller's own page is not among them, so they count as a hit.
+    rows = lookup('VIN lookup', lambda row: row.vin == target, vin=target) if target else []
+    own = [r for r in rows if seller_page(r)]
     # Identity comes only from the seller's own listing: exact listing URL, else seller-scoped stock number.
     if not own:
-        own = [r for r in lookup('Listing URL lookup', vdp_url=canonical) if same_listing(r.source_url, url)]
+        own = [r for r in lookup('Listing URL lookup', seller_page, vdp_url=canonical) if seller_page(r)]
     if not own and stock:
-        own = [r for r in lookup('Seller stock lookup', stock_no=stock)
-               if r.stock_no == stock and bare_host(r.source_url) == host]
+        own = [r for r in lookup('Seller stock lookup', seller_stock, stock_no=stock) if seller_stock(r)]
     vins = {r.vin for r in own}
     if len(vins) > 1:
         raise Stop('identity_conflict', 'Licensed inventory associates this listing with different VINs. Enter the correct VIN before recovery.')
@@ -132,6 +144,11 @@ def licensed_records(url, host, stock, target, settings, attempts, deadline):
 
 
 SOLD = "The seller's indexed page says this vehicle is no longer available. This does not confirm a sale."
+# Licensed inventory answered and held nothing under this listing's identity. The provider indexes
+# active inventory, so a car that has stopped being listed simply drops out of it. That is a gap in
+# coverage or a car that is gone, and neither is a sale.
+LICENSED_MISS = ('Licensed inventory holds no active record of this listing, so it may already be sold or '
+                 'removed. This does not confirm a sale.')
 
 
 def has_field(text: str, source_url: str, field: str) -> bool:
@@ -174,7 +191,9 @@ def search_records(url, host, stock, target, request, settings, attempts, deadli
         except SearchError as error:
             attempts.append(RetrievalAttempt(method='search', status='failed', detail=str(error)[:1000]))
             if not bound:
-                raise Stop('failed', 'Search could not recover this listing. Paste the VIN and listing text.')
+                # Carry the provider's own reason: an exhausted key or a rate limit is the operator's
+                # to fix, and "search failed" alone sends the buyer looking for a listing problem.
+                raise Stop('failed', f'Search could not recover this listing. {error} Paste the VIN and listing text.')
             break
         eligible, relevant = [], 0
         for hit in hits[:30]:
@@ -359,20 +378,27 @@ def recover_listing(request: ImportRequest, settings: Settings, original: Import
     if source != 'auto' and not (use_licensed or use_search):
         name = 'MarketCheck (REVRANK_MARKETCHECK_API_KEY)' if source == 'marketcheck' else 'Search (REVRANK_SEARCH_PROVIDER and REVRANK_SEARCH_API_KEY)'
         return finish('unavailable', f'The selected recovery source, {name}, is not configured on the server. Choose another source.')
+    # What licensed inventory answered, kept for the outcome message. Without it a later search
+    # failure is all the buyer reads, and a licensed lookup that held nothing reads as progress.
+    preface = ''
     try:
         if use_licensed:
             records, target = licensed_records(url, host, stock, target, settings, result.attempts, deadline)
         if not records:
+            licensed_failed = any(a.method == 'licensed' and a.status == 'failed' for a in result.attempts)
             if use_search:
+                preface = '' if licensed_failed or not use_licensed else LICENSED_MISS + ' '
                 records, target = search_records(url, host, stock, target, request, settings, result.attempts, deadline)
-            elif any(a.method == 'licensed' and a.status == 'failed' for a in result.attempts):
+            elif licensed_failed:
                 raise Stop('failed', 'Licensed inventory lookup failed. Paste the VIN and listing text.')
             elif use_licensed:
-                raise Stop('not_found', 'No matching licensed inventory listing was found. Enter its VIN or paste listing text.')
+                raise Stop('not_found', f'{LICENSED_MISS} Enter its VIN or paste listing text.')
     except Stop as stop:
+        # An identity conflict is about which car this is, not about who holds a record of it.
+        detail = preface + stop.detail if stop.status in ('not_found', 'failed') else stop.detail
         if not (identity_only and stop.status in ('not_found', 'failed')):
-            return finish(stop.status, stop.detail)
-        result.attempts.append(RetrievalAttempt(method='recovery', status=stop.status, detail=stop.detail))
+            return finish(stop.status, detail)
+        result.attempts.append(RetrievalAttempt(method='recovery', status=stop.status, detail=detail))
 
     # Keep original direct evidence only when it independently names this VIN.
     # It participates in conflict detection; unbound partial pages cannot bleed in.

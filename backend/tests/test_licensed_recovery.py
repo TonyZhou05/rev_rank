@@ -12,7 +12,7 @@ from backend.app import main, retrieval, vehicle_data
 from backend.app.config import Settings
 from backend.app.fetch import FetchError
 from backend.app.models import ImportRequest, ImportResponse
-from backend.app.search import SearchResult
+from backend.app.search import SearchError, SearchResult
 from backend.app.vehicle_data import InventoryListing, ProviderError, VinDecode
 
 VIN = "WBS1H9C50HV123456"
@@ -186,6 +186,53 @@ def test_licensed_only_failure_is_truthful(monkeypatch, outcome, status):
     assert result.recovery_status == status
     assert result.candidate is None
     assert any(a.method == "licensed" for a in result.attempts)
+
+
+def licensed_attempts(result):
+    return [(a.status, a.detail) for a in result.attempts if a.method == "licensed"]
+
+
+def test_lookup_that_received_nothing_is_not_reported_as_completed(monkeypatch):
+    """The CarMax report: two licensed lookups came back empty, and both read as successes."""
+    calls = stub_inventory(monkeypatch, {})
+    result = recover(licensed())
+    assert calls == [("vdp_url", URL), ("stock_no", STOCK)]
+    assert [status for status, _ in licensed_attempts(result)] == ["not_found", "not_found"]
+    assert all("holds no listing under this identity" in detail for _, detail in licensed_attempts(result))
+    # A car missing from an active-inventory feed has not been observed to sell.
+    assert "no active record" in result.message and "does not confirm a sale" in result.message
+    assert result.recovery_status == "not_found"
+
+
+def test_lookup_that_received_other_cars_says_so(monkeypatch):
+    stub_inventory(monkeypatch, {"vdp_url": [row(url="https://www.carmax.com/car/99999999", vin=OTHER_VIN, stock="99999999")]})
+    statuses = licensed_attempts(recover(licensed()))
+    assert [status for status, _ in statuses] == ["not_found", "not_found"]
+    assert "1 listings received, none of them this listing." in statuses[0][1]
+
+
+def test_vin_lookup_counts_syndicated_copies_as_a_hit(monkeypatch):
+    """Copies of the bound VIN build the candidate, so that lookup did produce something."""
+    stub_inventory(monkeypatch, {"vin": [row(url=MIRROR)]})
+    result = recover(licensed(), vin=VIN)
+    assert result.recovery_status == "recovered"
+    assert licensed_attempts(result)[0] == ("completed", "VIN lookup: 1 listings received, 1 matching this listing.")
+
+
+def test_licensed_miss_is_named_when_search_then_fails(monkeypatch):
+    """Both legs must appear: a spent search key is not evidence about the listing."""
+    stub_inventory(monkeypatch, {})
+    exhausted = SearchError("The search provider returned HTTP 432: the account's usage limit is exhausted; "
+                            "add credits or raise the plan limit.")
+
+    def search(query, settings, timeout=10, **kwargs):
+        raise exhausted
+
+    monkeypatch.setattr(retrieval, "search", search)
+    result = recover(licensed(search=True))
+    assert result.recovery_status == "failed"
+    assert "Licensed inventory holds no active record of this listing" in result.message
+    assert "usage limit is exhausted" in result.message
 
 
 def test_registry_agreement_is_recorded(monkeypatch):
