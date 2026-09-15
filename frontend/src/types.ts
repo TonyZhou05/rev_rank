@@ -68,6 +68,39 @@ export interface DealerInfo {
   links?: DealerLink[];
 }
 
+// One search excerpt about the dealer, as the search provider returned it. RevRank never opens
+// these pages, and review platforms are filtered out server-side, so no rating reaches this shape.
+export interface DealerSignal {
+  id: string;
+  // official: a public body's own page (attorney general, DMV, licensing board, FTC).
+  // news: a dated, attributable article. Review and complaint platforms stay link-outs, not signals.
+  category: 'official' | 'news';
+  label: string;
+  url: string;
+  host: string;
+  excerpt: string;
+  // How the excerpt reads: a concluded action, an allegation, or neither. Never upgraded.
+  nature?: 'action' | 'allegation' | 'unclear';
+  published?: string | null;
+  query?: string;
+}
+// Cited dealer flags plus the excerpts they came from. Never a score: `green`/`red` are capped,
+// cited sentences, and `status` explains an empty result instead of implying a clean record.
+export interface DealerSignals {
+  scope?: string;
+  status: 'complete' | 'partial' | 'unavailable' | 'disabled';
+  message?: string;
+  dealer_name?: string | null;
+  model?: string;
+  searches: number;
+  credits: number;
+  signals?: DealerSignal[];
+  green?: Claim[];
+  red?: Claim[];
+  caveats?: string[];
+  dropped_claims?: number;
+}
+
 export type EvidenceStatus = 'seller_claim' | 'user_confirmed' | 'extracted' | 'synthetic';
 export interface Evidence { value: string; source: string; status: EvidenceStatus }
 export interface Observation {
@@ -184,6 +217,8 @@ export interface Report {
   cross_model?: boolean;
   // Optional map from candidate id → model-year NHTSA block (PR #1).
   nhtsa_data?: Record<string, NHTSASafetyData | null>;
+  // Optional map from candidate id → search-derived dealer flags; absent when no car has a dealer.
+  dealer_signals?: Record<string, DealerSignals | null>;
   // Deterministic constraint-fit order, and what the cited re-rank falls back to.
   shortlist?: ShortlistEntry[];
   warnings: string[];

@@ -157,6 +157,21 @@
 .dealer-flags{margin-top:auto;padding:10px 12px;border-radius:8px;border:1px dashed #d5dee7;background:#f7f9fa}
 .dealer-flags-label{display:block;font:700 10px 'DM Mono',monospace;letter-spacing:.06em;text-transform:uppercase;color:#7b8997}
 .dealer-flags p{margin:4px 0 0;font-size:12px;color:#52677e}
+/* Live dealer flags: solid border, because it now carries cited statements rather than a promise. */
+.dealer-flags-live{border-style:solid;background:#fff}
+.dealer-flags-live .flag-group{margin-top:8px}
+.dealer-signal-list{margin-top:8px}
+.dealer-signal-list ol{margin:8px 0 0;padding-left:1.2rem;font-size:12px;color:#44566b}
+.dealer-signal-list li+li{margin-top:8px}
+.dealer-signal-kind{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font:700 9.5px 'DM Mono',monospace;letter-spacing:.06em;text-transform:uppercase;color:#8896a5}
+/* An allegation and a concluded action read differently, so they are never given the same chip. */
+.dealer-nature{padding:1px 6px;border-radius:999px;background:#eef1f4;color:#5b6b7e}
+.dealer-nature.action{background:#fdeceb;color:#8f3b34}
+.dealer-nature.allegation{background:#fff4d5;color:#73570c}
+.dealer-signal-meta{display:block;margin-top:2px;font-size:11px;color:#8896a5}
+.dealer-signal-excerpt{display:block;margin-top:3px;font-style:italic;color:#52677e}
+/* A dealer citation points at the excerpt list in the same card, so it is a label, not a control. */
+.cite.static,.cite.static:hover{cursor:default;background:#e8eef3;color:#4a5f75}
 @media print{.dealer-card{break-inside:avoid}}
 
 

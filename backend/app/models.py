@@ -425,6 +425,60 @@ class ShortlistEntry(Model):
     rationale: Annotated[str, StringConstraints(max_length=900)]
 
 
+# Fixed label for the search-derived dealer block: what it is, and what it is not.
+DEALER_SIGNAL_SCOPE = "Dealer business signals from search excerpts (allegations and public records, not verified)"
+
+
+class DealerSignal(Model):
+    """One search excerpt about the selling business, kept as the provider returned it.
+
+    RevRank never fetches these pages: the title, snippet and date are the search provider's own,
+    which is why an excerpt is evidence of what a page says and nothing more. Review and complaint
+    platforms are excluded upstream, so no rating or user submission reaches this model.
+    """
+    id: Nonempty
+    # official: a public body's own page (state attorney general, DMV, licensing board, FTC).
+    # news: a dated, attributable article. Nothing else is read; see dealer_signals.DENY_HOSTS.
+    category: Literal["official", "news"]
+    label: Short
+    url: Link
+    host: Short
+    excerpt: Short
+    # How the excerpt's own wording reads: a concluded "action" (settlement, order, licence action),
+    # an "allegation" (filed suit, complaint, investigation), or "unclear". A keyword reading of the
+    # excerpt, never a legal characterisation, and never upgraded from allegation to action.
+    nature: Literal["action", "allegation", "unclear"] = "unclear"
+    # Only when the provider dated the page; search excerpts are otherwise undated.
+    published: Short | None = None
+    query: Short = ""
+
+    @field_validator("url")
+    @classmethod
+    def link_is_reference(cls, value):
+        return reference_url(value)
+
+
+class DealerSignals(Model):
+    """Thin, cited dealer flags plus the excerpts they came from.
+
+    A flag is only ever a reading of the excerpts below it, never a verdict on the business and
+    never a score: nothing here is aggregated into a number or a star rating.
+    """
+    scope: str = DEALER_SIGNAL_SCOPE
+    status: Literal["complete", "partial", "unavailable", "disabled"]
+    message: Short = ""
+    dealer_name: Short | None = None
+    model: Short = ""
+    searches: Annotated[int, Field(ge=0, le=10)] = 0
+    # Provider credits the searches cost, as the provider prices them.
+    credits: Annotated[int, Field(ge=0, le=40)] = 0
+    signals: Annotated[list[DealerSignal], Field(max_length=12)] = Field(default_factory=list)
+    green: Annotated[list[Claim], Field(max_length=3)] = Field(default_factory=list)
+    red: Annotated[list[Claim], Field(max_length=3)] = Field(default_factory=list)
+    caveats: Annotated[list[Short], Field(max_length=8)] = Field(default_factory=list)
+    dropped_claims: Annotated[int, Field(ge=0, le=100)] = 0
+
+
 class Report(Model):
     id: str
     created_at: str
@@ -441,6 +495,8 @@ class Report(Model):
     ai_analysis: AIAnalysis | None = None
     cross_model: bool = False
     nhtsa_data: dict[str, NHTSASafetyData] = Field(default_factory=dict)
+    # Keyed by candidate id. Server-authored during the report run, never accepted from a request.
+    dealer_signals: dict[str, DealerSignals] = Field(default_factory=dict)
     # Deterministic constraint-fit order; always present, and the fallback when the model has no ranking.
     shortlist: Annotated[list[ShortlistEntry], Field(max_length=3)] = Field(default_factory=list)
 
