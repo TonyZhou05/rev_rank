@@ -66,6 +66,37 @@ def text(value, limit=300):
 
 
 @dataclass(frozen=True)
+class DealerRecord:
+    """The selling rooftop exactly as the inventory payload described it.
+
+    Only fields the provider sent: no lookup, no geocode, and no name reconstructed from a URL.
+    """
+    name: str | None = None
+    website: str | None = None
+    phone: str | None = None
+    street: str | None = None
+    city: str | None = None
+    state: str | None = None
+    postal_code: str | None = None
+
+
+def parse_dealer(dealer) -> DealerRecord | None:
+    """Map the payload's `dealer` object; None when it identifies no business."""
+    if not isinstance(dealer, dict):
+        return None
+    website = dealer.get('website')
+    website = website if isinstance(website, str) and len(website) <= 2048 else None
+    postal = dealer.get('zip')
+    postal = str(postal)[:20] if isinstance(postal, (str, int)) and not isinstance(postal, bool) else None
+    phone = dealer.get('phone')
+    phone = str(phone)[:60] if isinstance(phone, (str, int)) and not isinstance(phone, bool) else None
+    record = DealerRecord(name=text(dealer.get('name'), 120), website=text(website, 2048), phone=text(phone, 60),
+                          street=text(dealer.get('street'), 200), city=text(dealer.get('city'), 80),
+                          state=text(dealer.get('state'), 20), postal_code=text(postal, 20))
+    return record if any(vars(record).values()) else None
+
+
+@dataclass(frozen=True)
 class InventoryListing:
     vin: str
     source_url: str
@@ -84,6 +115,8 @@ class InventoryListing:
     drivetrain: str | None = None
     fuel_type: str | None = None
     seller: str | None = None
+    # The selling rooftop's own contact details, when the payload carried them.
+    dealer: DealerRecord | None = None
     history_claims: tuple[str, ...] = ()
     last_seen: str | None = None
     # A6: Days-on-market from MarketCheck payload (0 extra paid calls)
@@ -129,7 +162,7 @@ def parse_listing(row) -> InventoryListing | None:
         trim=text(build.get('trim'), 80), transmission=text(build.get('transmission'), 80),
         location=place or None, body=text(build.get('body_type'), 80), engine=text(build.get('engine'), 80),
         drivetrain=text(build.get('drivetrain'), 40), fuel_type=text(build.get('fuel_type'), 40),
-        seller=text(dealer.get('name'), 120), history_claims=claims,
+        seller=text(dealer.get('name'), 120), dealer=parse_dealer(dealer), history_claims=claims,
         last_seen=text(row.get('last_seen_at_date'), 40),
         dom=dom, dom_active=dom_active, first_seen_at=first_seen)
 

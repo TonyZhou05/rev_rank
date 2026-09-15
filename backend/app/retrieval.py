@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 from .config import Settings
+from .dealer import from_listing as dealer_from_listing
 from .extraction import apply_market_units, extract
 from .fetch import FetchError, validated_url
 from .listing_url import bare_host, identity_params, identity_url, is_listing_url, listing_id, normalize_input_url, same_listing, strip_tracking
@@ -60,7 +61,9 @@ def listing_candidate(row: InventoryListing) -> Candidate:
     candidate = Candidate(id=str(uuid4()), title=(row.heading or 'Licensed inventory listing')[:300],
                           source_kind='listing', source_url=row.source_url, retrieval_method='licensed',
                           # A6: DOM fields from MarketCheck payload (0 extra paid calls)
-                          dom=row.dom, dom_active=row.dom_active, first_seen_at=row.first_seen_at)
+                          dom=row.dom, dom_active=row.dom_active, first_seen_at=row.first_seen_at,
+                          # Dealer identity from the same payload; also 0 extra paid calls.
+                          dealer=dealer_from_listing(row))
     values = dict(year=row.year, make=row.make, model=row.model, trim=row.trim, price=row.price,
                   mileage=row.miles, transmission=row.transmission, location=row.location, body=row.body,
                   engine=row.engine, drivetrain=row.drivetrain, fuel_type=row.fuel_type)
@@ -482,6 +485,12 @@ def recover_listing(request: ImportRequest, settings: Settings, original: Import
         merged.price = None
     if 'mileage_unit' in merged.conflicts:
         merged.mileage = None
+    # The dealer block travels with the seller's own licensed record only. A syndicated copy of the
+    # same VIN may name a marketplace rather than the selling rooftop, so it leaves the block null
+    # instead of attributing the car to the wrong business.
+    seller_record = next((r for r in records if r.method == 'licensed' and r.primary and r.candidate.dealer), None)
+    if seller_record:
+        merged.dealer = seller_record.candidate.dealer
     merged.title = ' '.join(str(getattr(merged, f)) for f in ('year', 'make', 'model', 'trim') if getattr(merged, f)) or merged.title
     methods = {r.method for r in records}
     merged.warnings.append('Recovery supplemented a blocked or incomplete direct import; see original retrieval attempts.')
