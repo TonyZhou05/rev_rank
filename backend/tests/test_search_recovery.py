@@ -37,6 +37,7 @@ def offline(monkeypatch):
     monkeypatch.setattr(socket.socket, "connect_ex", forbidden)
     monkeypatch.setattr(main, "fetch_listing", forbidden)
     monkeypatch.setattr(retrieval, "search", forbidden)
+    monkeypatch.setattr(retrieval, "browse_listing", forbidden)
     monkeypatch.setattr(main, "settings", Settings())
 
 

@@ -49,6 +49,6 @@ export function cacheImport(body: ImportRequest, result: ImportResult) {
 const SOURCE_KEY = 'revrank.recoverySource.v1';
 export function loadRecoverySource(): RecoverySource {
   const value = read<string>(SOURCE_KEY);
-  return value === 'marketcheck' || value === 'search' ? value : 'auto';
+  return value === 'marketcheck' || value === 'search' || value === 'browse' ? value : 'auto';
 }
 export const saveRecoverySource = (source: RecoverySource) => write(SOURCE_KEY, source);

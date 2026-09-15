@@ -81,6 +81,50 @@ curl -s "https://api.marketcheck.com/v2/search/car/recents?api_key=$MC_KEY&sourc
 If it is rejected, the attempt is recorded as `licensed · failed` with the provider's reason and
 recovery carries on to search exactly as before; nothing regresses.
 
+## Follow-up (2026-09-15): private in-app browse of the buyer-supplied URL
+
+Lead ask: after Direct is blocked, recover by opening the listing the buyer pasted in a
+**server-side headless session** (Playwright), not by spawning a Cursor/cloud agent per import.
+
+Implemented in `backend/app/browse.py`, wired into `recover_listing` **before** licensed
+inventory and search when the flag is on (Tongli browse-primary; Research addendum
+2026-09-15). `REVRANK_BROWSER_RECOVERY_ENABLED` defaults **off** until Tongli opts in —
+primary browse raises ToS hit rate. Docker and Render must not set the flag on. This is
+not counsel clearance. CI stubs the launcher; Chromium is installed in the Docker image.
+See [listing-browse-primary-addendum-20260915.md](listing-browse-primary-addendum-20260915.md).
+
+What this is:
+
+- One private Chromium context per import, no stored cookies, no shared profile.
+- Host allowlist v1: CarMax, Carvana, and hosts already recognized in `listing_url`
+  `MARKETPLACES`. Unknown hosts are blocked. Search/category pages are refused.
+- Navigate only to the validated user-supplied URL. Same-host subresources may load so JS can
+  render. Review/complaint/social hosts are aborted. Document navigations off the listing's
+  registrable domain are aborted.
+- Extracted HTML goes through the existing `extract()` / recovery merge. Only listing
+  fields are kept (YMMT, price, miles, location, VIN). Provenance is
+  `retrieval_method: browse` on the wire; evidence `source` starts with `user_vdp_browse`
+  and records URL, timestamp, and a content hash (HTML is not persisted).
+- Cancel/timeout use the same `CancelToken` + `guarded()` pattern as compare. Chromium close is
+  a cancel closer.
+
+What this is not:
+
+- **Not a bot-manager bypass.** No stealth plugin, residential proxy, web-unlocker, cookie
+  reuse, or CAPTCHA solver. An Akamai/Cloudflare 403 or challenge is `blocked`, same as Direct.
+  CarMax from Render is still expected to fail this path for that reason; the spike exists for
+  pages that block the `RevRank/0.1` HTTP fetcher but serve a real browser, and for JS-rendered
+  VDPs whose HTML arrives after load.
+- **Not a review-site scrape.** `REVIEW_HOSTS` in `browse.py` refuses Yelp, DealerRater, BBB,
+  Reddit, etc. even if allowlisted. Dealer-signals remains link-out vs cited official/news.
+- **Not a site crawl.** One URL, the one the buyer pasted. If `robots.txt` explicitly Disallows
+  the path or sets a crawl-delay, browse is refused. If `robots.txt` cannot be read (the CarMax
+  Render case: robots.txt itself is HTTP 403), that one URL may still be opened — that is not
+  permission to crawl the rest of the host.
+
+Deferred: stealth/residential unblocking; MarketCheck `/v2/search/car/recents`; browsing any URL
+other than the buyer-supplied VDP; Playwright in GitHub Actions (browsers are not installed).
+
 ## Follow-up (2026-09-13 UTC): why the pages are denied and which channels work
 
 Header probes from the developer machine, with an honest `RevRank/0.1` user agent:
@@ -118,29 +162,35 @@ is not such a service.
 
 ### Implemented recovery order
 
-1. Licensed inventory, if `REVRANK_MARKETCHECK_API_KEY` is set. Look up the
-   query-stripped listing URL. Only a record whose `vdp_url` has the same host and
-   path binds identity. If none matches and the seller URL has a stock pattern, look
-   up the stock number, accepting only records on the seller's own host with the
-   same `stock_no`. Several VINs, or a VIN that differs from the user's, stop with
-   `identity_conflict`. Then look up the bound VIN with `nodedup=true` for
-   syndicated copies. At most 3 requests. The provider's last-seen date becomes
-   `observed_at`.
-2. Search, only if licensed inventory found nothing. Same identity rules as before. Up to
+1. Private browse of the buyer-supplied listing URL, if Direct was blocked, failed,
+   or thin and `REVRANK_BROWSER_RECOVERY_ENABLED=true`. Playwright Chromium, one
+   allowlisted VDP, no review sites, unknown hosts blocked, one attempt. A challenge
+   or 403 is recorded as blocked and the buyer is asked to paste price, mileage, and
+   VIN; MarketCheck/search may still run. Flag stays default off until Tongli
+   opts in. This is not counsel clearance.
+2. Licensed inventory, if browse missed or the flag is off and `REVRANK_MARKETCHECK_API_KEY`
+   is set. Look up the query-stripped listing URL. Only a record whose `vdp_url` has
+   the same host and path binds identity. If none matches and the seller URL has a
+   stock pattern, look up the stock number, accepting only records on the seller's
+   own host with the same `stock_no`. Several VINs, or a VIN that differs from the
+   user's, stop with `identity_conflict`. Then look up the bound VIN with
+   `nodedup=true` for syndicated copies. At most 3 requests. The provider's last-seen
+   date becomes `observed_at`.
+3. Search, only if browse and licensed inventory found nothing. Same identity rules as before. Up to
    three queries: seller-scoped, then VIN, then VIN + "price". A fourth seller-focused query
    runs only for a missing CarMax location (see `docs/parsing-notes.md`).
-3. NHTSA decode, if `REVRANK_VIN_DECODE_ENABLED=true`. Year/make/model must agree
+4. NHTSA decode, if `REVRANK_VIN_DECODE_ENABLED=true`. Year/make/model must agree
    with every source; registry names may be coarser, e.g. "Camaro" vs "Camaro ZL1".
    A disagreement withholds the field as a conflict. The decoder fills an identity
    field only when no listing source supplies it. A check-digit error becomes a
    warning. Trim, body and engine are shown only as registry observations.
-4. Reconciliation. The seller's own listing (fresh direct page or its licensed
-   record) is primary. Its value is kept when syndicated copies disagree, with a
+5. Reconciliation. The seller's own listing (fresh direct page, private browse of that
+   URL, or its licensed record) is primary. Its value is kept when syndicated copies disagree, with a
    warning, and every observation is retained. If no primary value exists, or two
    primaries disagree, the field is withheld as before. History flags from the feed
    are dealer claims (`seller_claim`), never verification.
 
-Offline regressions: `backend/tests/test_licensed_recovery.py`.
+Offline regressions: `backend/tests/test_licensed_recovery.py`, `backend/tests/test_browse_recovery.py`.
 
 ### Live Tavily run (2026-09-13)
 

@@ -16,6 +16,11 @@ WORKDIR /app
 # Install Python dependencies
 COPY backend/requirements.txt ./backend/
 RUN pip install --no-cache-dir -r backend/requirements.txt
+# Chromium is installed so Tongli can later opt in without a rebuild. The path
+# stays off (no REVRANK_BROWSER_RECOVERY_ENABLED here). CI does not install browsers;
+# backend tests stub this path. --with-deps pulls the OS libraries Chromium needs on slim images.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN playwright install --with-deps chromium
 
 # Copy application code
 COPY backend/ ./backend/
@@ -27,6 +32,9 @@ RUN mkdir -p .local
 # Default environment for try-out: no external API keys required
 ENV REVRANK_LIVE_FETCH_ENABLED=false
 ENV REVRANK_DATA_DIR=/app/.local
+# Browse-first stays off until Tongli opts in (primary browse raises ToS hit rate).
+# Chromium is installed above so REVRANK_BROWSER_RECOVERY_ENABLED=true is enough.
+# Not counsel clearance.
 # OpenAI-compatible model endpoint. Inert until REVRANK_LLM_API_KEY and REVRANK_LLM_MODEL are set
 # in the service environment; override for a provider other than DeepSeek.
 ENV REVRANK_LLM_BASE_URL=https://api.deepseek.com/v1

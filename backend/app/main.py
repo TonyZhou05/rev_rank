@@ -63,7 +63,9 @@ def health():
             "neovin_msrp_enabled": settings.neovin_msrp_enabled,
             "past_inventory_enabled": settings.past_inventory_enabled,
             "dealer_signals_enabled": settings.dealer_signals_available,
+            "browser_recovery_enabled": settings.browser_recovery_enabled,
             "compare_timeout_seconds": settings.compare_timeout_seconds,
+            "import_timeout_seconds": settings.import_timeout_seconds,
             "usage": usage.summary(settings)}
 
 @app.get("/api/sources")
@@ -75,7 +77,25 @@ def demo():
     return {"candidates": demo_candidates()}
 
 @app.post("/api/import", response_model=ImportResponse)
-def import_listing(request: ImportRequest):
+async def import_listing(request: ImportRequest, http_request: Request, response: Response):
+    """Direct fetch, then recovery. One cancel token covers the whole import, including private browse."""
+    token = CancelToken(timeout=settings.import_timeout_seconds)
+    response.headers[REQUEST_ID_HEADER] = token.id
+    try:
+        return await guarded(lambda: run_import(request, token), http_request, token)
+    except Cancelled:
+        if token.reason == DISCONNECTED:
+            return JSONResponse(status_code=499, content={"detail": "Client closed the request before import finished."},
+                                headers={REQUEST_ID_HEADER: token.id})
+        return JSONResponse(
+            status_code=503,
+            content={"detail": (f"The import did not finish within {spell_seconds(settings.import_timeout_seconds)} "
+                                "on the server. Nothing was invented; please try again.")},
+            headers={REQUEST_ID_HEADER: token.id},
+        )
+
+
+def run_import(request: ImportRequest, token: CancelToken) -> ImportResponse:
     notes = []
     if request.url:
         # Accept pasted text around the URL and a missing scheme; read a VIN embedded in the URL.
@@ -92,6 +112,7 @@ def import_listing(request: ImportRequest):
     raw = request.text or ""
     if request.url and not raw.strip():
         try:
+            token.check()
             page = fetch_listing(request.url, settings)
             raw = page.text
             source_url = page.url
@@ -99,14 +120,16 @@ def import_listing(request: ImportRequest):
         except FetchError as error:
             original = ImportResponse(status=error.status, candidate=None, message=error.message,
                                       attempts=notes + [dict(method='direct', status=error.status, detail=error.message)])
-            return recover_listing(request, settings, original)
+            return recover_listing(request, settings, original, token=token)
+        except Cancelled:
+            raise
     candidate, text = extract(raw, source_url, fetched=fetched)
     if fetched and any(w.startswith(("Conflicting vin:", "Multiple structured products found")) for w in candidate.warnings):
         # Several vehicles on one page (search results, "similar cars"): none of them is known to be this listing.
         detail = "The fetched page shows several vehicles, so none of its details were used for this listing."
         original = ImportResponse(status="failed", candidate=None, message=detail,
                                   attempts=notes + [dict(method="direct", status="failed", detail=detail)])
-        return recover_listing(request, settings, original)
+        return recover_listing(request, settings, original, token=token)
     if fetched:
         candidate = apply_market_units(candidate, source_url)
         if request.vin and "vin" not in candidate.evidence:
@@ -132,7 +155,7 @@ def import_listing(request: ImportRequest):
         response.recovery_status = 'identity_conflict'
         return response
     if fetched and status == 'partial':
-        return recover_listing(request, settings, response)
+        return recover_listing(request, settings, response, token=token)
     # A VIN the buyer pasted, the URL carried, or the page showed also buys the factory MSRP.
     if response.candidate is not None and request.recovery_source in ('auto', 'marketcheck'):
         evidence = response.candidate.evidence.get('vin')

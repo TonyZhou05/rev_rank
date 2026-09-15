@@ -86,7 +86,9 @@ export function provenance(c: Candidate, field: string): Provenance | null {
   if (source.startsWith('MarketCheck NeoVIN')) return { label: field === 'msrp' ? 'Factory MSRP · NeoVIN' : 'NeoVIN', tone: 'licensed', source };
   if (source.startsWith('Inferred from source')) return { label: 'Inferred', tone: 'inferred', source };
   if (source.startsWith('Licensed inventory')) return { label: 'Licensed', tone: 'licensed', source };
+  if (source.startsWith('Private in-app browse')) return { label: 'Private browse', tone: 'listing', source };
   if (c.source_kind === 'synthetic') return { label: 'Demo', tone: 'demo', source };
+  if (c.retrieval_method === 'browse') return { label: 'Private browse', tone: 'listing', source };
   if (c.retrieval_method === 'search') return { label: 'Search', tone: 'search', source };
   if (c.source_kind === 'user') return { label: 'Pasted', tone: 'listing', source };
   return { label: 'Listing', tone: 'listing', source };

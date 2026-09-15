@@ -27,6 +27,12 @@ provider request and saves nothing; a spent budget returns the deterministic rep
 with the AI path reported unavailable or partial, never inferred. Nothing about a
 compare is module state, so concurrent compares cannot cancel or time out each other.
 
+`POST /api/import` uses the same token and `guarded()` worker: `REVRANK_IMPORT_TIMEOUT_SECONDS`
+covers Direct plus recovery. A private-browse session registers Chromium close as a
+closer. A disconnect is 499; a spent budget that cannot finish is 503; a browse that
+stops at its own timeout is recorded as a `browse` attempt and recovery may fall through
+to licensed inventory, then search. `REVRANK_BROWSER_RECOVERY_ENABLED` defaults off.
+
 ## Run and test
 
 From the repository root: `.venv/bin/python -m pytest backend/tests -q`.

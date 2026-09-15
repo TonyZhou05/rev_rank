@@ -38,6 +38,14 @@ class Settings:
     # Hard wall for one POST /api/compare, just under the page's own 90s limit so the server
     # answers with an honest deterministic report before the browser gives up.
     compare_timeout_seconds: float = 85.0
+    # After Direct is blocked or thin: a private headless session of the buyer-supplied VDP.
+    # Off by default until Tongli opts in (primary browse raises ToS hit rate).
+    # This is not counsel clearance. Docker/Render must not set the flag on.
+    browser_recovery_enabled: bool = False
+    # Cap for one Playwright session. The import token is the outer wall.
+    browser_timeout_seconds: float = 20.0
+    # Hard wall for one POST /api/import, including Direct plus recovery (licensed/browse/search).
+    import_timeout_seconds: float = 55.0
 
     @property
     def marketcheck_enabled(self) -> bool:
@@ -98,4 +106,7 @@ class Settings:
             marketcheck_monthly_calls=int(os.getenv("REVRANK_MARKETCHECK_MONTHLY_CALLS", "500")),
             search_monthly_credits=int(os.getenv("REVRANK_SEARCH_MONTHLY_CREDITS", "1000")),
             compare_timeout_seconds=max(1.0, float(os.getenv("REVRANK_COMPARE_TIMEOUT_SECONDS", "85"))),
+            browser_recovery_enabled=os.getenv("REVRANK_BROWSER_RECOVERY_ENABLED", "false").lower() == "true",
+            browser_timeout_seconds=max(5.0, min(45.0, float(os.getenv("REVRANK_BROWSER_TIMEOUT_SECONDS", "20")))),
+            import_timeout_seconds=max(15.0, float(os.getenv("REVRANK_IMPORT_TIMEOUT_SECONDS", "55"))),
         )

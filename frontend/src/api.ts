@@ -74,10 +74,14 @@ async function request<T>(path: string, body?: unknown, timeoutMs?: number, exte
       const msg = timedOut || controller.signal.reason === 'timeout'
         ? (path === '/compare'
           ? `Timed out after ${spelled} — try again. Your draft is intact.`
-          : `The request timed out after ${spelled}. Your draft is intact — please try again.`)
+          : path === '/import'
+            ? `Import timed out after ${spelled}. Your draft is intact — please try again.`
+            : `The request timed out after ${spelled}. Your draft is intact — please try again.`)
         : (path === '/compare'
           ? 'Report build cancelled. Your draft is intact.'
-          : 'The request was cancelled. Your draft is intact.');
+          : path === '/import'
+            ? 'Import cancelled. Your draft is intact.'
+            : 'The request was cancelled. Your draft is intact.');
       apiLog.update(entry, { status: 'network error', ms: Math.round(performance.now() - started), note: msg });
       throw new Error(msg);
     }
@@ -94,7 +98,8 @@ export const api = {
   health: () => request<Health>('/health'),
   sources: () => request<SourceInfo>('/sources'),
   demo: () => request<{ candidates: Candidate[] }>('/demo'),
-  import: (body: ImportRequest) => request<ImportResult>('/import', body),
+  import: (body: ImportRequest, signal?: AbortSignal, timeoutMs?: number) =>
+    request<ImportResult>('/import', body, timeoutMs, signal),
   // Free-form constraints to validated preferences. The server maps language onto the preference
   // schema only and never returns a vehicle fact, so one transport retry is safe here: it cannot
   // duplicate anything or spend a paid listing lookup.
@@ -127,5 +132,11 @@ export function errorMessage(error: unknown) {
 /** Client compare abort budget: a few seconds above the server limit so a 200 timed-out report wins the race. */
 export function compareClientTimeoutMs(serverSeconds?: number | null) {
   const server = typeof serverSeconds === 'number' && serverSeconds > 0 ? serverSeconds : 85;
+  return Math.round((server + 5) * 1000);
+}
+
+/** Client import abort budget: a few seconds above the server import limit. */
+export function importClientTimeoutMs(serverSeconds?: number | null) {
+  const server = typeof serverSeconds === 'number' && serverSeconds > 0 ? serverSeconds : 55;
   return Math.round((server + 5) * 1000);
 }

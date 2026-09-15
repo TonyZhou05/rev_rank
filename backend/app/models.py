@@ -42,7 +42,7 @@ class Observation(Model):
     source_url: Annotated[str, StringConstraints(max_length=2048)]
     retrieved_at: Short
     observed_at: Short | None = None
-    method: Literal['search', 'direct', 'licensed', 'registry'] = 'search'
+    method: Literal['search', 'direct', 'licensed', 'registry', 'browse'] = 'search'
     vin: Annotated[str, StringConstraints(pattern=r'^[A-HJ-NPR-Z0-9]{17}$')] | None = None
 
 
@@ -131,7 +131,7 @@ class Candidate(Model):
     evidence: dict[str, Evidence] = Field(default_factory=dict)
     warnings: Annotated[list[Short], Field(max_length=100)] = Field(default_factory=list)
     verified_fields: Annotated[list[Nonempty], Field(max_length=40)] = Field(default_factory=list)
-    retrieval_method: Literal['direct', 'search', 'licensed', 'registry', 'paste', 'synthetic'] = 'direct'
+    retrieval_method: Literal['direct', 'search', 'licensed', 'registry', 'paste', 'synthetic', 'browse'] = 'direct'
     observations: Annotated[list[Observation], Field(max_length=150)] = Field(default_factory=list)
     conflicts: Annotated[list[Short], Field(max_length=30)] = Field(default_factory=list)
     # A6: Days-on-market from licensed inventory only; null otherwise (never extra paid calls)
@@ -249,7 +249,7 @@ class ImportRequest(Model):
     vin: Annotated[str, StringConstraints(strip_whitespace=True, to_upper=True, pattern=r'^[A-HJ-NPR-Z0-9]{17}$')] | None = None
     recover: bool = True
     # Debug switch: which recovery provider may be called. "auto" tries MarketCheck, then search only on a miss.
-    recovery_source: Literal["auto", "marketcheck", "search"] = "auto"
+    recovery_source: Literal["auto", "marketcheck", "search", "browse"] = "auto"
 
     @model_validator(mode="after")
     def has_content(self):
@@ -259,7 +259,7 @@ class ImportRequest(Model):
 
 
 RecoveryStatus = Literal[
-    "recovered",         # Successfully recovered from licensed inventory or search
+    "recovered",         # Successfully recovered from licensed inventory, private browse, or search
     "identity_only",     # Only NHTSA VIN decode succeeded; listing details unknown
     "identity_conflict", # Sources disagree on VIN or identity
     "not_found",         # No matching listing found

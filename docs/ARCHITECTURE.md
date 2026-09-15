@@ -53,16 +53,25 @@ See [API_CONTRACT.md](API_CONTRACT.md) for the shared JSON interface.
   phases run in worker threads under one cancel token and time budget, an abandoned request
   stops its own model work, and a spent budget answers with the deterministic report rather
   than an invented analysis. Concurrent compares share no cancellation state.
+- An import is scoped the same way (`REVRANK_IMPORT_TIMEOUT_SECONDS`). A private-browse
+  recovery registers Chromium close as a cancel closer, so a disconnect or spent budget
+  aborts the session instead of waiting it out.
 
 ## Agent ownership
 
-Implemented, opt-in, not yet evaluated live: [listing recovery](search-pipeline-investigation.md)
-after blocked or incomplete direct imports (`backend/app/retrieval.py`). Order:
-licensed inventory by listing URL/stock/VIN (`vehicle_data.py`, MarketCheck), then
-search excerpts (`search.py`, Brave/Tavily), then an optional NHTSA VIN decode that
-cross-checks year/make/model. Each needs its own server-side setting; with none
-configured, recovery reports `unavailable`. None of them re-requests the blocked page.
-Live coverage has not been measured because no provider key has been configured.
+Implemented, **flag-off by default**: [listing recovery](search-pipeline-investigation.md)
+after blocked, failed, or thin direct imports (`backend/app/retrieval.py`). When
+`REVRANK_BROWSER_RECOVERY_ENABLED` is on, order for an allowlisted pasted VDP is a
+private in-app headless browse of **that URL only** (`browse.py`, Playwright), then
+licensed inventory (`vehicle_data.py`, MarketCheck), then search excerpts (`search.py`,
+Brave/Tavily), then an optional NHTSA VIN decode. MarketCheck and search are secondary
+if browse misses. The flag stays off until Tongli opts in (primary browse raises
+ToS hit rate); this is not counsel clearance. Browse refuses unknown hosts,
+review sites, dealer boards, and
+search/category pages; it does not scrape dealer-signals targets; a bot-manager
+challenge is reported as blocked and the buyer is asked to paste price, mileage, and
+VIN. Licensed and search still do not re-request the blocked page. With none of these
+configured, recovery reports `unavailable`.
 
 - Frontend: `frontend/` and [frontend brief](agents/frontend.md).
 - Backend: `backend/` and [data-processing brief](agents/data-processing.md).

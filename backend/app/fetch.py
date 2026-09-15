@@ -18,6 +18,9 @@ from .sources import source_for
 USER_AGENT = "RevRank/0.1"
 MAX_BYTES = 2_000_000
 ROBOTS_BYTES = 256_000
+ACCESS_CHALLENGE = re.compile(
+    r"(verify you are human|checking your browser|access denied|captcha|cf-chl-)", re.I
+)
 TOTAL_SECONDS = 15
 MAX_REDIRECTS = 3
 _DNS = ThreadPoolExecutor(max_workers=4, thread_name_prefix="revrank-dns")
@@ -259,7 +262,7 @@ def fetch_listing(url: str, settings: Settings) -> Page:
         if content_type not in ("text/html", "application/xhtml+xml", "text/plain", "application/ld+json"):
             raise FetchError("unsupported", "Only HTML, plain text and JSON-LD listings are supported.")
         text = result.body.decode("utf-8", errors="replace")
-        if re.search(r"(verify you are human|checking your browser|access denied|captcha|cf-chl-)", text[:20000], re.I):
+        if ACCESS_CHALLENGE.search(text[:20000]):
             raise FetchError("blocked", "Source returned an access challenge; no bypass attempted. Paste listing text.")
         return Page(text=text, url=url)
     raise FetchError("blocked", "Listing exceeded the redirect limit.")
