@@ -84,16 +84,22 @@ def browse_vdp_allowed(url: str) -> tuple[bool, str]:
 def robots_decision(url: str, settings: Settings, deadline: float) -> tuple[bool, str]:
     """Whether this single URL may be opened, plus a note for the attempt log.
 
-    Explicit Disallow / crawl-delay / restricted source → refuse.
+    Explicit Disallow / crawl-delay / restricted registry source → refuse.
     Unreadable robots.txt (403, HTML interstitial) → allow this one URL only.
+    Direct `unsupported` (host not in allowed_domains) is not a browse refuse:
+    that allowlist is for HTTP fetch. Browse already passed browse_vdp_allowed.
     """
     try:
         check_robots(url, settings, deadline)
         return True, ""
     except FetchError as error:
         message = error.message
-        if error.status in ("restricted", "unsupported"):
+        if error.status == "restricted":
             return False, message
+        if error.status == "unsupported":
+            # check_robots → request_once applies the Direct domain allowlist before
+            # it reads robots.txt. Treat that as unreadable robots, not a VDP refuse.
+            return True, ""
         if "disallows this listing path" in message or "crawl schedule" in message:
             return False, message
         return True, message
@@ -111,8 +117,9 @@ def browse_listing(url: str, settings: Settings, token=None, timeout: float = 20
     if not allowed_vdp:
         raise BrowseError("refused", refused)
     source = source_for(host, settings)
-    # Restricted registry hosts stay refused. Unsupported indie/franchise VDPs are allowed by
-    # VDP shape, not by adding the rooftop to REVRANK_ALLOWED_DOMAINS or BROWSE_VDP_HOSTS.
+    # Restricted registry hosts stay refused. Do not require status == "allowed":
+    # that is the Direct fetch allowlist. Unsupported indie/franchise VDPs are
+    # allowed by VDP shape, not by adding the rooftop to REVRANK_ALLOWED_DOMAINS.
     if source["status"] == "restricted":
         raise BrowseError("refused", source["reason"])
     seconds = cancel_budget(token, timeout, minimum=2.0) if token is not None else max(2.0, timeout)

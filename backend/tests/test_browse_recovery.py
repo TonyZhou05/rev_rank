@@ -10,9 +10,10 @@ from fastapi.testclient import TestClient
 
 from backend.app import browse, main, retrieval
 from backend.app.browse import BrowseError, browse_vdp_allowed, is_review_host
+from backend.app.sources import source_for
 from backend.app.cancel import DISCONNECTED, TIMEOUT, CancelToken, Cancelled
 from backend.app.config import Settings
-from backend.app.fetch import FetchError, Page, Response
+from backend.app.fetch import FetchError, Page, Response, fetch_listing
 from backend.app.models import ImportRequest, ImportResponse
 from backend.app.search import SearchResult
 
@@ -38,6 +39,19 @@ VDP_HTML = """<!doctype html><html><head>
 """
 
 CHALLENGE_HTML = "<html><body>Access Denied. Checking your browser. cf-chl-</body></html>"
+
+# Ship-gate fixture: same VIN as DEALER_VDP so URL-VIN binding does not conflict.
+DEALER_VDP_HTML = """<!doctype html><html><head>
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"Vehicle","name":"2026 BMW 330i",
+ "brand":{"@type":"Brand","name":"BMW"},"model":"330i","vehicleModelDate":"2026",
+ "mileageFromOdometer":{"@type":"QuantitativeValue","value":12,"unitCode":"SMI"},
+ "offers":{"@type":"Offer","price":47995,"priceCurrency":"USD"},
+ "vehicleIdentificationNumber":"3MW89CW02T8G83036"}
+</script><title>2026 BMW 330i</title></head>
+<body><h1>2026 BMW 330i AWD</h1><p>Price: $47,995 USD</p><p>Mileage: 12 miles</p>
+<p>VIN: 3MW89CW02T8G83036</p><p>Location: Buffalo, NY</p></body></html>
+"""
 
 
 def forbidden(*args, **kwargs):
@@ -127,18 +141,64 @@ def test_unknown_host_is_blocked_before_playwright(monkeypatch):
 
 def test_dealer_inventory_vin_vdp_is_allowlisted(monkeypatch):
     launched = []
+    robots_http = []
     allowed, reason = browse_vdp_allowed(DEALER_VDP)
     assert allowed is True and reason == ""
     # VIN on a non-inventory path, and marketplace listing-id schemes, still work.
     assert browse_vdp_allowed(f"https://www.example-dealer.com/vehicle/{BMW_VIN}")[0] is True
     assert browse_vdp_allowed(URL)[0] is True
     assert browse_vdp_allowed("https://www.carmax.com/cars/bmw")[0] is False
-    monkeypatch.setattr(browse, "robots_decision", lambda *a, **k: (True, ""))
+    # Do not stub robots_decision. Live RCA: check_robots → request_once raises Direct
+    # `unsupported` for /robots.txt; browse must proceed, not refuse with that copy.
+    from backend.app import fetch as fetch_mod
+
+    real_once = fetch_mod.request_once
+
+    def tracking_once(url, settings, deadline, limit):
+        robots_http.append(url)
+        return real_once(url, settings, deadline, limit)
+
+    monkeypatch.setattr(fetch_mod, "request_once", tracking_once)
     monkeypatch.setattr(browse, "_playwright_open",
-                        lambda url, host, token, timeout: launched.append(url) or Page(text=VDP_HTML, url=url))
-    # Pattern gate only — the rooftop is not in allowed_domains or BROWSE_VDP_HOSTS.
-    page = browse.browse_listing(DEALER_VDP, Settings(live_fetch_enabled=True, browser_recovery_enabled=True))
-    assert launched == [DEALER_VDP] and "BMW" in page.text
+                        lambda url, host, token, timeout: launched.append(url) or Page(text=DEALER_VDP_HTML, url=url))
+    settings = Settings(live_fetch_enabled=True, browser_recovery_enabled=True)
+    assert "bmwbuffalo.com" not in settings.allowed_domains
+    assert source_for("www.bmwbuffalo.com", settings)["status"] == "unsupported"
+    page = browse.browse_listing(DEALER_VDP, settings)
+    assert launched == [DEALER_VDP] and "47,995" in page.text
+    assert robots_http and all(str(url).rstrip("/").endswith("robots.txt") for url in robots_http)
+
+
+def test_robots_decision_proceeds_on_direct_unsupported():
+    """request_once raises unsupported before any HTTP; browse must not map that to refuse."""
+    import time
+    settings = Settings(live_fetch_enabled=True, browser_recovery_enabled=True)
+    allowed, note = browse.robots_decision(DEALER_VDP, settings, time.monotonic() + 10)
+    assert allowed is True
+    restricted = browse.robots_decision(
+        f"https://www.cargurus.com/Cars/inventorylisting/{BMW_VIN}",
+        settings, time.monotonic() + 10)
+    assert restricted == (False, source_for("www.cargurus.com", settings)["reason"])
+
+
+def test_direct_stays_unsupported_for_indie_dealer_host():
+    settings = Settings(live_fetch_enabled=True, browser_recovery_enabled=True)
+    assert source_for("www.bmwbuffalo.com", settings)["status"] == "unsupported"
+    with pytest.raises(FetchError) as err:
+        fetch_listing(DEALER_VDP, settings)
+    assert err.value.status == "unsupported"
+    assert "has not enabled URL import" in err.value.message
+
+
+def test_restricted_registry_vdp_is_still_refused_before_playwright(monkeypatch):
+    launched = []
+    monkeypatch.setattr(browse, "_playwright_open", lambda *a, **k: launched.append(1))
+    url = f"https://www.cargurus.com/Cars/inventorylisting/{BMW_VIN}"
+    assert browse_vdp_allowed(url)[0] is True
+    with pytest.raises(BrowseError) as err:
+        browse.browse_listing(url, Settings(live_fetch_enabled=True, browser_recovery_enabled=True))
+    assert err.value.status == "refused"
+    assert launched == []
 
 
 def test_dealer_search_and_inventory_index_are_refused_before_playwright(monkeypatch):
@@ -156,10 +216,19 @@ def test_dealer_search_and_inventory_index_are_refused_before_playwright(monkeyp
 
 
 def test_unsupported_direct_browses_dealer_vdp(monkeypatch):
-    stub_browse(monkeypatch)
-    result = recover(Settings(browser_recovery_enabled=True), url=DEALER_VDP, original_status="unsupported")
+    launched = []
+    monkeypatch.setattr(browse, "_playwright_open",
+                        lambda url, host, token, timeout: launched.append(url) or Page(text=DEALER_VDP_HTML, url=url))
+    settings = Settings(browser_recovery_enabled=True)
+    assert source_for("www.bmwbuffalo.com", settings)["status"] == "unsupported"
+    result = recover(settings, url=DEALER_VDP, original_status="unsupported")
     assert result.recovery_status == "recovered"
     assert result.candidate.retrieval_method == "browse"
+    assert result.candidate.price == 47995
+    assert result.candidate.evidence["price"].source.startswith("user_vdp_browse")
+    assert launched == [DEALER_VDP]
+    assert not any(a.status == "refused" and "has not enabled URL import" in (a.detail or "")
+                   for a in result.attempts)
 
 
 def test_search_or_category_url_is_refused_before_playwright(monkeypatch):
@@ -390,6 +459,30 @@ def test_disconnect_during_browse_raises_cancelled(monkeypatch):
     assert stop.value.reason == DISCONNECTED
 
 
+def test_api_indie_dealer_vdp_browses_after_direct_unsupported(monkeypatch):
+    opened = []
+    monkeypatch.setattr(browse, "_playwright_open",
+                        lambda url, host, token, timeout: opened.append(url) or Page(text=DEALER_VDP_HTML, url=url))
+    # Real Direct path: host is not in allowed_domains, so fetch_listing is unsupported
+    # (no network). Browse must still run; the autouse fixture forbids main.fetch_listing.
+    monkeypatch.setattr(main, "fetch_listing", fetch_listing)
+    monkeypatch.setattr(main, "settings", Settings(live_fetch_enabled=True, browser_recovery_enabled=True))
+    with TestClient(main.app) as client:
+        body = client.post("/api/import", json={
+            "url": DEALER_VDP, "recover": True, "recovery_source": "browse",
+        }).json()
+    assert any(a["method"] == "direct" and a["status"] == "unsupported" for a in body["attempts"])
+    assert any("has not enabled URL import" in (a.get("detail") or "") for a in body["attempts"]
+               if a["method"] == "direct")
+    assert body["recovery_status"] == "recovered"
+    assert body["candidate"]["retrieval_method"] == "browse"
+    assert body["candidate"]["price"] == 47995
+    assert body["candidate"]["evidence"]["price"]["source"].startswith("user_vdp_browse")
+    assert opened == [DEALER_VDP]
+    assert any(a["method"] == "browse" and a["status"] == "completed" for a in body["attempts"])
+    assert not any(a["method"] == "browse" and a["status"] == "refused" for a in body["attempts"])
+
+
 def test_api_browse_after_403(monkeypatch):
     def blocked(url, settings):
         raise FetchError("blocked", "The website returned HTTP 403.")
@@ -410,7 +503,7 @@ def test_health_reports_browse_and_import_timeout(monkeypatch):
         health = client.get("/api/health").json()
     assert health["browser_recovery_enabled"] is True
     assert health["import_timeout_seconds"] == 55
-    assert health["api_revision"] == 9
+    assert health["api_revision"] == 10
 
 
 def test_health_defaults_browse_off(monkeypatch):
@@ -424,4 +517,4 @@ def test_api_revision_matches_frontend():
     import pathlib
     import re
     page = (pathlib.Path(__file__).resolve().parents[2] / "frontend/src/api.ts").read_text()
-    assert re.search(r"API_REVISION = (\d+)", page).group(1) == "9"
+    assert re.search(r"API_REVISION = (\d+)", page).group(1) == "10"
