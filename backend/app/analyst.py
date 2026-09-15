@@ -17,12 +17,13 @@ from urllib.parse import quote
 from pydantic import ValidationError
 
 from .cancel import DISCONNECTED, Cancelled, CancelToken
+from . import comparison
 from .comparison import msrp_sourced, usable
 from .config import Settings
 from .llm import LLMUnavailable, chat
 from .models import (AIAnalysis, AIQuestion, Candidate, Claim, ComparisonPoint, RankedVehicle, Report, SourceRef,
                      VehicleAnalysis, value_text)
-from .vehicle_data import ProviderError, get_json
+from .vehicle_data import ProviderError
 
 LABELS = "ABC"
 FACT_FIELDS = ("year", "make", "model", "trim", "generation", "price", "currency", "mileage", "mileage_unit",
@@ -212,16 +213,9 @@ def _mileage_per_year(c: Candidate, this_year: int) -> float | None:
     return c.mileage / max(this_year - c.year, 1)
 
 
-_NHTSA_CACHE: dict = {}
-
-
 def nhtsa(url: str, params: dict, limit: int = 5_000_000):
-    key = (url, tuple(sorted(params.items())))
-    if key not in _NHTSA_CACHE:
-        if len(_NHTSA_CACHE) > 128:
-            _NHTSA_CACHE.clear()
-        _NHTSA_CACHE[key] = get_json(url, params, timeout=10, limit=limit)
-    return _NHTSA_CACHE[key]
+    """The report's own NHTSA cache: the compare phase already fetched these URLs for the same cars."""
+    return comparison._nhtsa(url, params, limit)
 
 
 class Workspace:

@@ -1,4 +1,5 @@
 """Reproducible buyer-aware comparisons. Asking prices never establish fair value."""
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal, ROUND_HALF_UP
 import re
 from urllib.parse import quote
@@ -33,7 +34,7 @@ _NHTSA_CACHE: dict = {}
 
 
 def _nhtsa(url: str, params: dict, limit: int = 5_000_000):
-    """Cached NHTSA API fetch - reuses pattern from analyst.py."""
+    """Cached NHTSA API fetch, shared with the analyst's recall, complaint and rating tools."""
     key = (url, tuple(sorted(params.items())))
     if key not in _NHTSA_CACHE:
         if len(_NHTSA_CACHE) > 128:
@@ -646,13 +647,15 @@ def create_report(candidates: list[Candidate], prefs: Preferences, settings: Set
     make_models = [(norm(c.make), norm(c.model)) for c in candidates]
     cross_model = len(set(make_models)) > 1
 
-    # A5: Deterministic NHTSA model-year safety data
+    # A5: Deterministic NHTSA model-year safety data, one lookup per distinct model year, run
+    # side by side: each is up to four sequential NHTSA calls, and the analysis needs the time left.
     nhtsa_data = {}
-    for c in candidates:
-        if token is not None and (token.cancelled or token.remaining() < NHTSA_MIN_SECONDS):
-            break
-        if c.year and c.make and c.model:
-            safety = fetch_nhtsa_safety(c.year, c.make, c.model)
+    identities = {(c.year, c.make, c.model) for c in candidates if c.year and c.make and c.model}
+    if identities and not (token is not None and (token.cancelled or token.remaining() < NHTSA_MIN_SECONDS)):
+        with ThreadPoolExecutor(max_workers=len(identities)) as pool:
+            safety_by_identity = dict(zip(identities, pool.map(lambda key: fetch_nhtsa_safety(*key), identities)))
+        for c in candidates:
+            safety = safety_by_identity.get((c.year, c.make, c.model))
             if safety:
                 nhtsa_data[c.id] = safety
                 c.nhtsa_safety = safety.model_dump()
