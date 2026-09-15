@@ -30,7 +30,7 @@ MAX_TURNS, MAX_TOOL_CALLS, BUDGET_SECONDS = 24, 60, 170
 # prompted again, while nothing is recorded. Both let a model that has only fetched evidence get
 # back to recording findings, and both are capped so a model that will not cooperate still stops.
 MAX_FINISH_REFUSALS, MAX_QUIET_TURNS = 2, 2
-PROMPT_VERSION = "analyst-tools-v4"
+PROMPT_VERSION = "analyst-tools-v5"
 LIMITS = {"verdict": 1, "strength": 5, "risk": 5, "comparison": 5, "question": 2}
 # The model speaks in green and red flags; storage keeps the older strength/risk names, and both
 # spellings are accepted so a model that reaches for either is not punished for it.
@@ -56,6 +56,10 @@ Process:
    buyer's stated constraints (the M.*.fit results) and use the other metrics to break ties. A rejected ranking
    tells you why; fix and retry it.
 6. Call finish.
+
+Record your statements over several turns rather than all in one: at most 10 add_finding calls per
+turn, and set_ranking in a turn of its own. Nothing is lost between turns, and one oversized turn
+gets cut off and records nothing at all. Only call finish once your statements are in.
 
 What makes a good flag:
 - Be specific about THIS car and say why it matters to THIS buyer. Name the figure, the option, the campaign or the

@@ -75,10 +75,12 @@ def unavailable(token: CancelToken | None) -> NoReturn:
     raise LLMUnavailable("Model response unavailable or invalid.")
 
 
-# One analyst turn records a whole batch as tool calls: a verdict, up to five green and five red
-# flags per car, comparisons, questions and a ranking. Two cars is roughly 2,000 tokens of tool-call
-# JSON and three cars about double, so a lower ceiling cuts the batch off part-way through.
-TURN_MAX_TOKENS = 4000
+# A turn that records findings emits them all as tool calls, and a turn the ceiling cuts off records
+# nothing at all. Everything analyst-tools-v5 allows, at the longest text each field permits, is
+# about 6,200 tokens of that JSON for three cars, so the old 2,500 could not carry even two. The
+# prompt asks the model to split its statements over turns, which keeps a normal turn far below this;
+# the ceiling only has to make truncation impossible when it does not.
+TURN_MAX_TOKENS = 8000
 
 
 def chat(settings: Settings, messages: list[dict], tools: list[dict], timeout: float,

@@ -4,7 +4,7 @@ import socket
 
 import pytest
 
-from backend.app import analyst
+from backend.app import analyst, llm
 from backend.app.comparison import create_report
 from backend.app.config import Settings
 from backend.app.models import Candidate, Evidence, Preferences
@@ -226,6 +226,38 @@ def test_a_model_that_stays_quiet_still_stops(report, monkeypatch):
     monkeypatch.setattr(analyst, "chat", chat)
     analyst.analyze(report, SETTINGS)
     assert len(seen) == analyst.MAX_QUIET_TURNS + 2
+
+
+def test_a_full_findings_batch_fits_in_one_turn(report):
+    """The per-turn output ceiling has to be able to carry everything LIMITS allows.
+
+    A turn that records findings emits them as tool calls, and a turn cut off by the ceiling records
+    nothing at all: the arguments never arrive, so add_finding is never reached. This is what raising
+    the flag limits to five per car and adding set_ranking overran, and the symptom on live was an
+    analysis with only the evidence sweep in it.
+    """
+    labels = list("ABC")
+    verdict = "x" * 700
+    flag = "y" * 350
+    batch = [{"kind": "verdict", "car": "all", "text": verdict, "citations": ["M.A.fit", "M.price_gap.AB"]}]
+    for label in labels:
+        for kind in ("green_flag", "red_flag"):
+            batch += [{"kind": kind, "car": label, "text": flag,
+                       "citations": [f"M.{label}.budget", f"M.{label}.fit"]}] * analyst.LIMITS["strength"]
+        batch += [{"kind": "question", "car": label, "text": "z" * 300,
+                   "citations": []}] * analyst.LIMITS["question"]
+    batch += [{"kind": "comparison", "car": "all", "topic": "price", "favors": "A", "text": flag,
+               "citations": ["M.price_gap.AB"]}] * analyst.LIMITS["comparison"]
+    calls = [{"id": "call_0_abcdefghij", "type": "function",
+              "function": {"name": "add_finding", "arguments": json.dumps(args)}} for args in batch]
+    calls.append({"id": "call_0_abcdefghij", "type": "function", "function": {"name": "set_ranking", "arguments": json.dumps(
+        {"order": labels, "reasons": [{"car": c, "text": flag, "citations": [f"M.{c}.fit"]} for c in labels]})}})
+    calls.append({"id": "call_0_abcdefghij", "type": "function", "function": {"name": "finish", "arguments": "{}"}})
+    # Four characters per token is generous for JSON, which tokenizes worse than prose.
+    tokens = len(json.dumps(calls)) // 4
+    assert tokens < llm.TURN_MAX_TOKENS, (
+        f"a full {len(labels)}-car batch is about {tokens} output tokens, over the "
+        f"{llm.TURN_MAX_TOKENS} ceiling; raise TURN_MAX_TOKENS or lower LIMITS")
 
 
 def test_recall_tool_scopes_and_cites_model_year(report, monkeypatch):
