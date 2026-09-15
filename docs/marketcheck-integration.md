@@ -68,22 +68,43 @@ What we learned:
 `https://www.carmax.com/car/70199979`, probed against the deployed app in `recovery_source=marketcheck`
 mode. Both lookups answered HTTP 200 with **zero** listings: `vdp_url=https://www.carmax.com/car/70199979`
 and `stock_no=70199979`. The stock lookup is not scoped to CarMax, so no dealer in the active index
-carries that number.
+carries that number. A second probe with the account key confirmed it and widened the net: `vdp_url`
+with and without `www`, and `stock_no` with and without `source=carmax.com`, all returned `num_found=0`.
+`/v2/search/car/all` returns HTTP 404; there is no such endpoint.
 
 The URL pattern is the same one that matched stock 70181882 two days earlier, so this is a per-listing
 coverage gap, not a parsing or filter problem. `/v2/search/car/active` holds active inventory only: a car
 that stops being listed leaves it. Never call that a sale.
 
-Consequence for recovery: when the URL, stock and VIN lookups all come back empty there is nothing left to
-try, and the honest outcome is "no active record; it may already be sold or removed". The candidate
-follow-up is the past-inventory endpoint below.
+Consequence for recovery: once the URL, stock and VIN lookups are empty, active inventory has nothing
+left to offer, and the honest outcome is "no active record; it may already be sold or removed".
 
-**Proposed, not built: past inventory as a last licensed resort.** `GET /v2/search/car/recents` covers the
-last 90 days. For a delisted car it would bind the VIN, which unlocks the free NHTSA decode for
-year/make/model, and `Record(historical=True)` already keeps such rows out of current price and mileage
-while surfacing a dated `last_listed_price`. Two things must be settled first: it makes an import 4 paid
-calls rather than the 3 recorded in `AGENTS.md`, and one live probe of a known-delisted CarMax stock is
-needed to confirm the endpoint carries CarMax rows.
+## Past inventory as the last licensed resort (built 2026-09-15, not yet live-verified)
+
+`GET /v2/search/car/recents` holds expired listings from the last 90 days and accepts the same `vdp_url`
+and `stock_no` identity filters as `/active`. Its only extra requirement is a scope: the endpoint rejects
+an unscoped search, and the allowed scopes include `source`, the listing's own website. That is a scope we
+want regardless, so an identity lookup fits the endpoint exactly:
+
+```
+GET /v2/search/car/recents?source=carmax.com&vdp_url=https://www.carmax.com/car/<stock>&nodedup=true
+```
+
+- **When it runs.** Only after every active lookup came back empty, so it never touches an import that
+  already succeeded. `REVRANK_MARKETCHECK_PAST_INVENTORY_ENABLED=false` switches it off.
+- **What it costs.** One call, on an import that would otherwise recover nothing. An expired-only recovery
+  skips the NeoVIN decode, because an MSRP with no price to be a percentage of buys nothing, so the common
+  no-VIN case stays at 3 calls. Worst case, with a supplied VIN and every lookup missing, is 5.
+- **What it yields.** The VIN, which unlocks the free NHTSA decode for year/make/model, plus a dated
+  `last_listed_price`. `Record(historical=True)` keeps the expired row out of current price and mileage,
+  and no dealer block is attached: the rooftop named on an expired listing no longer has the car.
+- **What it must never say.** The endpoint also publishes MarketCheck's own *inferred* sales, computed from
+  a listing disappearing. RevRank does not read or repeat that inference. The candidate says the listing
+  has left active inventory and that this does not confirm a sale.
+
+Still to verify live, one call, against any CarMax stock known to have been listed and then delisted:
+whether `source` + `vdp_url` is accepted on `/recents`, and whether CarMax rows appear there. A rejection
+is recorded as `licensed · failed` with the provider's reason and recovery continues to search as before.
 
 ## What already exists
 
@@ -97,7 +118,8 @@ Implemented, with offline tests, and verified live on 2026-09-13:
   seller's record is found, no further VIN lookup runs, so a typical import is 1 call.
 - **Usage meter:** `backend/app/usage.py` counts calls per UTC month in `.local/usage.json`. It refuses
   a call before sending it once the limit is reached, and the refusal appears as a failed attempt.
-- `backend/app/vehicle_data.py`: `inventory_search()` calls `GET https://api.marketcheck.com/v2/search/car/active`
+- `backend/app/vehicle_data.py`: `inventory_search()` calls `GET https://api.marketcheck.com/v2/search/car/active`,
+  or `/v2/search/car/recents` with `past=True`, which additionally requires a `source` scope,
   with exactly one identity filter (`vdp_url`, `stock_no` or `vin`). It sends `rows=10`, `nodedup=true`
   (keep syndicated copies) and `append_api_key=false` (keep the key out of returned URLs), and caps the
   response size and time. Rows with a bad VIN or an unsafe `vdp_url` are dropped. Errors never echo the
@@ -106,7 +128,8 @@ Implemented, with offline tests, and verified live on 2026-09-13:
   seller's own listing: the exact listing URL, then the seller-scoped stock number. Two different VINs,
   or a VIN that differs from the user's, stop with `identity_conflict`. The bound VIN is then searched
   for syndicated copies. `last_seen_at_date` becomes each observation's date, and the seller's own record
-  wins field disagreements. Search runs only if MarketCheck found nothing.
+  wins field disagreements. When active inventory holds nothing, one scoped past-inventory lookup follows
+  (see "Past inventory as the last licensed resort"). Search runs only if MarketCheck found nothing.
 - `backend/tests/test_licensed_recovery.py`: offline regressions for all of the above.
 - **NeoVIN original MSRP:** `decode_neovin_msrp()` in `vehicle_data.py` calls
   `GET https://api.marketcheck.com/v2/decode/car/neovin/{vin}/specs` once for a known VIN and returns the
