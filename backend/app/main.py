@@ -155,7 +155,8 @@ def run_import(request: ImportRequest, token: CancelToken) -> ImportResponse:
         # No page was read, so the VIN is the buyer's own input whether or not the text repeats it.
         candidate.evidence["vin"] = Evidence(value=request.vin, status="user_confirmed", source=(
             "VIN you entered; also in the pasted text" if request.vin in raw.upper() else "VIN you entered"))
-    candidate = assist_extraction(candidate, text, settings)
+    token.check()
+    candidate = assist_extraction(candidate, text, settings, token=token)
     candidate.retrieval_method = 'direct' if fetched else 'paste'
     status = import_status(candidate)
     message = "Candidate extracted. Review all fields and warnings before comparing."
@@ -175,7 +176,7 @@ def run_import(request: ImportRequest, token: CancelToken) -> ImportResponse:
     if response.candidate is not None and request.recovery_source in ('auto', 'marketcheck'):
         evidence = response.candidate.evidence.get('vin')
         attach_original_msrp(response.candidate, request.vin or (evidence.value.upper() if evidence else None),
-                             settings, response.attempts)
+                             settings, response.attempts, token=token)
     return response
 
 async def guarded(work: Callable[[], Work], http_request: Request, token: CancelToken) -> Work:

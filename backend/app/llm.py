@@ -132,7 +132,7 @@ def request_json(settings: Settings, system: str, payload: dict, token: CancelTo
         unavailable(token)
 
 
-def assist_extraction(candidate: Candidate, text: str, settings: Settings) -> Candidate:
+def assist_extraction(candidate: Candidate, text: str, settings: Settings, token: CancelToken | None = None) -> Candidate:
     if not settings.llm_enabled:
         candidate.warnings.append("Extraction mode: deterministic rules; optional LLM is not configured.")
         return candidate
@@ -145,7 +145,8 @@ def assist_extraction(candidate: Candidate, text: str, settings: Settings) -> Ca
             "specifications, history inference or currencies inferred from geography/$ symbols. Return [] if uncertain.",
             {"text": text[:45000], "missing_fields": [f for f in ("make", "model", "trim", "generation",
              "year", "price", "currency", "mileage", "mileage_unit", "transmission", "location", "history", "features")
-             if getattr(candidate, f) in (None, [], "UNK") or (f == "mileage_unit" and f not in candidate.evidence)]})
+             if getattr(candidate, f) in (None, [], "UNK") or (f == "mileage_unit" and f not in candidate.evidence)]},
+            token=token)
         fields = result.get("fields")
         if set(result) != {"fields"} or not isinstance(fields, list) or len(fields) > 14:
             raise ValueError()
