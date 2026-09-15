@@ -33,16 +33,32 @@ function attentionItems(c: Candidate): Attention[] {
   return items;
 }
 
-function Badge({ candidate, field }: { candidate: Candidate; field: string }) {
-  const origin = provenance(candidate, field);
-  return origin ? <span className={`origin origin-${origin.tone}`} title={origin.source}>{origin.label}</span> : null;
+// Fields shown in this card, so "where did everything come from" can be answered once.
+const BADGED_FIELDS = ['price', 'currency', 'mileage', 'msrp', 'year', 'make', 'model', 'trim',
+  'transmission', 'engine', 'drivetrain', 'body', 'fuel_type', 'location', 'history'] as const;
+
+/** The label to hoist into the card header when every known field shares one origin. */
+function commonOrigin(candidate: Candidate): string | null {
+  const labels = new Set<string>();
+  for (const field of BADGED_FIELDS) {
+    const origin = provenance(candidate, field);
+    if (origin) labels.add(origin.label);
+  }
+  return labels.size === 1 ? [...labels][0] : null;
 }
 
-function FieldInput({ candidate, field, flagged, onEdit, wide }: { candidate: Candidate; field: keyof Candidate; flagged: boolean; onEdit: Edit; wide?: boolean }) {
+function Badge({ candidate, field, hide }: { candidate: Candidate; field: string; hide?: string | null }) {
+  const origin = provenance(candidate, field);
+  // A badge on every field is noise when they all say the same thing; the header says it once.
+  if (!origin || origin.label === hide) return null;
+  return <span className={`origin origin-${origin.tone}`} title={origin.source}>{origin.label}</span>;
+}
+
+function FieldInput({ candidate, field, flagged, onEdit, wide, hide }: { candidate: Candidate; field: keyof Candidate; flagged: boolean; onEdit: Edit; wide?: boolean; hide?: string | null }) {
   const value = candidate[field];
   const numeric = field === 'year';
   return <label className={`field${flagged ? ' flagged' : ''}${wide ? ' wide' : ''}`}>
-    <span className="field-label">{readableField(field)} <Badge candidate={candidate} field={field}/></span>
+    <span className="field-label">{readableField(field)} <Badge candidate={candidate} field={field} hide={hide}/></span>
     <input type={numeric ? 'number' : 'text'} value={(Array.isArray(value) ? value.join(', ') : value ?? '') as string | number}
            placeholder="Unknown" onChange={e => onEdit(candidate.id, field, e.target.value)}/>
   </label>;
@@ -57,6 +73,9 @@ function ReviewCard({ candidate, index, onEdit, onRemove }: { candidate: Candida
   const vin = candidate.evidence.vin?.value;
   const notes = [...new Set(candidate.warnings)].filter(w => !candidate.verified_fields.some(f => w.startsWith(`Conflicting ${f}:`)));
   const observations = candidate.observations ?? [];
+  // One origin for the whole card when every field agrees; per-field badges then only mark exceptions.
+  const shared = commonOrigin(candidate);
+  const sharedTone = shared ? provenance(candidate, 'price')?.tone ?? provenance(candidate, 'make')?.tone : null;
   return <article className="review-card">
     <header className="review-card-head">
       <span className="candidate-index">0{index + 1}</span>
@@ -67,6 +86,8 @@ function ReviewCard({ candidate, index, onEdit, onRemove }: { candidate: Candida
           <span className="tag">{link ? <a href={link} target="_blank" rel="noopener noreferrer">{sourceLabel(candidate)}</a> : sourceLabel(candidate)}</span>
           <span className="tag">{METHODS[candidate.retrieval_method ?? 'direct'] ?? readableField(candidate.retrieval_method ?? '')}</span>
           <span className="tag">{vin ? `VIN ${vin}` : 'VIN unknown'}</span>
+          {shared && <span className={`tag origin-tag origin-${sharedTone ?? 'listing'}`}
+            title="Every field below came from this source; a field that differs keeps its own badge.">All fields: {shared}</span>}
         </div>
       </div>
       <button className="icon-button" title="Remove this car" aria-label={`Remove ${carName(candidate)}`} onClick={onRemove}><Trash2 size={16}/></button>
@@ -91,7 +112,7 @@ function ReviewCard({ candidate, index, onEdit, onRemove }: { candidate: Candida
       <h4>Price &amp; mileage</h4>
       <div className="field-row wide-fields">
         <label className={`field${flagged.has('price') ? ' flagged' : ''}`}>
-          <span className="field-label">Asking price <Badge candidate={candidate} field="price"/></span>
+          <span className="field-label">Asking price <Badge candidate={candidate} field="price" hide={shared}/></span>
           <span className="joined">
             <input type="number" value={candidate.price ?? ''} placeholder="Unknown" onChange={e => onEdit(candidate.id, 'price', e.target.value)}/>
             <select aria-label="Currency" className={flagged.has('currency') ? 'flagged' : ''}
@@ -105,7 +126,7 @@ function ReviewCard({ candidate, index, onEdit, onRemove }: { candidate: Candida
             No current price found · last listed {candidate.evidence.last_listed_price.value}</span>}
         </label>
         <label className={`field${flagged.has('mileage') ? ' flagged' : ''}`}>
-          <span className="field-label">Mileage <Badge candidate={candidate} field="mileage"/></span>
+          <span className="field-label">Mileage <Badge candidate={candidate} field="mileage" hide={shared}/></span>
           <span className="joined">
             <input type="number" value={candidate.mileage ?? ''} placeholder="Unknown" onChange={e => onEdit(candidate.id, 'mileage', e.target.value)}/>
             <select aria-label="Mileage unit" className={flagged.has('mileage_unit') ? 'flagged' : ''}
@@ -116,7 +137,7 @@ function ReviewCard({ candidate, index, onEdit, onRemove }: { candidate: Candida
           </span>
         </label>
         <label className="field">
-          <span className="field-label">Original MSRP <Badge candidate={candidate} field="msrp"/>
+          <span className="field-label">Original MSRP <Badge candidate={candidate} field="msrp" hide={shared}/>
             {!decodedMsrp && <span className="field-optional">{msrpOrigin(candidate) ?? 'you enter'}</span>}</span>
           <input type="number" value={candidate.msrp ?? ''} placeholder="Optional — never invented"
                  onChange={e => onEdit(candidate.id, 'msrp', e.target.value)}/>
@@ -129,7 +150,7 @@ function ReviewCard({ candidate, index, onEdit, onRemove }: { candidate: Candida
     {GROUPS.map(group => <section className="field-group" key={group.title}>
       <h4>{group.title}</h4>
       <div className="field-row">{group.fields.map(field =>
-        <FieldInput key={field} candidate={candidate} field={field} flagged={flagged.has(field)} onEdit={onEdit} wide={field === 'history'}/>)}</div>
+        <FieldInput key={field} candidate={candidate} field={field} flagged={flagged.has(field)} onEdit={onEdit} wide={field === 'history'} hide={shared}/>)}</div>
     </section>)}
 
     {observations.length > 0 && <details className="review-more">

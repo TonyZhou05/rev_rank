@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { CircleAlert, LoaderCircle, Sparkles, X } from 'lucide-react';
 import { api, errorMessage } from './api';
-import type { Constraint, Preferences } from './types';
+import type { Preferences } from './types';
 import { defaultPreferences } from './utils';
 
 const SUGGESTIONS = [
@@ -34,48 +34,86 @@ const MODE_LABEL = {
   llm: 'Mapped by the configured model, and checked against your own words',
   rules: 'Mapped by phrase rules on the server (no model configured, or the model call failed)',
 };
+const EXAMPLE = 'About 30k, keeping it 5 years, needs AWD, no salvage titles';
 
-/** Optional free-form entry: the server turns a sentence into the same chips below. It can only
- *  write preference fields — it never states or changes a fact about a car, and it is not
- *  discovery chat: the shortlist stays the cars you imported. */
-function ConstraintText({ preferences, onChange, busy }: {
-  preferences: Preferences; onChange: (next: Preferences) => void; busy?: boolean;
+interface Turn {
+  id: number;
+  you: string;
+  reply?: string;
+  mode?: 'llm' | 'rules';
+  applied?: number;
+  failure?: string;
+}
+
+/** A short chat that only fills the chips below. It can write preference fields and nothing else:
+ *  it never states or changes a fact about a car, and it is not inventory discovery — the
+ *  shortlist stays the cars you imported. */
+function ConstraintChat({ preferences, onChange, busy, mode }: {
+  preferences: Preferences; onChange: (next: Preferences) => void; busy?: boolean; mode: 'review' | 'report';
 }) {
   const [text, setText] = useState('');
+  const [turns, setTurns] = useState<Turn[]>([]);
   const [reading, setReading] = useState(false);
-  const [result, setResult] = useState<{ reply: string; mode: 'llm' | 'rules'; constraints: Constraint[] } | null>(null);
-  const [failure, setFailure] = useState('');
+  const thread = useRef<HTMLDivElement>(null);
+  const nextCta = mode === 'report' ? 'Apply to report' : 'Generate comparison';
 
-  const read = async () => {
-    const message = text.trim();
-    if (!message || reading) return;
-    setReading(true); setFailure(''); setResult(null);
+  // Keep the newest turn in view without yanking the whole page around.
+  useEffect(() => {
+    const box = thread.current;
+    if (box) box.scrollTop = box.scrollHeight;
+  }, [turns]);
+
+  const send = async (message: string) => {
+    const said = message.trim();
+    if (!said || reading) return;
+    const id = Date.now();
+    setTurns(current => [...current, { id, you: said }].slice(-6));
+    setText('');
+    setReading(true);
     try {
-      const parsed = await api.constraints(message, preferences);
+      const parsed = await api.constraints(said, preferences);
       onChange(parsed.preferences);
-      setResult({ reply: parsed.reply, mode: parsed.mode, constraints: parsed.constraints });
-      if (parsed.constraints.length) setText('');
+      setTurns(current => current.map(turn => turn.id === id
+        ? { ...turn, reply: parsed.reply, mode: parsed.mode, applied: parsed.constraints.length }
+        : turn));
     } catch (error) {
-      setFailure(errorMessage(error));
+      setTurns(current => current.map(turn => turn.id === id ? { ...turn, failure: errorMessage(error) } : turn));
     } finally {
       setReading(false);
     }
   };
 
-  return <div className="constraint-text">
+  return <div className="constraint-chat">
     <p className="constraint-label">Say it in your own words <span>optional</span></p>
-    <textarea value={text} rows={2} disabled={busy || reading} aria-label="Describe your constraints"
-      placeholder="About 30k, keeping it 5 years, needs AWD, no salvage titles"
-      onChange={e => setText(e.target.value)}
-      onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void read(); } }}/>
-    <button type="button" className="secondary-button full" disabled={busy || reading || !text.trim()} onClick={() => void read()}>
-      {reading ? <><LoaderCircle className="spin" size={14}/> Reading…</> : <><Sparkles size={14}/> Read into chips</>}
-    </button>
-    {result && <div className="constraint-read" role="status">
-      <p>{result.reply}</p>
-      <small title={MODE_LABEL[result.mode]}>{result.mode === 'llm' ? 'Model-mapped' : 'Phrase rules'} · edit the chips below if anything is wrong</small>
+    {turns.length > 0 && <div className="chat-thread" ref={thread} aria-live="polite">
+      {turns.map(turn => <div className="chat-turn" key={turn.id}>
+        <p className="chat-you">{turn.you}</p>
+        {turn.failure
+          ? <p className="chat-reply failed"><CircleAlert size={13}/> {turn.failure}</p>
+          : turn.reply
+            ? <div className="chat-reply">
+                <p>{turn.reply}</p>
+                <small title={MODE_LABEL[turn.mode ?? 'rules']}>
+                  {turn.mode === 'llm' ? 'Model-mapped' : 'Phrase rules'}
+                  {turn.applied ? ` · ${turn.applied} chip${turn.applied === 1 ? '' : 's'} set` : ''}
+                </small>
+              </div>
+            : <p className="chat-reply pending"><LoaderCircle className="spin" size={13}/> Reading…</p>}
+      </div>)}
     </div>}
-    {failure && <p className="constraint-read failed" role="alert"><CircleAlert size={13}/> {failure}</p>}
+    <textarea value={text} rows={2} disabled={busy || reading} aria-label="Describe your constraints"
+      placeholder={turns.length ? 'Add another constraint…' : EXAMPLE}
+      onChange={e => setText(e.target.value)}
+      onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(text); } }}/>
+    <div className="chat-actions">
+      <button type="button" className="secondary-button" disabled={busy || reading || !text.trim()} onClick={() => void send(text)}>
+        {reading ? <><LoaderCircle className="spin" size={14}/> Reading…</> : <><Sparkles size={14}/> Read into chips</>}
+      </button>
+      {!turns.length && !text.trim() && <button type="button" className="chat-example" disabled={busy || reading}
+        onClick={() => setText(EXAMPLE)}>Try an example</button>}
+    </div>
+    <p className="constraint-hint">Fills the chips below. It never changes a car's details and never looks for other cars.
+      {turns.some(turn => turn.applied) && <> Check the chips, then <strong>{nextCta}</strong>.</>}</p>
   </div>;
 }
 
@@ -163,7 +201,7 @@ export function ConstraintPanel({ preferences, onChange, onApply, busy, mode, na
       <CircleAlert size={14}/> Constraints changed — Apply to rebuild.
     </div>}
 
-    <ConstraintText preferences={preferences} onChange={onChange} busy={busy}/>
+    <ConstraintChat preferences={preferences} onChange={onChange} busy={busy} mode={mode}/>
 
     <div className="constraint-chips" role="list">
       <label className="constraint-chip" role="listitem">

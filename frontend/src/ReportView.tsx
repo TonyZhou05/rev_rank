@@ -1,9 +1,9 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Check, CircleAlert, LoaderCircle, Sparkles } from 'lucide-react';
-import { allSame, comparable, constraintMetrics, constraintTone, delta, isCrossModel, metric, mileageValue, msrpNeoVinKind, msrpOrigin, msrpPctDelta, msrpValue, mustHaveMetrics, numberIn, pctOfMsrp, pctOfMsrpText, priceValue, sharedAnnual, tradeOff, type DeltaKind } from './compare';
+import { allSame, comparable, constraintMetrics, constraintTone, delta, isCrossModel, metric, mileageValue, msrpNeoVinKind, msrpOrigin, msrpPctDelta, msrpSourceNote, msrpValue, mustHaveMetrics, numberIn, pctOfMsrp, pctOfMsrpText, priceValue, sharedAnnual, tradeOff, type DeltaKind } from './compare';
 import { ConstraintPanel } from './ConstraintPanel';
 import { SourceTable } from './Review';
-import type { AIAnalysis, Candidate, Claim, NHTSASafetyData, Preferences, Report } from './types';
+import type { AIAnalysis, Candidate, Claim, NHTSASafetyData, Preferences, Report, SourceRef } from './types';
 import { carName, dateLabel, money, safeUrl, unresolvedConflicts } from './utils';
 
 interface Row {
@@ -38,7 +38,7 @@ function rowsFor(report: Report, bench: Candidate, crossModel: boolean): Row[] {
       hint: 'you entered, or decoded from the VIN',
       text: (c, i) => {
         const fromMetric = metric(report, '% of original MSRP')?.values[i];
-        if (fromMetric && fromMetric !== 'N/A' && fromMetric !== 'MSRP not confirmed') return `${fromMetric} of original MSRP (${msrpOrigin(c) ?? 'sourced'})`;
+        if (fromMetric && fromMetric !== 'N/A' && fromMetric !== 'MSRP not confirmed') return `${fromMetric} of original MSRP (${msrpSourceNote(c) ?? 'sourced'})`;
         if (fromMetric === 'MSRP not confirmed') return 'MSRP not confirmed';
         return pctOfMsrpText(c) ?? 'MSRP not entered — add it on Review';
       },
@@ -50,7 +50,7 @@ function rowsFor(report: Report, bench: Candidate, crossModel: boolean): Row[] {
       cell: (c, i) => {
         const fromMetric = metric(report, '% of original MSRP')?.values[i];
         if (fromMetric && fromMetric !== 'N/A' && fromMetric !== 'MSRP not confirmed') {
-          return <span className="msrp-pct">{fromMetric} of original MSRP ({msrpOrigin(c) ?? 'sourced'})</span>;
+          return <span className="msrp-pct">{fromMetric} of original MSRP ({msrpSourceNote(c) ?? 'sourced'})</span>;
         }
         if (fromMetric === 'MSRP not confirmed') {
           return <span className="muted-cell msrp-cta">MSRP present but not sourced — confirm it on Review</span>;
@@ -180,7 +180,8 @@ function ValueCards({ cars }: { cars: Candidate[] }) {
         <h4>{carName(c)}</h4>
         <p className="value-price">{priceText(c)}</p>
         <p className={pct ? 'value-msrp' : 'value-msrp muted-cta'}>{pct ? pct : 'No MSRP yet — add original MSRP on Review to see % of sticker'}</p>
-        {msrp !== null && <p className="value-msrp-raw">Original MSRP ({msrpOrigin(c)}{msrpNeoVinKind(c) ? ` · ${msrpNeoVinKind(c)}` : ''}): {money(msrp, c.currency)}</p>}
+        {msrp !== null && <p className="value-msrp-raw">Original MSRP {money(msrp, c.currency)}
+          <small>{msrpOrigin(c)}{msrpNeoVinKind(c) ? ` · ${msrpNeoVinKind(c)}` : ''}</small></p>}
         <p className="value-miles">{mileageText(c)}</p>
         {(c.make || c.model) && <p className="value-model">{[c.year, c.make, c.model, c.trim].filter(Boolean).join(' ')}</p>}
       </article>;
@@ -364,55 +365,95 @@ function NhtsaSection({ report }: { report: Report }) {
   </section>;
 }
 
-function Cites({ claim, index }: { claim: Claim; index: Map<string, number> }) {
-  return <>{claim.citations.map(id => index.has(id) &&
-    <a key={id} className="cite" href={`#source-${index.get(id)}`} title={id}>{index.get(id)}</a>)}</>;
+// A citation has to be readable without a click and reachable with one. Hovering names the
+// evidence; choosing it opens the source list, because an anchor into a collapsed <details> used
+// to scroll to something still hidden.
+function Cites({ claim, index, sources, onPick }: {
+  claim: Claim; index: Map<string, number>; sources: Map<string, SourceRef>; onPick: (id: string) => void;
+}) {
+  const shown = claim.citations.filter(id => index.has(id) && sources.has(id));
+  // A claim only reaches the page with citations, so an empty row means the source list lost them.
+  // Say that rather than letting the sentence read as if nobody asked where it came from.
+  if (!shown.length) {
+    return <span className="cite missing"
+      title="This statement was cited during the analysis, but its source is not in the list below.">no source</span>;
+  }
+  return <>{shown.map(id => {
+    const number = index.get(id) as number;
+    const source = sources.get(id) as SourceRef;
+    const summary = `${source.label}${source.detail ? ` — ${source.detail}` : ''}`;
+    return <button key={id} type="button" className="cite" title={summary}
+      aria-label={`Source ${number}: ${summary}`} onClick={() => onPick(id)}>{number}</button>;
+  })}</>;
+}
+
+function FlagList({ tone, label, claims, cites }: {
+  tone: 'green' | 'red'; label: string; claims: Claim[]; cites: (claim: Claim) => ReactNode;
+}) {
+  if (!claims.length) return null;
+  const Icon = tone === 'green' ? Check : CircleAlert;
+  return <div className={`flag-group ${tone}`}>
+    <p className="flag-head"><Icon size={13}/> {label} <span>{claims.length}</span></p>
+    <ul>{claims.map((claim, i) => <li key={i}><span>{claim.text} {cites(claim)}</span></li>)}</ul>
+  </div>;
 }
 
 function AIComparison({ ai, cars }: { ai: AIAnalysis; cars: Candidate[] }) {
   const index = new Map(ai.sources.map((s, i) => [s.id, i + 1]));
+  const byId = new Map(ai.sources.map(s => [s.id, s]));
   const name = (id: string | null) => cars.find(c => c.id === id);
+  const [openSources, setOpenSources] = useState(false);
+  const [picked, setPicked] = useState<string | null>(null);
+  const pick = (id: string) => { setOpenSources(true); setPicked(id); };
+  useEffect(() => {
+    if (!picked || !openSources) return;
+    document.getElementById(`source-${index.get(picked)}`)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }, [picked, openSources]);
+  const cites = (claim: Claim) => <Cites claim={claim} index={index} sources={byId} onPick={pick}/>;
   // Present only when the model ordered every car and every position passed the citation gate.
   const ranking = [...(ai.ranking ?? [])].sort((a, b) => a.position - b.position);
   return <section className="ai-block">
-    <p className="eyebrow"><Sparkles size={13}/> AI COMPARISON · CITED</p>
-    {ai.verdict && <p className="verdict">{ai.verdict.text} <Cites claim={ai.verdict} index={index}/></p>}
+    <p className="eyebrow"><Sparkles size={13}/> AI COMPARISON · CITED EVIDENCE ONLY</p>
+    {ai.verdict && <p className="verdict">{ai.verdict.text} {cites(ai.verdict)}</p>}
     {ranking.length > 0 && <div className="ai-ranking">
       <p className="constraint-label">Shortlist order for your constraints · each position cites its evidence</p>
       <ol>{ranking.map(entry => {
         const car = name(entry.candidate_id);
         return <li key={entry.candidate_id}>
           <strong>{car ? carName(car) : 'Car'}</strong>
-          <span>{entry.claim.text} <Cites claim={entry.claim} index={index}/></span>
+          <span>{entry.claim.text} {cites(entry.claim)}</span>
         </li>;
       })}</ol>
     </div>}
-    <div className="ai-cars">{ai.vehicles.filter(v => v.strengths.length || v.risks.length || v.summary).map(v => {
+    <div className="ai-cars">{ai.vehicles.map(v => {
       const car = name(v.candidate_id);
       return <div className="ai-car" key={v.candidate_id}>
         <h4>{car ? carName(car) : 'Car'}</h4>
-        {v.summary && <p>{v.summary.text} <Cites claim={v.summary} index={index}/></p>}
-        <ul>
-          {v.strengths.map((c, i) => <li key={`s${i}`} className="plus"><Check size={13}/><span>{c.text} <Cites claim={c} index={index}/></span></li>)}
-          {v.risks.map((c, i) => <li key={`r${i}`} className="minus"><CircleAlert size={13}/><span>{c.text} <Cites claim={c} index={index}/></span></li>)}
-        </ul>
+        {v.summary && <p>{v.summary.text} {cites(v.summary)}</p>}
+        <FlagList tone="green" label="Green flags" claims={v.strengths} cites={cites}/>
+        <FlagList tone="red" label="Red flags" claims={v.risks} cites={cites}/>
+        {!v.strengths.length && !v.risks.length &&
+          <p className="flag-empty">No green or red flag passed the evidence checks for this car.</p>}
       </div>;
     })}</div>
     {ai.comparisons.length > 0 && <div className="ai-points">{ai.comparisons.map((p, i) => {
       const favored = name(p.favors);
       return <div className="ai-point" key={i}>
         <span className="topic">{p.topic}</span>
-        <p>{p.claim.text} <Cites claim={p.claim} index={index}/></p>
+        <p>{p.claim.text} {cites(p.claim)}</p>
         {favored && <span className="favors">Favors {carName(favored)}</span>}
       </div>;
     })}</div>}
     {ai.sources.length === 0
       ? <p className="honest-empty" role="status"><CircleAlert size={14}/> No clickable sources for this run — we don’t invent citations.</p>
-      : <details className="review-more">
+      : <details className="review-more" open={openSources} onToggle={e => setOpenSources(e.currentTarget.open)}>
           <summary>Sources ({ai.sources.length})</summary>
           <ol className="source-list">{ai.sources.map((s, i) => {
             const url = safeUrl(s.url);
-            return <li key={s.id} id={`source-${i + 1}`}><strong>{url ? <a href={url} target="_blank" rel="noopener noreferrer">{s.label}</a> : s.label}</strong><span>{s.detail}</span></li>;
+            return <li key={s.id} id={`source-${i + 1}`} className={s.id === picked ? 'cited-now' : undefined}>
+              <strong>{url ? <a href={url} target="_blank" rel="noopener noreferrer">{s.label}</a> : s.label}</strong>
+              <span>{s.detail}</span>
+            </li>;
           })}</ol>
         </details>}
     <p className="ai-meta">{ai.message} Model: {ai.model}.</p>

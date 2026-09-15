@@ -87,6 +87,12 @@ def test_model_mapping_is_merged_when_every_item_quotes_the_buyer(monkeypatch):
     assert "28,000" in result.reply and "silver" in result.reply
 
 
+def test_the_reply_stops_at_what_was_recorded():
+    # The page owns the next step, because only it knows whether the button says Generate or Apply.
+    reply = parse_constraints("Under $32,000, keeping it 4 years", Preferences(), Settings()).reply
+    assert reply == "Recorded hold period 4 years; budget 32,000."
+
+
 def test_model_value_absent_from_its_own_quote_discards_the_whole_mapping(monkeypatch):
     monkeypatch.setattr(module, "request_json", scripted({"constraints": [
         {"field": "budget", "value": 48000, "quote": "about 30k"},

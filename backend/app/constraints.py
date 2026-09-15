@@ -361,7 +361,11 @@ def wire(item: Found) -> Constraint:
 
 
 def compose_reply(found: list[Found], unmapped: list[str]) -> str:
-    """Deterministic confirmation. A rejected constraint can never be narrated as accepted."""
+    """Deterministic confirmation. A rejected constraint can never be narrated as accepted.
+
+    The reply stops at what was recorded. The page owns the next-step wording, because only it
+    knows whether the buyer is about to generate a first report or re-apply to an existing one.
+    """
     if not found:
         return ("I did not recognise a preference in that. Try a budget, how long you plan to keep the car, "
                 "the miles you drive a year, an odometer limit, a transmission, equipment you need, or "
@@ -377,7 +381,7 @@ def compose_reply(found: list[Found], unmapped: list[str]) -> str:
     reply = "Recorded " + "; ".join(parts) + "."
     if unmapped:
         reply += " I could not map: " + "; ".join(unmapped[:3]) + "."
-    return (reply + " Edit the chips if anything is wrong, then apply them to rebuild the report.")[:2000]
+    return reply[:2000]
 
 
 def parse_constraints(message: str, preferences: Preferences, settings: Settings) -> ConstraintResponse:
