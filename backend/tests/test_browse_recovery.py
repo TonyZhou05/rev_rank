@@ -100,6 +100,14 @@ def test_browser_recovery_defaults_off(monkeypatch):
     assert Settings.from_env().browser_recovery_enabled is False
 
 
+BMW_VIN = "WB543CF0XTCV01817"
+DEALER_VDP = (
+    f"https://www.bmwbuffalo.com/inventory/new-2026-bmw-ix-awd-4d-sport-utility-{BMW_VIN.lower()}/"
+)
+DEALER_SRP = "https://www.bmwbuffalo.com/used-vehicles/"
+DEALER_INDEX = "https://www.bmwbuffalo.com/inventory/"
+
+
 def test_unknown_host_is_blocked_before_playwright(monkeypatch):
     launched = []
     monkeypatch.setattr(browse, "_playwright_open", lambda *a, **k: launched.append(1))
@@ -113,6 +121,36 @@ def test_unknown_host_is_blocked_before_playwright(monkeypatch):
     assert result.candidate is None
     assert any(a.method == "browse" and a.status == "refused" for a in result.attempts)
     assert "Paste the price, mileage, and VIN" in result.message
+
+
+def test_dealer_inventory_vin_vdp_is_allowlisted(monkeypatch):
+    launched = []
+    allowed, reason = browse_vdp_allowed(DEALER_VDP)
+    assert allowed is True and reason == ""
+    monkeypatch.setattr(browse, "robots_decision", lambda *a, **k: (True, ""))
+    monkeypatch.setattr(browse, "_playwright_open",
+                        lambda url, host, token, timeout: launched.append(url) or Page(text=VDP_HTML, url=url))
+    settings = Settings(live_fetch_enabled=True, allowed_domains=("www.bmwbuffalo.com",),
+                        browser_recovery_enabled=True)
+    page = browse.browse_listing(DEALER_VDP, settings)
+    assert launched == [DEALER_VDP] and "BMW" in page.text
+    # Marketplace VDPs stay on the same allowlist.
+    assert browse_vdp_allowed(URL)[0] is True
+    assert browse_vdp_allowed("https://www.carmax.com/cars/bmw")[0] is False
+
+
+def test_dealer_search_and_inventory_index_are_refused_before_playwright(monkeypatch):
+    launched = []
+    monkeypatch.setattr(browse, "_playwright_open", lambda *a, **k: launched.append(1))
+    for url in (DEALER_SRP, DEALER_INDEX, "https://www.bmwbuffalo.com/inventory/used/"):
+        allowed, message = browse_vdp_allowed(url)
+        assert allowed is False and "not a search" in message.lower()
+        with pytest.raises(BrowseError) as err:
+            browse.browse_listing(url, Settings(live_fetch_enabled=True,
+                                               allowed_domains=("www.bmwbuffalo.com",),
+                                               browser_recovery_enabled=True))
+        assert err.value.status == "refused" and "not a search" in err.value.message.lower()
+    assert launched == []
 
 
 def test_search_or_category_url_is_refused_before_playwright(monkeypatch):
@@ -137,6 +175,13 @@ def test_review_hosts_are_refused_before_playwright(monkeypatch):
     assert launched == []
     assert is_review_host("www.dealerrater.com") and is_review_host("reddit.com")
     assert not is_review_host("www.carmax.com") and not is_review_host("carvana.com")
+    # A VIN in the path does not override REVIEW_HOSTS (classifieds, unknown review boards).
+    review_vin = f"https://www.dealerrater.com/classifieds/2026-BMW-iX-ad-{BMW_VIN}-1/"
+    allowed, message = browse_vdp_allowed(review_vin)
+    assert allowed is False and "Review sites" in message
+    with pytest.raises(BrowseError) as vin_err:
+        browse.browse_listing(review_vin, settings)
+    assert vin_err.value.status == "refused" and launched == []
 
 
 def test_robots_disallow_refuses_without_playwright(monkeypatch):

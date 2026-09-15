@@ -109,9 +109,53 @@ def url_vin(url: str) -> str | None:
 # Sites whose single-listing URLs we can recognize (by listing id or a VIN in the URL).
 MARKETPLACES = frozenset(LISTING_ID) | {"truecar.com", "edmunds.com", "carfax.com", "autolist.com", "cargurus.com"}
 
+# Independent-dealer inventory / VDP sections (Dealer.com, DealerOn, Dealer Inspire, …).
+# A rooftop is not listed by hostname; identity is the path plus a VIN or vehicle slug.
+_DEALER_SECTION = (
+    r"inventory|new-inventory|used-inventory|certified-inventory|"
+    r"new-vehicles?|used-vehicles?|certified-pre-owned|"
+    r"vehicle-details?|vehicledetail|vdp"
+)
+DEALER_INVENTORY_PREFIX = re.compile(rf"^/(?:{_DEALER_SECTION})(?:/|$)", re.I)
+DEALER_INDEX_TAIL = frozenset({
+    "", "new", "used", "certified", "cpo", "pre-owned", "all", "search", "shop", "browse", "results",
+})
+# condition-year-make-model-… without requiring a VIN in the slug.
+DEALER_VDP_SLUG = re.compile(r"(?:^|-)(?:19|20)\d{2}-(?:[a-z0-9]+-){2,}", re.I)
+
+
+def dealer_vdp_slug(url: str) -> str | None:
+    """Vehicle slug under a dealer inventory/VDP section; '' on an index; None when not that section."""
+    path = urlsplit(url).path.rstrip("/")
+    match = DEALER_INVENTORY_PREFIX.match(path)
+    if not match:
+        return None
+    parts = [p for p in path[match.end():].split("/") if p]
+    if parts and parts[0].lower() in {"new", "used", "certified", "cpo", "pre-owned"} and len(parts) > 1:
+        parts = parts[1:]
+    if not parts:
+        return ""
+    if len(parts) == 1 and parts[0].lower() in DEALER_INDEX_TAIL:
+        return ""
+    return parts[-1]
+
+
+def is_dealer_listing_url(url: str) -> bool | None:
+    """True/False on dealer inventory/VDP paths; None when the path is not that section."""
+    slug = dealer_vdp_slug(url)
+    if slug is None:
+        return None
+    if url_vin(url):
+        return True
+    if not slug:
+        return False
+    if DEALER_VDP_SLUG.search(slug):
+        return True
+    return bool(len(slug) >= 8 and re.search(r"\d", slug))
+
 
 def is_listing_url(url: str) -> bool | None:
-    """True/False on known marketplaces; None when the site's URL scheme is unknown (a dealer site)."""
-    if bare_host(url) not in MARKETPLACES:
-        return None
-    return bool(listing_id(url) or url_vin(url))
+    """True/False on known marketplaces and dealer inventory VDPs; None when the URL scheme is unknown."""
+    if bare_host(url) in MARKETPLACES:
+        return bool(listing_id(url) or url_vin(url))
+    return is_dealer_listing_url(url)

@@ -28,8 +28,9 @@ from .sources import source_for
 
 log = logging.getLogger("revrank.browse")
 
-# v1 host allowlist: CarMax, Carvana, and hosts whose single-listing URL we already recognize.
-# Unknown hosts are blocked. This is not counsel clearance; the feature flag stays off until Tongli opts in.
+# Marketplace hosts whose single-listing URL we already recognize. Independent dealer rooftops
+# are not enumerated: a VIN-bearing (or year-make-model) inventory VDP path is enough.
+# Review hosts and unknown non-VDP URLs stay blocked. Flag stays off until Tongli opts in.
 BROWSE_VDP_HOSTS = MARKETPLACES
 PASTE_HINT = "Paste the price, mileage, and VIN from the listing to continue."
 # Review, complaint, social and directory hosts. Marketplace VDPs (CarMax, Carvana, Cars.com, …)
@@ -68,17 +69,19 @@ def is_review_host(host: str) -> bool:
 
 
 def browse_vdp_allowed(url: str) -> tuple[bool, str]:
-    """Single buyer-supplied VDP on the v1 host allowlist, or a refused reason."""
+    """Single buyer-supplied VDP: marketplace listing or dealer inventory VDP, or a refused reason."""
     host = bare_host(url)
     if is_review_host(host):
         return False, f"Review sites and dealer boards are not opened. {PASTE_HINT}"
-    if host not in BROWSE_VDP_HOSTS:
-        return False, ("This website is not on the private-browse allowlist "
-                       "(CarMax, Carvana, and recognized listing hosts). " + PASTE_HINT)
-    if is_listing_url(url) is not True:
+    listing = is_listing_url(url)
+    if listing is True:
+        return True, ""
+    if listing is False or host in BROWSE_VDP_HOSTS:
         return False, ("Private browse opens one vehicle listing page, not a search or category page. "
                        + PASTE_HINT)
-    return True, ""
+    return False, ("This website is not on the private-browse allowlist "
+                   "(CarMax, Carvana, recognized listing hosts, and dealer inventory VDPs). "
+                   + PASTE_HINT)
 
 
 def robots_decision(url: str, settings: Settings, deadline: float) -> tuple[bool, str]:

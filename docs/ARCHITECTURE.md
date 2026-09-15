@@ -66,9 +66,11 @@ private in-app headless browse of **that URL only** (`browse.py`, Playwright), t
 licensed inventory (`vehicle_data.py`, MarketCheck), then search excerpts (`search.py`,
 Brave/Tavily), then an optional NHTSA VIN decode. MarketCheck and search are secondary
 if browse misses. The flag stays off until Tongli opts in (primary browse raises
-ToS hit rate); this is not counsel clearance. Browse refuses unknown hosts,
-review sites, dealer boards, and
-search/category pages; it does not scrape dealer-signals targets; a bot-manager
+ToS hit rate); this is not counsel clearance. Browse allows marketplace VDPs and
+independent-dealer inventory pages that carry a single listing identity (VIN in
+the path/query, or a year-make-model VDP slug). It refuses review sites, dealer
+boards, unknown non-VDP hosts, and search/category pages; it does not scrape
+dealer-signals targets; a bot-manager
 challenge is reported as blocked and the buyer is asked to paste price, mileage, and
 VIN. Licensed and search still do not re-request the blocked page. With none of these
 configured, recovery reports `unavailable`.
