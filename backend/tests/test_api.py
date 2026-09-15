@@ -7,10 +7,10 @@ client = TestClient(app)
 def test_health_and_demo():
     assert client.get('/api/health').json()['status'] == 'ok'
     # The frontend compares this with API_REVISION in frontend/src/api.ts to detect a stale API process.
-    assert client.get('/api/health').json()['api_revision'] == 9
+    assert client.get('/api/health').json()['api_revision'] == 10
     import pathlib, re
     page = (pathlib.Path(__file__).resolve().parents[2] / 'frontend/src/api.ts').read_text()
-    assert re.search(r'API_REVISION = (\d+)', page).group(1) == '9'
+    assert re.search(r'API_REVISION = (\d+)', page).group(1) == '10'
     assert len(client.get('/api/demo').json()['candidates']) == 3
 
 def test_pasted_text_and_compare():

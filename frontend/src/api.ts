@@ -1,7 +1,7 @@
 import type { Candidate, ConstraintResult, Health, ImportRequest, ImportResult, Preferences, Report, ReportSummary, SourceInfo } from './types';
 
 // Must match API_REVISION in backend/app/main.py.
-export const API_REVISION = 9;
+export const API_REVISION = 10;
 
 export class ApiError extends Error {
   constructor(message: string, public result: Partial<ImportResult>) { super(message); }
