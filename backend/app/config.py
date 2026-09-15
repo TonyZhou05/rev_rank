@@ -24,6 +24,11 @@ class Settings:
     vin_decode_enabled: bool = False
     # One extra MarketCheck call per known VIN, for the factory MSRP a listing cannot supply.
     neovin_enabled: bool = True
+    # Search-derived dealer flags. Off by default: each report spends search credits on the seller
+    # rather than the car, so an operator opts in deliberately.
+    dealer_signals_enabled: bool = False
+    # Searches per distinct dealer, per report. Tavily advanced search costs 2 credits each.
+    dealer_signal_searches: int = 2
     # Paid-provider budgets per UTC month, enforced by usage.py before each call.
     marketcheck_monthly_calls: int = 500
     search_monthly_credits: int = 1000
@@ -46,6 +51,11 @@ class Settings:
     @property
     def llm_enabled(self) -> bool:
         return bool(self.llm_api_key and self.llm_model)
+
+    @property
+    def dealer_signals_available(self) -> bool:
+        """Dealer signals need a search provider; the model only interprets what search returned."""
+        return self.dealer_signals_enabled and self.search_enabled
 
     @property
     def llm_endpoint_host(self) -> str:
@@ -75,6 +85,8 @@ class Settings:
             search_api_key=os.getenv("REVRANK_SEARCH_API_KEY", "").strip(),
             vin_decode_enabled=os.getenv("REVRANK_VIN_DECODE_ENABLED", "false").lower() == "true",
             neovin_enabled=os.getenv("REVRANK_NEOVIN_ENABLED", "true").lower() != "false",
+            dealer_signals_enabled=os.getenv("REVRANK_DEALER_SIGNALS_ENABLED", "false").lower() == "true",
+            dealer_signal_searches=max(1, min(3, int(os.getenv("REVRANK_DEALER_SIGNAL_SEARCHES", "2")))),
             marketcheck_monthly_calls=int(os.getenv("REVRANK_MARKETCHECK_MONTHLY_CALLS", "500")),
             search_monthly_credits=int(os.getenv("REVRANK_SEARCH_MONTHLY_CREDITS", "1000")),
             compare_timeout_seconds=max(1.0, float(os.getenv("REVRANK_COMPARE_TIMEOUT_SECONDS", "85"))),
