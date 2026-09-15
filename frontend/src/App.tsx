@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ArrowRight, Check, CircleAlert, FileText, Gauge, Link2, LoaderCircle, Pencil, Plus, RefreshCw, RotateCcw, Sparkles, X } from 'lucide-react';
-import { api, apiLog, API_REVISION, ApiError, compareClientTimeoutMs, errorMessage, importClientTimeoutMs } from './api';
+import { api, apiLog, API_REVISION, ApiError, compareClientTimeoutMs, errorMessage, importClientTimeoutMs, RequestCancelled } from './api';
 import { ApiInspector, JsonView } from './ApiInspector';
 import type { Candidate, Health, ImportSlot, Preferences, RecoverySource, Report } from './types';
 import { Review } from './Review';
@@ -47,6 +47,15 @@ export default function App() {
   useEffect(() => { api.health().then(setHealth).catch(() => undefined); }, []);
   useEffect(() => saveDraft({ slots, preferences }), [slots, preferences]);
   useEffect(() => saveRecoverySource(recoverySource), [recoverySource]);
+  // A new step starts at its own top, not at the previous step's scroll depth.
+  useEffect(() => { window.scrollTo(0, 0); }, [step]);
+  // A source this browser remembered but the server does not offer would fail every URL import.
+  useEffect(() => {
+    if (!health) return;
+    const ready = { auto: true, marketcheck: health.licensed_inventory_enabled, search: health.search_enabled,
+                    browse: health.browser_recovery_enabled }[recoverySource];
+    if (!ready) setRecoverySource('auto');
+  }, [health, recoverySource]);
   useEffect(() => {
     if (!busy) { setBuildSlow(false); return; }
     const t = window.setTimeout(() => setBuildSlow(true), 20_000);
@@ -54,8 +63,14 @@ export default function App() {
   }, [busy]);
 
 
-  const updateSlot = (id: string, update: Partial<ImportSlot>) => {
+  // The report is built from the candidates; once they change, it and any compare still running are stale.
+  const invalidateReport = () => {
+    compareAbort.current?.abort('stale');
     setReport(null);
+  };
+  const updateSlot = (id: string, update: Partial<ImportSlot>) => {
+    // Typing a URL or opening "Change listing" leaves the compared cars as they were.
+    if ('candidate' in update) invalidateReport();
     setSlots(current => current.map(s => s.id === id ? { ...s, ...update } : s));
   };
   // Importing stays on this step: the result is shown in the car's card, and the user moves on when ready.
@@ -82,6 +97,16 @@ export default function App() {
       updateSlot(slot.id, { candidate: result.candidate, status: result.status, message: result.message, attempts: result.attempts,
                             recovery_status: result.recovery_status, cachedAt: undefined, editing: false, raw: { request: body, status: 200, response: result } });
     } catch (error) {
+      if (error instanceof RequestCancelled) {
+        // Nothing changed: the card keeps whatever it held before the import started.
+        setNotice(errorMessage(error));
+        return;
+      }
+      if (slot.candidate) {
+        // A failed Refresh or replacement never throws away the car already imported.
+        setNotice(`${errorMessage(error)} The car you imported earlier is unchanged.`);
+        return;
+      }
       updateSlot(slot.id, { candidate: null, status: 'failed', message: errorMessage(error), attempts: error instanceof ApiError ? error.result.attempts : [],
                             recovery_status: error instanceof ApiError ? error.result.recovery_status : null, cachedAt: undefined, editing: false,
                             raw: { request: body, status: errorMessage(error).split(':')[0], response: error instanceof ApiError ? error.result : { error: errorMessage(error) } } });
@@ -94,7 +119,7 @@ export default function App() {
   const addSlot = () => setSlots(current => current.length < 3 ? [...current, freshSlot()] : current);
   const removeSlot = (keep: (slot: ImportSlot) => boolean) => {
     setSlots(current => { const next = current.filter(keep); return next.length ? next : [freshSlot()]; });
-    setReport(null);
+    invalidateReport();
   };
   const updateCandidate = (id: string, field: keyof Candidate, raw: string) => {
     setSlots(current => current.map(s => {
@@ -107,18 +132,21 @@ export default function App() {
       }
       return { ...s, candidate };
     }));
-    setReport(null);
+    invalidateReport();
   };
   const cancelImport = () => { importAbort.current?.abort('cancel'); };
   const cancelCompare = () => { compareAbort.current?.abort('cancel'); };
   const generateReport = async () => {
     if (candidates.length < 2) { setNotice('Import at least two candidates before generating a report.'); return; }
-    compareAbort.current?.abort();
+    compareAbort.current?.abort('stale');
     const ac = new AbortController();
     compareAbort.current = ac;
     setBusy(true); setNotice(''); setCompareError(null); setBuildSlow(false);
     try {
-      const remote = await api.compare(candidates, preferences, ac.signal, compareClientTimeoutMs(health?.compare_timeout_seconds));
+      // percent_of_msrp is derived by the server; the Review page's local preview is not sent.
+      const sent = candidates.map(c => ({ ...c, percent_of_msrp: null }));
+      const remote = await api.compare(sent, preferences, ac.signal, compareClientTimeoutMs(health?.compare_timeout_seconds));
+      if (ac.signal.aborted) return;
       // Keep the MSRP this page holds if the backend omits it on the way back, with its own evidence:
       // a value the buyer typed stays "you entered", a VIN-decoded one keeps the NeoVIN source.
       const local = new Map(candidates.map(c => [c.id, c]));
@@ -140,26 +168,27 @@ export default function App() {
       const models = new Set(merged.map(c => (c.model ?? '').trim().toLowerCase()));
       const cross = remote.cross_model ?? (merged.some(c => !c.make || !c.model) || makes.size > 1 || models.size > 1);
       const next = { ...remote, candidates: merged, cross_model: cross };
+      // The report explains a server time limit itself; no second copy in the top banner.
       setReport(next);
       setStep('report');
-      const aiMsg = next.ai_analysis?.message?.trim();
-      if (aiMsg && (next.ai_analysis?.status === 'unavailable' || next.ai_analysis?.status === 'partial')
-          && /time limit|timed out|stopped at the server/i.test(aiMsg)) {
-        setNotice(aiMsg);
-      }
     }
     catch (error) {
-      const msg = errorMessage(error);
-      setCompareError(msg);
-      setNotice(msg);
+      // Inputs changed while this ran: the page already dropped the report it would have filled.
+      if (ac.signal.reason === 'stale') return;
+      if (error instanceof RequestCancelled) setNotice(errorMessage(error));
+      else setCompareError(errorMessage(error));
     } finally {
-      if (compareAbort.current === ac) compareAbort.current = null;
-      setBusy(false);
-      setBuildSlow(false);
+      if (compareAbort.current === ac) {
+        compareAbort.current = null;
+        setBusy(false);
+        setBuildSlow(false);
+      }
     }
   };
-  const loadDemo = async () => { setReport(null); setBusy(true); try { const data = await api.demo(); setSlots(data.candidates.slice(0, 3).map(candidate => ({ ...freshSlot(), candidate, status: 'success', message: 'Loaded synthetic example' }))); setStep('import'); setNotice('Synthetic examples loaded. These are not live market observations.'); } catch (error) { setNotice(errorMessage(error)); } finally { setBusy(false); } };
-  const reset = () => { if (busy) return; clearDraft(); setSlots([freshSlot()]); setPreferences(defaultPreferences); setReport(null); setStep('import'); setNotice(''); };
+  // Clearing imported cars cannot be undone, so ask first.
+  const confirmDiscard = () => candidates.length === 0 || window.confirm('Start over? Your imported cars will be cleared.');
+  const loadDemo = async () => { if (!confirmDiscard()) return; invalidateReport(); setBusy(true); try { const data = await api.demo(); setSlots(data.candidates.slice(0, 3).map(candidate => ({ ...freshSlot(), candidate, status: 'success', message: 'Loaded synthetic example' }))); setStep('import'); setNotice('Synthetic examples loaded. These are not live market observations.'); } catch (error) { setNotice(errorMessage(error)); } finally { setBusy(false); } };
+  const reset = () => { if (busy || !confirmDiscard()) return; clearDraft(); setSlots([freshSlot()]); setPreferences(defaultPreferences); setReport(null); setStep('import'); setNotice(''); };
 
   return <div className="app-shell">
     <header className="topbar"><a className="brand" href="/" onClick={e => { e.preventDefault(); reset(); }}><span className="brand-mark">R</span><span>RevRank</span></a><span className="top-note">Vehicle comparison workspace</span><button className="text-button" onClick={reset}><RotateCcw size={15}/> New comparison</button></header>

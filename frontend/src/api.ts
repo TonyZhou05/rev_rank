@@ -7,6 +7,9 @@ export class ApiError extends Error {
   constructor(message: string, public result: Partial<ImportResult>) { super(message); }
 }
 
+/** The buyer (or the page, for a request its inputs outdated) stopped the request; not a failure. */
+export class RequestCancelled extends Error {}
+
 // Every API exchange, newest first, for the on-page inspector.
 export interface ApiLogEntry {
   id: number; at: string; method: string; endpoint: string; request?: unknown;
@@ -55,7 +58,7 @@ async function request<T>(path: string, body?: unknown, timeoutMs?: number, exte
       if (response.status >= 500) {
         throw new Error(`The API returned ${response.status} without JSON. The report could not be built; please try again.`);
       }
-      throw new Error(`The API returned ${response.status} without JSON. Check that the RevRank backend is running on port 8000.`);
+      throw new Error(`The API returned ${response.status} without JSON. The RevRank server may be restarting; please try again.`);
     }
     const data = await response.json();
     apiLog.update(entry, { status: response.status, ms: Math.round(performance.now() - started), response: data });
@@ -72,7 +75,10 @@ async function request<T>(path: string, body?: unknown, timeoutMs?: number, exte
     }
     return data as T;
   } catch (error) {
-    const aborted = (error instanceof DOMException && error.name === 'AbortError')
+    // abort(reason) makes fetch reject with the reason itself (the string 'cancel' or 'timeout'),
+    // not an AbortError, so the signal is the reliable test.
+    const aborted = controller.signal.aborted
+      || (error instanceof DOMException && error.name === 'AbortError')
       || (error instanceof Error && error.name === 'AbortError');
     if (aborted) {
       const secs = Math.round(limit / 1000);
@@ -89,10 +95,10 @@ async function request<T>(path: string, body?: unknown, timeoutMs?: number, exte
             ? 'Import cancelled. Your draft is intact.'
             : 'The request was cancelled. Your draft is intact.');
       apiLog.update(entry, { status: 'network error', ms: Math.round(performance.now() - started), note: msg });
-      throw new Error(msg);
+      throw timedOut || controller.signal.reason === 'timeout' ? new Error(msg) : new RequestCancelled(msg);
     }
     if (!(error instanceof ApiError)) apiLog.update(entry, { status: 'network error', ms: Math.round(performance.now() - started), note: error instanceof Error ? error.message : String(error) });
-    if (error instanceof TypeError) throw new Error('Could not reach the RevRank API. Check your connection and that the backend is running on port 8000.');
+    if (error instanceof TypeError) throw new Error('Could not reach the RevRank server. Check your connection and try again; your draft is intact.');
     throw error;
   } finally {
     window.clearTimeout(timer);
