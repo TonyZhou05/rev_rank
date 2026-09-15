@@ -46,6 +46,12 @@ def test_paste_with_reference_url_never_fetches(monkeypatch):
     assert 'no website was fetched' in result['message']
 
 
+LIVE_DEMO_PREFS = {
+    'budget': 50000, 'must_haves': ['manual'], 'priorities': ['reliability', 'fun'],
+    'annual_mileage': 12000, 'ownership_years': 3, 'location': '',
+}
+
+
 def test_three_demo_candidates_compare():
     cars = client.get('/api/demo').json()['candidates']
     assert len(cars) == 3
@@ -59,6 +65,17 @@ def test_three_demo_candidates_compare():
     body = report.json()
     assert len(body['candidates']) == 3
     assert body['analysis_mode'] == 'rules'
+
+
+def test_three_demo_compare_with_the_live_failing_preferences():
+    """Render 500: all three /api/demo cars plus budget 50k, must-have manual, reliability/fun."""
+    cars = client.get('/api/demo').json()['candidates']
+    report = client.post('/api/compare', json={'candidates': cars, 'preferences': LIVE_DEMO_PREFS})
+    assert report.status_code == 200
+    assert 'application/json' in report.headers.get('content-type', '')
+    body = report.json()
+    assert len(body['candidates']) == 3
+    assert any(e['conflicts'] for e in body['shortlist'])
 
 
 def test_compare_keeps_the_report_when_analyst_crashes(monkeypatch):

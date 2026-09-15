@@ -418,6 +418,10 @@ def thirteen_evidence():
     return calls
 
 
+LIVE_DEMO_PREFS = Preferences(budget=50000, must_haves=["manual"], priorities=["reliability", "fun"],
+                              annual_mileage=12000, ownership_years=3)
+
+
 @pytest.fixture
 def demo_report(monkeypatch):
     def offline(*args, **kwargs):
@@ -427,6 +431,16 @@ def demo_report(monkeypatch):
     from backend.app.demo import demo_candidates
     return create_report(demo_candidates(), Preferences(annual_mileage=12000, ownership_years=3,
                                                         priorities=["Lower asking price", "Lower mileage"]), SETTINGS)
+
+
+@pytest.fixture
+def live_demo_report(monkeypatch):
+    def offline(*args, **kwargs):
+        raise AssertionError("offline test")
+    monkeypatch.setattr(socket, "getaddrinfo", offline)
+    monkeypatch.setattr(analyst, "nhtsa", lambda *args, **kwargs: {"results": [], "Results": []})
+    from backend.app.demo import demo_candidates
+    return create_report(demo_candidates(), LIVE_DEMO_PREFS, SETTINGS)
 
 
 def test_a_long_three_car_claim_is_trimmed_not_a_crash(demo_report):
@@ -475,4 +489,19 @@ def test_restated_comparisons_do_not_overflow_the_three_car_wire_cap(demo_report
     analysis = analyst.assemble(ws, SETTINGS)
     assert analysis.status == "complete"
     assert len(analysis.comparisons) <= analyst.COMPARISON_CAP
+
+
+def test_three_demo_restatement_with_the_live_failing_preferences(live_demo_report, monkeypatch):
+    """Same Render payload: budget 50k, must-have manual, reliability/fun, then flash gather-and-finish."""
+    chat, _ = scripted([
+        [*thirteen_evidence(), call("finish")],
+        *[[call("finish")]] * 4,
+    ])
+    monkeypatch.setattr(analyst, "chat", chat)
+    analysis = analyst.analyze(live_demo_report, SETTINGS)
+    assert analysis.status == "complete" and analysis.verdict is not None
+    assert len(analysis.comparisons) <= analyst.COMPARISON_CAP
+    assert len(analysis.verdict.text) <= analyst.CLAIM_LIMIT
+    assert analysis.message.startswith(analyst.RESTATED)
+    assert any(v.risks for v in analysis.vehicles)
 
