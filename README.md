@@ -54,13 +54,21 @@ editing `.env`. Re-run the checks with `.venv/bin/python scripts/check_sources.p
   establishing appropriate access/reuse rights. Site rules and access checks still
   apply. Unsupported or blocked sources offer pasted-text/manual fallbacks.
 - Set `REVRANK_LLM_API_KEY`, `REVRANK_LLM_BASE_URL`, and `REVRANK_LLM_MODEL` to enable
-  the optional OpenAI-compatible integration. No specific vendor/model is required, but
-  it must support function calling. The report's AI comparison
+  the optional OpenAI-compatible integration. DeepSeek (`https://api.deepseek.com/v1`,
+  `deepseek-flash`) is the configured default; any compatible endpoint works, but it must
+  support function calling. The report's AI comparison
   (`backend/app/analyst.py`) gets facts only through tools: reviewed listing fields,
   NHTSA recalls, complaints and 5-Star ratings, and RevRank's own calculations. A
   statement is kept only if it cites tool results from that run and every number in it
-  appears in them; unsupported statements are dropped and counted. Small local models
-  (for example 3B) mostly fail these checks, so use a capable hosted model.
+  appears in them; unsupported statements are dropped and counted. The same gate covers
+  the shortlist re-rank: an order is shown only when every position cites its evidence,
+  otherwise the deterministic constraint-fit order stands. Small local models (for
+  example 3B) mostly fail these checks, so use a capable hosted model.
+- Buyer constraints can be typed as a sentence. `/api/constraints` maps language onto the
+  preference schema only, and a model mapping is accepted only where it quotes the buyer's
+  own words, so it cannot invent a constraint or touch a listing fact. Without a model
+  configured, deterministic phrase rules do the same job. See
+  [the spec](docs/constraint-chat-cited-rerank.md).
 - Pasted URLs may lack `https://` or include surrounding text. VINs in URLs (TrueCar,
   Edmunds, Carfax, Autolist) are read with check-digit validation. Listing ids are read
   for CarMax, Carvana, Autotrader, KBB, Cars.com and CarGurus (`#listing=`).
