@@ -65,8 +65,9 @@ def licensed(**changes) -> Settings:
 def stub_inventory(monkeypatch, by_filter):
     calls = []
 
-    def inventory_search(settings, timeout=10, **query):
+    def inventory_search(settings, timeout=10, source=None, past=False, **query):
         (key, value), = query.items()
+        key = f"past_{key}" if past else key
         calls.append((key, value))
         return list(by_filter.get(key, []))
 

@@ -58,8 +58,10 @@ this confirms user input, NOT independent factual verification of seller claims.
 
 - `GET /api/health` -> `{status: 'ok', llm_enabled: boolean, llm_model: string, llm_endpoint_host: string,
   market_enabled: boolean, api_revision: number, licensed_inventory_enabled: boolean,
-  vin_decode_enabled: boolean, neovin_msrp_enabled: boolean, dealer_signals_enabled: boolean,
-  usage: {...}}`.
+  vin_decode_enabled: boolean, neovin_msrp_enabled: boolean, past_inventory_enabled: boolean,
+  dealer_signals_enabled: boolean, usage: {...}}`.
+  `past_inventory_enabled` is true when a licensed key is configured and recovery may spend one
+  extra call on MarketCheck's expired-listing endpoint after active inventory holds nothing.
   `dealer_signals_enabled` is true only when search-derived dealer flags are switched on *and* a
   search provider is configured; see DealerSignals below.
   `llm_model` and `llm_endpoint_host` name the configured model (DeepSeek by default); the API key

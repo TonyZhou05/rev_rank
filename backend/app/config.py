@@ -24,6 +24,9 @@ class Settings:
     vin_decode_enabled: bool = False
     # One extra MarketCheck call per known VIN, for the factory MSRP a listing cannot supply.
     neovin_enabled: bool = True
+    # One extra MarketCheck call, spent only when active inventory held nothing, against the
+    # past-inventory endpoint. It runs on an import that would otherwise recover nothing at all.
+    marketcheck_past_enabled: bool = True
     # Search-derived dealer flags. Off by default: each report spends search credits on the seller
     # rather than the car, so an operator opts in deliberately.
     dealer_signals_enabled: bool = False
@@ -43,6 +46,10 @@ class Settings:
     @property
     def neovin_msrp_enabled(self) -> bool:
         return self.marketcheck_enabled and self.neovin_enabled
+
+    @property
+    def past_inventory_enabled(self) -> bool:
+        return self.marketcheck_enabled and self.marketcheck_past_enabled
 
     @property
     def search_enabled(self) -> bool:
@@ -85,6 +92,7 @@ class Settings:
             search_api_key=os.getenv("REVRANK_SEARCH_API_KEY", "").strip(),
             vin_decode_enabled=os.getenv("REVRANK_VIN_DECODE_ENABLED", "false").lower() == "true",
             neovin_enabled=os.getenv("REVRANK_NEOVIN_ENABLED", "true").lower() != "false",
+            marketcheck_past_enabled=os.getenv("REVRANK_MARKETCHECK_PAST_INVENTORY_ENABLED", "true").lower() != "false",
             dealer_signals_enabled=os.getenv("REVRANK_DEALER_SIGNALS_ENABLED", "false").lower() == "true",
             dealer_signal_searches=max(1, min(3, int(os.getenv("REVRANK_DEALER_SIGNAL_SEARCHES", "2")))),
             marketcheck_monthly_calls=int(os.getenv("REVRANK_MARKETCHECK_MONTHLY_CALLS", "500")),

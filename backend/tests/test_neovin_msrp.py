@@ -164,9 +164,9 @@ def recover(settings, url=URL, **kwargs):
 
 
 def stub_inventory(monkeypatch, by_filter):
-    def inventory_search(settings, timeout=10, **query):
+    def inventory_search(settings, timeout=10, source=None, past=False, **query):
         (key, _), = query.items()
-        return list(by_filter.get(key, []))
+        return list(by_filter.get(f"past_{key}" if past else key, []))
 
     monkeypatch.setattr(retrieval, "inventory_search", inventory_search)
 
