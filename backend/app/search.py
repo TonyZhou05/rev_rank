@@ -15,6 +15,10 @@ from .usage import BudgetExceeded, spend
 class SearchResult:
     url: str
     text: str
+    # The provider's own page title, and its date when it published one. Listing recovery ignores
+    # both; dealer signals need them to label an excerpt and to say whether it is dated at all.
+    title: str = ''
+    published: str | None = None
 
 
 class SearchError(Exception):
@@ -62,11 +66,14 @@ def search(query: str, settings: Settings, timeout: float = 10, domain: str | No
             if not isinstance(row, dict) or not isinstance(row.get('url'), str):
                 continue
             snippets = [row.get('description', '')] + row.get('extra_snippets', []) if settings.search_provider == 'brave' else [row.get('content', '')]
+            title = row.get('title') if isinstance(row.get('title'), str) else ''
+            dated = row.get('age') if settings.search_provider == 'brave' else row.get('published_date')
+            published = dated.strip()[:40] if isinstance(dated, str) and dated.strip() else None
             # Keep independently selected snippets separate: joining excerpts could
             # bind one vehicle's VIN to a different vehicle's fields.
             for snippet in snippets[:6]:
                 if isinstance(snippet, str) and snippet.strip():
-                    results.append(SearchResult(row['url'][:2048], snippet[:16000]))
+                    results.append(SearchResult(row['url'][:2048], snippet[:16000], title.strip()[:300], published))
         return results
     except SearchError:
         raise

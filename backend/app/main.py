@@ -18,6 +18,7 @@ from .cancel import DISCONNECTED, TIMEOUT, Cancelled, CancelToken
 from .comparison import create_report
 from .config import Settings
 from .constraints import parse_constraints
+from . import dealer_signals
 from .demo import demo_candidates
 from .extraction import apply_market_units, extract, import_status
 from .fetch import FetchError, fetch_listing
@@ -60,6 +61,7 @@ def health():
             "search_enabled": settings.search_enabled, "search_provider": settings.search_provider,
             "licensed_inventory_enabled": settings.marketcheck_enabled, "vin_decode_enabled": settings.vin_decode_enabled,
             "neovin_msrp_enabled": settings.neovin_msrp_enabled,
+            "dealer_signals_enabled": settings.dealer_signals_available,
             "compare_timeout_seconds": settings.compare_timeout_seconds,
             "usage": usage.summary(settings)}
 
@@ -166,6 +168,9 @@ async def guarded(work: Callable[[], Work], http_request: Request, token: Cancel
 def interpret(report: Report, token: CancelToken) -> Report:
     """The optional model work, on this request's own copy of the deterministic report."""
     working = assist_report(report.model_copy(deep=True), settings, token=token)
+    # Dealer signals go first: the pass is short and bounded, while the analyst is free to use the
+    # rest of the budget. Turned off by default, so most reports skip straight past it.
+    working.dealer_signals = dealer_signals.attach(working, settings, token=token)
     working.ai_analysis = analyze(working, settings, token=token)
     if working.ai_analysis.status != "unavailable":
         working.analysis_mode = "llm"
