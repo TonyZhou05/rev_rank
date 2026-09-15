@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { CircleAlert, LoaderCircle, Sparkles, X } from 'lucide-react';
 import { api, errorMessage } from './api';
-import type { Preferences } from './types';
+import type { ConstraintResult, Preferences } from './types';
 import { defaultPreferences } from './utils';
 
 const SUGGESTIONS = [
@@ -45,6 +45,26 @@ interface Turn {
   failure?: string;
 }
 
+type ListField = 'must_haves' | 'excludes' | 'priorities';
+const LIST_FIELDS = new Set<string>(['must_haves', 'excludes', 'priorities']);
+
+/** Only the fields this message set, applied onto the chips as they are now: an edit made while the
+ *  message was being read is kept, not reset to the snapshot the request carried. */
+export function mergeParsed(latest: Preferences, sent: Preferences, parsed: ConstraintResult): Preferences {
+  const next: Preferences = { ...latest };
+  for (const field of new Set(parsed.constraints.map(c => c.field))) {
+    if (LIST_FIELDS.has(field)) {
+      const key = field as ListField;
+      const now = latest[key] ?? [], before = sent[key] ?? [];
+      const added = (parsed.preferences[key] ?? []).filter(item => !before.includes(item));
+      next[key] = [...now, ...added.filter(item => !now.includes(item))];
+    } else {
+      (next as unknown as Record<string, unknown>)[field] = (parsed.preferences as unknown as Record<string, unknown>)[field];
+    }
+  }
+  return next;
+}
+
 /** A short chat that only fills the chips below. It can write preference fields and nothing else:
  *  it never states or changes a fact about a car, and it is not inventory discovery — the
  *  shortlist stays the cars you imported. */
@@ -55,6 +75,8 @@ function ConstraintChat({ preferences, onChange, busy, mode }: {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [reading, setReading] = useState(false);
   const thread = useRef<HTMLDivElement>(null);
+  const latest = useRef(preferences);
+  latest.current = preferences;
   const nextCta = mode === 'report' ? 'Apply to report' : 'Generate comparison';
 
   // Keep the newest turn in view without yanking the whole page around.
@@ -71,8 +93,9 @@ function ConstraintChat({ preferences, onChange, busy, mode }: {
     setText('');
     setReading(true);
     try {
-      const parsed = await api.constraints(said, preferences);
-      onChange(parsed.preferences);
+      const sent = preferences;
+      const parsed = await api.constraints(said, sent);
+      onChange(mergeParsed(latest.current, sent, parsed));
       setTurns(current => current.map(turn => turn.id === id
         ? { ...turn, reply: parsed.reply, mode: parsed.mode, applied: parsed.constraints.length }
         : turn));
