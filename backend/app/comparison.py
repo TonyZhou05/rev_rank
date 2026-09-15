@@ -525,8 +525,13 @@ def create_report(candidates: list[Candidate], prefs: Preferences, settings: Set
         low_id, high_id = min(normalized_mileage, key=normalized_mileage.get), max(normalized_mileage, key=normalized_mileage.get)
         if low_id != high_id:
             low, high = next(c for c in candidates if c.id == low_id), next(c for c in candidates if c.id == high_id)
+            # In the listings' own unit when they share one; converted to km only across units.
+            if low.mileage_unit == high.mileage_unit:
+                gap = f"{fmt(dec(high.mileage) - dec(low.mileage))} fewer {low.mileage_unit}"
+            else:
+                gap = f"{fmt(normalized_mileage[high_id] - normalized_mileage[low_id])} fewer km (after unit conversion)"
             add("Mileage difference",
-                f"{low.title} has {fmt(normalized_mileage[high_id] - normalized_mileage[low_id])} fewer km than {high.title} after unit conversion. "
+                f"{low.title} has {gap} than {high.title}. "
                 "Lower mileage alone does not establish condition or maintenance costs.", [low_id, high_id], ["mileage", "mileage_unit"])
     units = {c.mileage_unit for c in candidates if known_unit(c)}
     if len(units) == 1 and all(known_unit(c) for c in candidates):

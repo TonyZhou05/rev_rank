@@ -45,6 +45,24 @@ interface Turn {
   failure?: string;
 }
 
+/** A required number the buyer can clear and retype: the field keeps its own text while focused,
+ *  applies each in-range value, and snaps back into range (or to the last value) on blur. */
+function ClampedNumber({ value, min, max, onCommit }: { value: number; min: number; max: number; onCommit: (next: number) => void }) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const read = (raw: string) => raw.trim() === '' ? null : Number(raw);
+  return <input type="number" inputMode="numeric" min={min} max={max} value={draft ?? value}
+    onChange={e => {
+      setDraft(e.target.value);
+      const next = read(e.target.value);
+      if (next !== null && Number.isFinite(next) && next >= min && next <= max) onCommit(next);
+    }}
+    onBlur={e => {
+      const next = read(e.target.value);
+      if (next !== null && Number.isFinite(next)) onCommit(Math.min(max, Math.max(min, next)));
+      setDraft(null);
+    }}/>;
+}
+
 type ListField = 'must_haves' | 'excludes' | 'priorities';
 const LIST_FIELDS = new Set<string>(['must_haves', 'excludes', 'priorities']);
 
@@ -235,13 +253,13 @@ export function ConstraintPanel({ preferences, onChange, onApply, busy, mode, na
       </label>
       <label className="constraint-chip" role="listitem">
         <span>Years kept</span>
-        <input type="number" inputMode="numeric" min={1} max={30} value={preferences.ownership_years}
-          onChange={e => onChange({ ...preferences, ownership_years: Math.max(1, Number(e.target.value) || 1) })}/>
+        <ClampedNumber value={preferences.ownership_years} min={1} max={30}
+          onCommit={ownership_years => onChange({ ...preferences, ownership_years })}/>
       </label>
       <label className="constraint-chip" role="listitem">
         <span>Annual miles</span>
-        <input type="number" inputMode="numeric" min={0} value={preferences.annual_mileage}
-          onChange={e => onChange({ ...preferences, annual_mileage: Math.max(0, Number(e.target.value) || 0) })}/>
+        <ClampedNumber value={preferences.annual_mileage} min={0} max={200_000}
+          onCommit={annual_mileage => onChange({ ...preferences, annual_mileage })}/>
       </label>
       <label className="constraint-chip" role="listitem">
         <span>Max miles</span>
