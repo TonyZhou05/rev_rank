@@ -130,7 +130,8 @@ DEALER_SRP_QUERY = frozenset({"q", "query", "search", "page", "start", "sort", "
 # condition-year-make-model-… without requiring a VIN in the slug.
 DEALER_VDP_SLUG = re.compile(r"(?:^|-)(?:19|20)\d{2}-(?:[a-z0-9]+-){2,}", re.I)
 # Stock or listing id: digits required, not a model-year alone.
-DEALER_VEHICLE_TOKEN = re.compile(r"^(?!(?:19|20)\d{2}$)[a-z0-9]{4,}$", re.I)
+# Without the lookahead for a digit, "toyota", "sedan" and "specials" (make and category filters) passed.
+DEALER_VEHICLE_TOKEN = re.compile(r"^(?=[a-z]*\d)(?!(?:19|20)\d{2}$)[a-z0-9]{4,}$", re.I)
 
 
 def dealer_vdp_slug(url: str) -> str | None:

@@ -20,10 +20,10 @@ def demo_candidates() -> list[Candidate]:
     result = []
     for example in examples:
         example.update(currency="USD", mileage_unit="mi", location="Synthetic example · Austin, TX",
-                       source_kind="synthetic", source_url=None)
+                       source_kind="synthetic", source_url=None, retrieval_method="synthetic")
         evidence = {k: Evidence(value=value_text(v), source="Invented RevRank demonstration fixture",
                                status="synthetic")
-                    for k, v in example.items() if v is not None and k not in ("id", "source_kind", "source_url")}
+                    for k, v in example.items() if v is not None and k not in ("id", "source_kind", "source_url", "retrieval_method")}
         evidence["price_type"] = Evidence(value="asking", source="Synthetic example", status="synthetic")
         evidence["observed_at"] = Evidence(value=now(), source="Fixture generated at", status="synthetic")
         result.append(Candidate(**example, evidence=evidence,

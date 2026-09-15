@@ -629,6 +629,10 @@ def create_report(candidates: list[Candidate], prefs: Preferences, settings: Set
             elif msrp_sourced(c) and foreign:
                 c.percent_of_msrp = None
                 msrp_values.append(f"Not calculated: MSRP is USD, price is {c.currency}")
+            elif msrp_sourced(c) and dec(c.price) > dec(c.msrp) * 100:
+                # Over 10,000% (the field's own ceiling) is a typo in the MSRP, not a price position.
+                c.percent_of_msrp = None
+                msrp_values.append("MSRP looks wrong (under 1% of the asking price)")
             elif msrp_sourced(c):
                 pct = float((dec(c.price) / dec(c.msrp)) * 100)
                 c.percent_of_msrp = round(pct, 2)

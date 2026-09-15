@@ -112,6 +112,8 @@ async def import_listing(request: ImportRequest, http_request: Request, response
 
 def run_import(request: ImportRequest, token: CancelToken) -> ImportResponse:
     notes = []
+    # Where a VIN on the request came from: the buyer's own field, or the listing URL it was read from.
+    vin_from_url = False
     if request.url:
         # Accept pasted text around the URL and a missing scheme; read a VIN embedded in the URL.
         url = normalize_input_url(request.url)
@@ -120,6 +122,7 @@ def run_import(request: ImportRequest, token: CancelToken) -> ImportResponse:
             return ImportResponse(status="partial", candidate=None, recovery_status="identity_conflict",
                                   message=f"The VIN in the listing URL ({vin}) differs from the VIN you entered. Confirm which vehicle you mean.")
         if vin and not request.vin:
+            vin_from_url = True
             notes.append(dict(method="url", status="completed", detail=f"VIN {vin} read from the listing URL (check digit valid)."))
         request = request.model_copy(update={"url": url, "vin": request.vin or vin})
     source_url = request.url
@@ -151,6 +154,9 @@ def run_import(request: ImportRequest, token: CancelToken) -> ImportResponse:
             on_page = request.vin in raw.upper()
             candidate.evidence["vin"] = Evidence(value=request.vin, status="extracted", source=(
                 "VIN shown on the listing page" if on_page else "VIN in the listing URL (check digit valid)"))
+    elif vin_from_url and "vin" not in candidate.evidence:
+        candidate.evidence["vin"] = Evidence(value=request.vin, status="extracted",
+                                             source="VIN in the listing URL (check digit valid)")
     elif request.vin and "vin" not in candidate.evidence:
         # No page was read, so the VIN is the buyer's own input whether or not the text repeats it.
         candidate.evidence["vin"] = Evidence(value=request.vin, status="user_confirmed", source=(
@@ -216,8 +222,9 @@ def interpret(report: Report, token: CancelToken) -> Report:
     # rest of the budget. Turned off by default, so most reports skip straight past it.
     working.dealer_signals = dealer_signals.attach(working, settings, token=token)
     working.ai_analysis = analyze(working, settings, token=token)
-    if working.ai_analysis.status != "unavailable":
-        working.analysis_mode = "llm"
+    # The mode names the cited analysis. A model that only reordered the findings (assist_report) is
+    # not an AI-assisted report, so an unavailable analysis leaves it rules-based.
+    working.analysis_mode = "llm" if working.ai_analysis.status != "unavailable" else "rules"
     return working
 
 

@@ -282,6 +282,15 @@ class CompareRequest(Model):
     candidates: Annotated[list[Candidate], Field(min_length=2, max_length=3)]
     preferences: Preferences
 
+    @model_validator(mode="before")
+    @classmethod
+    def derived_fields_are_recomputed(cls, data):
+        """percent_of_msrp is derived at compare time; a stale or out-of-range copy the page sends is dropped."""
+        if isinstance(data, dict) and isinstance(data.get("candidates"), list):
+            data = {**data, "candidates": [{**c, "percent_of_msrp": None} if isinstance(c, dict) else c
+                                           for c in data["candidates"]]}
+        return data
+
     @field_validator("candidates")
     @classmethod
     def distinct_ids(cls, values):
