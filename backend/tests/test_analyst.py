@@ -4,7 +4,7 @@ import socket
 
 import pytest
 
-from backend.app import analyst
+from backend.app import analyst, llm
 from backend.app.comparison import create_report
 from backend.app.config import Settings
 from backend.app.models import Candidate, Evidence, Preferences
@@ -214,6 +214,39 @@ def test_a_full_flag_slot_is_not_counted_as_a_rejected_claim(report):
     assert ws.rejected == 0
 
 
+def test_a_full_findings_batch_fits_in_one_turn():
+    """The per-turn output ceiling has to be able to carry everything LIMITS allows.
+
+    A turn that records findings emits them as tool calls, and a turn the ceiling cuts off records
+    nothing at all: the arguments never arrive, so add_finding is never reached and the run ends with
+    only its evidence sweep. Raising the flag limits to five per car, allowing two sentences a flag
+    and four a verdict, and adding set_ranking is what overran the old 2,500-token ceiling.
+    """
+    labels = list("ABC")
+    batch = [{"kind": "verdict", "car": "all", "text": "x" * analyst.CLAIM_LIMIT,
+              "citations": ["M.A.fit", "M.price_gap.AB"]}]
+    for label in labels:
+        for kind in ("green_flag", "red_flag"):
+            batch += [{"kind": kind, "car": label, "text": "y" * 350,
+                       "citations": [f"M.{label}.budget", f"M.{label}.fit"]}] * analyst.LIMITS["strength"]
+        batch += [{"kind": "question", "car": label, "text": "z" * 300, "citations": []}] * analyst.LIMITS["question"]
+    batch += [{"kind": "comparison", "car": "all", "topic": "price", "favors": "A", "text": "y" * 350,
+               "citations": ["M.price_gap.AB"]}] * analyst.LIMITS["comparison"]
+
+    def wire(name, args):
+        return {"id": "call_0_abcdefghij", "type": "function",
+                "function": {"name": name, "arguments": json.dumps(args)}}
+    calls = [wire("add_finding", args) for args in batch]
+    calls.append(wire("set_ranking", {"order": labels, "reasons": [
+        {"car": c, "text": "y" * 350, "citations": [f"M.{c}.fit"]} for c in labels]}))
+    calls.append(wire("finish", {}))
+    # Four characters per token is generous for JSON, which tokenizes worse than prose.
+    tokens = len(json.dumps(calls)) // 4
+    assert tokens < llm.TURN_MAX_TOKENS, (
+        f"a full {len(labels)}-car batch is about {tokens} output tokens, over the "
+        f"{llm.TURN_MAX_TOKENS} ceiling; raise TURN_MAX_TOKENS or lower LIMITS")
+
+
 def test_a_long_claim_survives_the_expansion_from_labels_to_names(report):
     # "Car B" becomes "2022 BMW M4" on the way out, so a claim already at Claim.text's limit grows
     # past it. That used to raise ValidationError out of add_finding and fail the whole compare.
@@ -229,6 +262,28 @@ def test_a_long_claim_survives_the_expansion_from_labels_to_names(report):
     assert len(kept.text) <= analyst.CLAIM_LIMIT and "Car A" not in kept.text
     # Trimmed at a sentence end rather than mid-word.
     assert kept.text.endswith(".")
+
+
+def test_a_truncated_turn_is_told_what_is_outstanding_more_than_once(report, monkeypatch):
+    # A turn cut off by the output ceiling arrives with no tool calls at all. One reminder is not
+    # enough: the model has to be given more than a single chance to get its statements recorded.
+    chat, seen = scripted([
+        [call("get_vehicle_facts", car="A"), call("get_vehicle_facts", car="B"), call("get_comparison_metrics")],
+        [],
+        [],
+        [call("add_finding", kind="verdict", car="all", citations=["M.price_gap.AB"],
+              text="Car B is 3,496 USD cheaper than Car A."), call("finish")],
+    ])
+    monkeypatch.setattr(analyst, "chat", chat)
+    analysis = analyst.analyze(report, SETTINGS)
+    assert len(seen) == 4 and analysis.status == "complete"
+
+
+def test_a_model_that_stays_quiet_still_stops(report, monkeypatch):
+    chat, seen = scripted([[call("get_vehicle_facts", car="A")]] + [[]] * 8)
+    monkeypatch.setattr(analyst, "chat", chat)
+    analyst.analyze(report, SETTINGS)
+    assert len(seen) == analyst.MAX_QUIET_TURNS + 2
 
 
 def test_recall_tool_scopes_and_cites_model_year(report, monkeypatch):

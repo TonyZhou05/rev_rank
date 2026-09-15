@@ -75,12 +75,20 @@ def unavailable(token: CancelToken | None) -> NoReturn:
     raise LLMUnavailable("Model response unavailable or invalid.")
 
 
+# A turn that records findings emits them all as tool calls, and a turn the ceiling cuts off records
+# nothing at all. Everything analyst-tools-v5 allows, at the longest text each field permits, is
+# about 6,200 tokens of that JSON for three cars, so the old 2,500 could not carry even two. The
+# prompt asks the model to split its statements over turns, which keeps a normal turn far below this;
+# the ceiling only has to make truncation impossible when it does not.
+TURN_MAX_TOKENS = 8000
+
+
 def chat(settings: Settings, messages: list[dict], tools: list[dict], timeout: float,
          token: CancelToken | None = None) -> dict:
     """One OpenAI-compatible chat completion with function tools; returns the assistant message."""
     check_endpoint(settings)
     try:
-        raw = completion(settings, {"model": settings.llm_model, "temperature": 0, "max_tokens": 2500,
+        raw = completion(settings, {"model": settings.llm_model, "temperature": 0, "max_tokens": TURN_MAX_TOKENS,
                                     "messages": messages, "tools": tools}, timeout, 256000, token)
         message = json.loads(raw)["choices"][0]["message"]
         if not isinstance(message, dict):

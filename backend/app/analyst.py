@@ -32,6 +32,9 @@ MAX_FINISH_REFUSALS = 2
 # After evidence is in the workspace, finish-without-a-verdict is turned away more times so the
 # model can still be nudged into add_finding. Gathering batches do not spend this budget.
 MAX_RECORDING_REFUSALS = 4
+# How often a turn that calls no tool at all may be prompted again while no verdict exists. A
+# truncated turn arrives as one of these, and one reminder is not enough to get the analysis back.
+MAX_QUIET_TURNS = 2
 EVIDENCE_TOOLS = frozenset({
     "get_vehicle_facts", "get_recalls", "get_complaints", "get_safety_rating", "get_comparison_metrics",
 })
@@ -40,7 +43,7 @@ RECORD_FINDINGS = (
     "Record an overall verdict with add_finding (kind 'verdict', car 'all', citations listing ids "
     "from those results), then green_flag and red_flag statements, then call finish."
 )
-PROMPT_VERSION = "analyst-tools-v4"
+PROMPT_VERSION = "analyst-tools-v5"
 LIMITS = {"verdict": 1, "strength": 5, "risk": 5, "comparison": 5, "question": 2}
 # The model speaks in green and red flags; storage keeps the older strength/risk names, and both
 # spellings are accepted so a model that reaches for either is not punished for it.
@@ -66,6 +69,10 @@ Process:
    buyer's stated constraints (the M.*.fit results) and use the other metrics to break ties. A rejected ranking
    tells you why; fix and retry it.
 6. Call finish.
+
+Record your statements over several turns rather than all in one: at most 10 add_finding calls per
+turn, and set_ranking in a turn of its own. Nothing is lost between turns, and one oversized turn
+gets cut off and records nothing at all. Only call finish once your statements are in.
 
 What makes a good flag:
 - Be specific about THIS car and say why it matters to THIS buyer. Name the figure, the option, the campaign or the
@@ -594,7 +601,7 @@ def analyze(report: Report, settings: Settings, token: CancelToken | None = None
     # Own budget, kept inside the request's remaining time so the loop stops before the hard wall.
     limit = BUDGET_SECONDS if token is None else max(0.0, min(BUDGET_SECONDS, token.remaining() - RESERVE_SECONDS))
     deadline = time.monotonic() + limit
-    nudged, stopped, refusals, recording_nudge = False, False, 0, False
+    stopped, refusals, recording_nudge, quiet = False, 0, False, 0
     try:
         for turn in range(MAX_TURNS):
             remaining = deadline - time.monotonic()
@@ -605,11 +612,14 @@ def analyze(report: Report, settings: Settings, token: CancelToken | None = None
             message = chat(settings, messages, tools, timeout=min(120, remaining), token=token)
             calls = [c for c in (message.get("tool_calls") or []) if isinstance(c, dict) and isinstance(c.get("function"), dict)]
             if not calls:
-                if nudged or verdict_recorded(ws):
+                # A turn that records nothing, which is also how a turn cut off by the output ceiling
+                # arrives. While there is no verdict the model is told what is outstanding rather
+                # than reminded once and dropped mid-analysis.
+                if quiet >= MAX_QUIET_TURNS or verdict_recorded(ws):
                     break
-                nudged = True
+                quiet += 1
                 messages += [{"role": "assistant", "content": str(message.get("content") or "")[:4000]},
-                             {"role": "user", "content": "Use the tools: fetch evidence, record each statement with add_finding, then call finish."}]
+                             {"role": "user", "content": "Use the tools, not prose. " + next_step(ws)}]
                 continue
             calls = [{"id": str(c.get("id") or f"call_{turn}_{i}"), "type": "function",
                       "function": {"name": str(c["function"].get("name", "")), "arguments": c["function"].get("arguments") or "{}"}}
