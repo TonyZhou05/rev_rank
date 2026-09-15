@@ -14,6 +14,8 @@ import re
 import time
 from urllib.parse import quote
 
+from pydantic import ValidationError
+
 from .cancel import DISCONNECTED, Cancelled, CancelToken
 from .comparison import usable
 from .config import Settings
@@ -49,6 +51,13 @@ LIMITS = {"verdict": 1, "strength": 5, "risk": 5, "comparison": 5, "question": 2
 # The model speaks in green and red flags; storage keeps the older strength/risk names, and both
 # spellings are accepted so a model that reaches for either is not punished for it.
 FLAG_KINDS = {"green_flag": "strength", "red_flag": "risk", "strength": "strength", "risk": "risk"}
+# Stored-field limits. humanize() expands "Car B" into a name, so truncation must happen after that.
+CLAIM_LIMIT = 700
+QUESTION_LIMIT = 300
+SOURCE_DETAIL_LIMIT = 1500
+# AIAnalysis.comparisons max_length. Three cars produce 6 restated pair-gaps; a model that already
+# recorded comparisons used to push assemble() past 8 and 500 the whole report.
+COMPARISON_CAP = 8
 NUMBER = re.compile(r"(?<![A-Za-z])\d[\d,]*(?:\.\d+)?")
 CITATION_TOKEN = re.compile(r"\(?\[?\b(?:[ABCMP])\.[\w.\-]+\]?\)?")
 # Left of the request's hard wall so the loop stops itself and reports what it validated.
@@ -392,7 +401,7 @@ class Workspace:
             # Questions are not claims, but they must not smuggle in invented figures.
             if not text or not numbers(text) <= numbers(" ".join(s.detail for s in self.sources.values())):
                 return self.refuse("Questions may only use numbers from tool results.")
-            self.findings.append({"kind": kind, "scope": scope, "text": humanize(self, text)})
+            self.findings.append({"kind": kind, "scope": scope, "text": humanize(self, text, QUESTION_LIMIT)})
             return {"ok": True}
         claim = check(self, args.get("text"), args.get("citations"), reasons)
         if not claim:
@@ -494,7 +503,7 @@ def citation_list(raw) -> list[str]:
 
 def check(ws: Workspace, text, citations, rejected: list) -> Claim | None:
     raw = re.sub(r"\s+", " ", str(text or "")).strip()
-    text = CITATION_TOKEN.sub("", raw).replace(" .", ".").strip()[:700]
+    text = CITATION_TOKEN.sub("", raw).replace(" .", ".").strip()[:CLAIM_LIMIT]
     cited = [c for c in dict.fromkeys(citation_list(citations)) if c in ws.sources]
     if not text:
         return None
@@ -510,7 +519,12 @@ def check(ws: Workspace, text, citations, rejected: list) -> Claim | None:
         if not any(covers(c, label) for c in cited):
             rejected.append({"text": text[:160], "reason": f"The statement mentions Car {label} but cites none of Car {label}'s evidence."})
             return None
-    return Claim(text=humanize(ws, text), citations=cited[:12])
+    named = humanize(ws, text, CLAIM_LIMIT)
+    try:
+        return Claim(text=named, citations=cited[:12])
+    except ValidationError:
+        rejected.append({"text": text[:160], "reason": "Statement did not fit the stored claim limit after naming the cars."})
+        return None
 
 
 def covers(citation: str, label: str) -> bool:
@@ -519,20 +533,36 @@ def covers(citation: str, label: str) -> bool:
     return parts[0] == label or (parts[0] == "M" and (parts[1] == label or (len(parts) > 2 and label in parts[-1])))
 
 
-def humanize(ws: Workspace, text: str) -> str:
-    return re.sub(r"\b[Cc]ar ([ABC])\b", lambda m: ws.name(m.group(1)) if m.group(1) in ws.cars else m.group(0), text)
+def trim(text: str, limit: int) -> str:
+    """Cut to a stored field's limit, at a sentence end when one falls close enough to the cut."""
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    end = max(cut.rfind(". "), cut.rfind("! "), cut.rfind("? "))
+    return (cut[:end + 1] if end >= limit // 2 else cut).strip()
+
+
+def humanize(ws: Workspace, text: str, limit: int | None = None) -> str:
+    """Car labels are for the model; readers see names.
+
+    "Car B" becomes "2022 Toyota GR Supra", so a claim already sitting at Claim.text's 700-character
+    limit grows past it. Callers writing a validated field pass that field's limit.
+    """
+    named = re.sub(r"\b[Cc]ar ([ABC])\b", lambda m: ws.name(m.group(1)) if m.group(1) in ws.cars else m.group(0), text)
+    return trim(named, limit) if limit is not None else named
 
 
 def assemble(ws: Workspace, settings: Settings) -> AIAnalysis:
     ids = {label: c.id for label, c in ws.cars.items()}
     of = lambda kind, scope=None: [f for f in ws.findings if f["kind"] == kind and (scope is None or f["scope"] == scope)]
     verdict = next((f["claim"] for f in of("verdict")), None)
-    vehicles = [VehicleAnalysis(candidate_id=ids[label], strengths=[f["claim"] for f in of("strength", label)],
-                                risks=[f["claim"] for f in of("risk", label)]) for label in ws.cars]
-    comparisons = [ComparisonPoint(topic=f["topic"], claim=f["claim"], favors=ids.get(f["favors"] or "")) for f in of("comparison")]
-    questions = [AIQuestion(candidate_id=ids[f["scope"]], text=f["text"]) for f in of("question")]
+    vehicles = [VehicleAnalysis(candidate_id=ids[label], strengths=[f["claim"] for f in of("strength", label)][:5],
+                                risks=[f["claim"] for f in of("risk", label)][:5]) for label in ws.cars]
+    comparisons = [ComparisonPoint(topic=f["topic"], claim=f["claim"], favors=ids.get(f["favors"] or ""))
+                   for f in of("comparison")][:COMPARISON_CAP]
+    questions = [AIQuestion(candidate_id=ids[f["scope"]], text=f["text"]) for f in of("question")][:12]
     ranking = [RankedVehicle(candidate_id=ids[item["label"]], position=position, claim=item["claim"])
-               for position, item in enumerate(ws.ranking, start=1)]
+               for position, item in enumerate(ws.ranking, start=1)][:3]
     kept = [f["claim"] for f in ws.findings if "claim" in f] + [item["claim"] for item in ws.ranking]
     used = list(dict.fromkeys(cite for claim in kept for cite in claim.citations))
     status = "unavailable" if not kept else "complete" if verdict else "partial"
@@ -554,7 +584,8 @@ def assemble(ws: Workspace, settings: Settings) -> AIAnalysis:
     return AIAnalysis(status=status, message=message, model=f"{settings.llm_model} / {PROMPT_VERSION}", verdict=verdict,
                       vehicles=vehicles, comparisons=comparisons, questions=questions, ranking=ranking,
                       # Car labels are for the model; readers see names. Validation already ran on the raw text.
-                      sources=[ws.sources[i].model_copy(update={"detail": humanize(ws, ws.sources[i].detail)}) for i in used],
+                      sources=[ws.sources[i].model_copy(update={"detail": humanize(ws, ws.sources[i].detail, SOURCE_DETAIL_LIMIT)})
+                               for i in used],
                       tool_calls=ws.tool_calls, dropped_claims=ws.rejected)
 
 
@@ -639,6 +670,9 @@ def restate_from_tools(ws: Workspace) -> bool:
 
     def keep(kind: str, scope: str, text: str, citations: list[str], topic: str | None = None,
              favors: str | None = None) -> None:
+        cap = COMPARISON_CAP if kind == "comparison" else LIMITS.get(kind)
+        if cap is not None and sum(f["kind"] == kind and f["scope"] == scope for f in ws.findings) >= cap:
+            return
         reasons: list = []
         claim = check(ws, text, citations, reasons)
         if claim:
@@ -755,9 +789,25 @@ def analyze(report: Report, settings: Settings, token: CancelToken | None = None
         if token is not None and token.reason == DISCONNECTED:
             raise
         stopped = True
+    except ValidationError:
+        # A claim that grew past its stored limit used to escape the loop and 500 the whole compare.
+        log.exception("analyst could not store a finding")
+        return AIAnalysis(
+            status="unavailable",
+            message="AI analysis produced a statement that could not be stored. The comparison, metrics and evidence above are complete.",
+            tool_calls=ws.tool_calls,
+        )
     if not verdict_recorded(ws) and fetched_evidence(ws):
         restate_from_tools(ws)
-    analysis = assemble(ws, settings)
+    try:
+        analysis = assemble(ws, settings)
+    except ValidationError:
+        log.exception("analyst could not assemble the stored findings")
+        return AIAnalysis(
+            status="unavailable",
+            message="AI analysis produced a statement that could not be stored. The comparison, metrics and evidence above are complete.",
+            tool_calls=ws.tool_calls,
+        )
     if stopped:
         analysis.status = "unavailable" if analysis.status == "unavailable" else "partial"
         analysis.message = (analysis.message + " " + STOPPED_EARLY).strip()[:1000]

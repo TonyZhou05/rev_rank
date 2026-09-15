@@ -49,6 +49,12 @@ async function request<T>(path: string, body?: unknown, timeoutMs?: number, exte
     });
     const contentType = response.headers.get('content-type') || '';
     if (!contentType.includes('application/json')) {
+      const snippet = await response.text().catch(() => '');
+      apiLog.update(entry, { status: response.status, ms: Math.round(performance.now() - started),
+                             note: 'Non-JSON response', response: snippet.slice(0, 500) || undefined });
+      if (response.status >= 500) {
+        throw new Error(`The API returned ${response.status} without JSON. The report could not be built; please try again.`);
+      }
       throw new Error(`The API returned ${response.status} without JSON. Check that the RevRank backend is running on port 8000.`);
     }
     const data = await response.json();
@@ -115,6 +121,8 @@ export const api = {
     }
   },
   // Client abort sits just above health.compare_timeout_seconds (App passes the ms); fallback 90s.
+  // TODO(tongli): when the compare response carries a DeepSeek/provider call trace, show it in the
+  // inspector log (model, purpose, status, duration — never keys or raw prompts).
   compare: (candidates: Candidate[], preferences: Preferences, signal?: AbortSignal, timeoutMs = 90_000) =>
     request<Report>('/compare', { candidates, preferences }, timeoutMs, signal),
   reports: () => request<{ reports: ReportSummary[] }>('/reports'),

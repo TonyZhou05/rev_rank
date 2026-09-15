@@ -44,3 +44,90 @@ def test_paste_with_reference_url_never_fetches(monkeypatch):
     assert result['candidate']['source_kind'] == 'user'
     assert result['candidate']['source_url'] == 'https://www.example.com/listing'
     assert 'no website was fetched' in result['message']
+
+
+LIVE_DEMO_PREFS = {
+    'budget': 50000, 'must_haves': ['manual'], 'priorities': ['reliability', 'fun'],
+    'annual_mileage': 12000, 'ownership_years': 3, 'location': '',
+}
+
+
+def test_three_demo_candidates_compare():
+    cars = client.get('/api/demo').json()['candidates']
+    assert len(cars) == 3
+    report = client.post('/api/compare', json={
+        'candidates': cars,
+        'preferences': {'annual_mileage': 12000, 'ownership_years': 3, 'location': '',
+                        'priorities': ['Lower asking price', 'Lower mileage'], 'must_haves': []},
+    })
+    assert report.status_code == 200
+    assert report.headers.get('content-type', '').startswith('application/json')
+    body = report.json()
+    assert len(body['candidates']) == 3
+    assert body['analysis_mode'] == 'rules'
+
+
+def test_three_demo_compare_with_the_live_failing_preferences():
+    """Render 500: all three /api/demo cars plus budget 50k, must-have manual, reliability/fun."""
+    cars = client.get('/api/demo').json()['candidates']
+    report = client.post('/api/compare', json={'candidates': cars, 'preferences': LIVE_DEMO_PREFS})
+    assert report.status_code == 200
+    assert 'application/json' in report.headers.get('content-type', '')
+    body = report.json()
+    assert len(body['candidates']) == 3
+    assert any(e['conflicts'] for e in body['shortlist'])
+
+
+def test_compare_keeps_the_report_when_analyst_crashes(monkeypatch):
+    from backend.app import main
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("analyst exploded")
+
+    monkeypatch.setattr(main, "analyze", boom)
+    cars = client.get('/api/demo').json()['candidates']
+    report = client.post('/api/compare', json={
+        'candidates': cars,
+        'preferences': {'annual_mileage': 12000, 'ownership_years': 3, 'must_haves': []},
+    })
+    assert report.status_code == 200
+    body = report.json()
+    assert body['analysis_mode'] == 'rules'
+    assert body['ai_analysis']['status'] == 'unavailable'
+    assert 'failed' in body['ai_analysis']['message'].lower()
+    assert len(body['candidates']) == 3
+
+
+def test_compare_500_is_json_when_the_comparison_itself_crashes(monkeypatch):
+    from backend.app import main
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("comparison exploded")
+
+    monkeypatch.setattr(main, "create_report", boom)
+    cars = client.get('/api/demo').json()['candidates']
+    report = client.post('/api/compare', json={
+        'candidates': cars[:2],
+        'preferences': {'annual_mileage': 12000, 'ownership_years': 3, 'must_haves': []},
+    })
+    assert report.status_code == 500
+    assert 'application/json' in report.headers.get('content-type', '')
+    detail = report.json()['detail']
+    assert isinstance(detail, str) and detail
+    assert '8000' not in detail
+
+
+def test_uncaught_api_errors_are_json_not_plain_text(monkeypatch):
+    """Starlette's default 500 is text/plain; the page then shows the port-8000 copy."""
+    from backend.app import main
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("sources exploded")
+
+    monkeypatch.setattr(main, "sources_response", boom)
+    with TestClient(app, raise_server_exceptions=False) as quiet:
+        response = quiet.get('/api/sources')
+    assert response.status_code == 500
+    assert 'application/json' in response.headers.get('content-type', '')
+    assert 'detail' in response.json()
+    assert '8000' not in response.json()['detail']

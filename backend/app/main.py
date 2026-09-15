@@ -44,6 +44,21 @@ app = FastAPI(title="RevRank API", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
                    allow_methods=["GET", "POST"], allow_headers=["Content-Type", "Accept"],
                    expose_headers=[REQUEST_ID_HEADER])
+
+
+@app.exception_handler(Exception)
+async def json_uncaught(request: Request, exc: Exception):
+    """API failures must be JSON. Starlette's default 500 is text/plain, which the page reports as a
+    missing backend on port 8000 even when this process is up and the compare path crashed."""
+    if not request.url.path.startswith("/api/"):
+        raise exc
+    log.exception("unhandled error on %s", request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "The server hit an unexpected error. Nothing was invented; please try again."},
+    )
+
+
 DB_LOCK = Lock()
 DB_PATH = settings.data_dir / "reports.sqlite3"
 
@@ -190,7 +205,11 @@ async def guarded(work: Callable[[], Work], http_request: Request, token: Cancel
 
 
 def interpret(report: Report, token: CancelToken) -> Report:
-    """The optional model work, on this request's own copy of the deterministic report."""
+    """The optional model work, on this request's own copy of the deterministic report.
+
+    TODO(tongli): attach a compact DeepSeek/provider call trace (model, purpose, status, duration —
+    never keys, never raw prompts) onto the compare response so the page API inspector can show it.
+    """
     working = assist_report(report.model_copy(deep=True), settings, token=token)
     # Dealer signals go first: the pass is short and bounded, while the analyst is free to use the
     # rest of the budget. Turned off by default, so most reports skip straight past it.
@@ -199,6 +218,16 @@ def interpret(report: Report, token: CancelToken) -> Report:
     if working.ai_analysis.status != "unavailable":
         working.analysis_mode = "llm"
     return working
+
+
+def analysis_failed(report: Report) -> Report:
+    """Keep the deterministic comparison when optional model work crashes."""
+    note = ("AI analysis failed while the comparison was being written; nothing was inferred from the "
+            "unfinished run. The comparison, metrics and evidence above are complete.")
+    report.warnings = list(dict.fromkeys(report.warnings + [note]))
+    report.analysis_mode = "rules"
+    report.ai_analysis = AIAnalysis(status="unavailable", message=note)
+    return report
 
 
 def save(report: Report) -> None:
@@ -260,15 +289,26 @@ async def compare(payload: CompareRequest, http_request: Request, response: Resp
         return problem(503, f"The comparison did not finish within {spell_seconds(settings.compare_timeout_seconds)} "
                             "on the server. Nothing was invented; please try again.",
                        "timed out before the comparison was built")
+    except Exception:
+        log.exception("compare failed id=%s", token.id)
+        return problem(500, "The server hit an unexpected error while building the comparison. "
+                            "Nothing was invented; please try again.",
+                       "failed before the comparison was built")
     try:
         report = await guarded(lambda: interpret(report, token), http_request, token)
     except Cancelled:
         if token.reason == DISCONNECTED:
             return abandoned()
         report = timed_out(report, settings.compare_timeout_seconds)
+    except Exception:
+        log.exception("compare interpret failed id=%s", token.id)
+        report = analysis_failed(report)
     if token.reason == DISCONNECTED:
         return abandoned()
-    await asyncio.to_thread(save, report)
+    try:
+        await asyncio.to_thread(save, report)
+    except Exception:
+        log.exception("compare save failed id=%s", token.id)
     finish(f"done mode={report.analysis_mode} ai={report.ai_analysis.status if report.ai_analysis else 'none'}")
     return report
 
