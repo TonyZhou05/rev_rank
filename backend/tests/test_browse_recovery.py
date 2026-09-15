@@ -179,9 +179,10 @@ def test_browse_recovers_core_fields_after_direct_blocked(monkeypatch):
     assert (car.year, car.make, car.model) == (2017, "BMW", "M2")
     assert car.price == 42500 and car.mileage == 18000
     assert car.evidence["vin"].value == VIN
-    assert car.evidence["vin"].source.startswith("user_vdp_browse")
+    assert car.evidence["price"].source.startswith("user_vdp_browse")
     digest = __import__("hashlib").sha256(VDP_HTML.encode()).hexdigest()[:16]
-    assert any(a.method == "browse" and a.status == "completed" and digest in a.detail for a in result.attempts)
+    assert any(a.method == "browse" and a.status == "completed" and digest in a.detail
+               and a.detail.startswith("user_vdp_browse") for a in result.attempts)
     assert car.history is None and car.features == [] and car.engine is None
     assert "private browse" in result.message
 
