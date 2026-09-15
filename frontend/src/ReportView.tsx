@@ -210,18 +210,20 @@ function useNarrowViewport(query: string): boolean {
   return narrow;
 }
 
-function CompareTable({ report }: { report: Report }) {
+function CompareTable({ report, activeId, onActive }: {
+  report: Report; activeId?: string; onActive?: (id: string) => void;
+}) {
   const cars = report.candidates;
   const crossModel = report.cross_model ?? isCrossModel(cars);
   const narrow = useNarrowViewport(NARROW_COMPARE);
   const [benchId, setBenchId] = useState(cars[0]?.id);
-  const [focusId, setFocusId] = useState<string | null>(null);
   const [diffOnly, setDiffOnly] = useState(true);
   const bench = cars.find(c => c.id === benchId) ?? cars[0];
   const others = cars.filter(c => c.id !== bench.id);
-  // The car shown next to the benchmark on a narrow screen. Picking it as the benchmark drops it
-  // out of `others`, and the first remaining car takes over.
-  const focus = others.find(c => c.id === focusId) ?? others[0] ?? null;
+  // The car shown next to the benchmark on a narrow screen. It is the report's shared active car, so
+  // picking one here also moves the per-car sections below to that car. Choosing it as the benchmark
+  // drops it out of `others`, and the first remaining car takes over.
+  const focus = others.find(c => c.id === activeId) ?? others[0] ?? null;
   // The benchmark leads; the others keep their order. Indexes stay tied to report.candidates.
   const order = [cars.indexOf(bench), ...cars.map((_, i) => i).filter(i => cars[i] !== bench)];
   const columns = narrow && focus ? [order[0], cars.indexOf(focus)] : order;
@@ -254,7 +256,7 @@ function CompareTable({ report }: { report: Report }) {
       <span className="control-label" id="compare-focus-label">Show one car against {carName(bench)}</span>
       <div className="segmented" role="radiogroup" aria-labelledby="compare-focus-label">
         {others.map(c => <button key={c.id} type="button" role="radio" aria-checked={c.id === pickable.id} className={c.id === pickable.id ? 'on' : ''}
-          onClick={() => setFocusId(c.id)}>{carName(c)}</button>)}
+          onClick={() => onActive?.(c.id)}>{carName(c)}</button>)}
       </div>
     </div>}
     <div className="table-scroll"><table className="compare-table">
@@ -547,26 +549,30 @@ function DealerCard({ car, dealer, signals }: {
   </article>;
 }
 
-function DealerSection({ report }: { report: Report }) {
+function DealerSection({ report, activeId, onActive }: {
+  report: Report; activeId?: string; onActive?: (id: string) => void;
+}) {
   const cars = report.candidates;
   // Same breakpoint as CompareTable one-car focus — not the Import side-panel hide.
   const narrow = useNarrowViewport(NARROW_COMPARE);
-  const [activeId, setActiveId] = useState(cars[0]?.id);
+  // One active car for the whole report on a narrow screen, so this section rides with the car the
+  // comparison is showing instead of keeping a second, silently different selection.
   const active = cars.find(c => c.id === activeId) ?? cars[0];
   const shown = narrow && active ? [active] : cars;
   return <section className="report-section dealer-section">
-    <h3>Dealer</h3>
+    <h3>Dealer{narrow && active ? `: ${carName(active)}` : ''}</h3>
     <p className="dealer-scope" role="note">
       <CircleAlert size={14}/>
-      <span>{DEALER_CAVEAT} Contact details are as the licensed listing record reported them — not verified by
-        RevRank, and not evidence about the car. Vehicle green/red flags elsewhere describe the car,
-        never the seller — and we won’t invent a dealer score here.</span>
+      <span>Who is selling the car, not the car itself. {DEALER_CAVEAT} Contact details are as the licensed
+        listing record reported them — not verified by RevRank, and not evidence about the vehicle. The
+        vehicle’s own green and red flags sit above; everything in this section is about the business,
+        and we won’t invent a dealer score.</span>
     </p>
     {narrow && cars.length > 1 && active && <div className="compare-controls dealer-focus">
       <span className="control-label" id="dealer-focus-label">Dealer for one car</span>
       <div className="segmented" role="radiogroup" aria-labelledby="dealer-focus-label">
         {cars.map(c => <button key={c.id} type="button" role="radio" aria-checked={c.id === active.id}
-          className={c.id === active.id ? 'on' : ''} onClick={() => setActiveId(c.id)}>{carName(c)}</button>)}
+          className={c.id === active.id ? 'on' : ''} onClick={() => onActive?.(c.id)}>{carName(c)}</button>)}
       </div>
     </div>}
     <div className={narrow ? 'dealer-grid dealer-grid-narrow' : 'dealer-grid'}>
@@ -663,6 +669,10 @@ export function ReportView({ report, preferences, setPreferences, onApply, onCan
 }) {
   const ai = report.ai_analysis;
   const cars = report.candidates;
+  // The one car the narrow layout is showing. Shared, so the comparison's one-car picker and the
+  // per-car sections below it can never drift onto different cars.
+  const [pickedCarId, setPickedCarId] = useState(cars[0]?.id);
+  const activeCarId = cars.some(c => c.id === pickedCarId) ? pickedCarId : cars[0]?.id;
   const aiQuestions = (id: string) => (ai?.questions ?? []).filter(q => q.candidate_id === id).map(q => q.text);
   const warnings = [...new Set(report.warnings)];
   const depCaveats = warnings.filter(w => /depreciat|resale|ownership|years kept|mileage when/i.test(w));
@@ -723,13 +733,16 @@ export function ReportView({ report, preferences, setPreferences, onApply, onCan
           </div></div>;
         })()}
 
+      {/* Directly under the per-car vehicle green/red flags in the AI block, and clearly labelled
+          Dealer, so the seller's record reads as adjacent to that car rather than as a vehicle flag. */}
+      <DealerSection report={report} activeId={activeCarId} onActive={setPickedCarId}/>
+
       <section className="report-section">
         <h3>Side by side</h3>
-        <CompareTable report={report}/>
+        <CompareTable report={report} activeId={activeCarId} onActive={setPickedCarId}/>
       </section>
 
       <NhtsaSection report={report}/>
-      <DealerSection report={report}/>
 
       <ComingModule title="Depreciation" body="ownership-horizon depreciation from cited market observations." caveats={depCaveats}/>
       <ComingModule title="Condition & feature vs price" body="condition and option content weighed against asking price with evidence." caveats={condCaveats}/>
