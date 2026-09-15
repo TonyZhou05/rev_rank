@@ -87,11 +87,11 @@ Lead ask: after Direct is blocked, recover by opening the listing the buyer past
 **server-side headless session** (Playwright), not by spawning a Cursor/cloud agent per import.
 
 Implemented in `backend/app/browse.py`, wired into `recover_listing` **before** licensed
-inventory and search when the flag is on (Tongli browse-first retarget).
-`REVRANK_BROWSER_RECOVERY_ENABLED` defaults **off** in Settings; Tongli may enable it on
-Docker/Render to inspect pasted VDPs. Production flag-on is still Tongli opt-in; this is
+inventory and search when the flag is on (Tongli browse-primary; Research addendum
+2026-09-15). `REVRANK_BROWSER_RECOVERY_ENABLED` defaults **off** until Tongli opts in —
+primary browse raises ToS hit rate. Docker and Render must not set the flag on. This is
 not counsel clearance. CI stubs the launcher; Chromium is installed in the Docker image.
-Ship-gate: [listing-browse-rights-20260915.md](listing-browse-rights-20260915.md).
+See [listing-browse-primary-addendum-20260915.md](listing-browse-primary-addendum-20260915.md).
 
 What this is:
 
@@ -166,8 +166,8 @@ is not such a service.
    or thin and `REVRANK_BROWSER_RECOVERY_ENABLED=true`. Playwright Chromium, one
    allowlisted VDP, no review sites, unknown hosts blocked, one attempt. A challenge
    or 403 is recorded as blocked and the buyer is asked to paste price, mileage, and
-   VIN; MarketCheck/search may still run. Settings default off; Tongli opt-in for
-   production. This is not counsel clearance.
+   VIN; MarketCheck/search may still run. Flag stays default off until Tongli
+   opts in. This is not counsel clearance.
 2. Licensed inventory, if browse missed or the flag is off and `REVRANK_MARKETCHECK_API_KEY`
    is set. Look up the query-stripped listing URL. Only a record whose `vdp_url` has
    the same host and path binds identity. If none matches and the seller URL has a

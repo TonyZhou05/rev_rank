@@ -65,8 +65,9 @@ after blocked, failed, or thin direct imports (`backend/app/retrieval.py`). When
 private in-app headless browse of **that URL only** (`browse.py`, Playwright), then
 licensed inventory (`vehicle_data.py`, MarketCheck), then search excerpts (`search.py`,
 Brave/Tavily), then an optional NHTSA VIN decode. MarketCheck and search are secondary
-if browse misses. The flag stays off until Tongli opt-in; this is not counsel
-clearance. Browse refuses unknown hosts, review sites, dealer boards, and
+if browse misses. The flag stays off until Tongli opts in (primary browse raises
+ToS hit rate); this is not counsel clearance. Browse refuses unknown hosts,
+review sites, dealer boards, and
 search/category pages; it does not scrape dealer-signals targets; a bot-manager
 challenge is reported as blocked and the buyer is asked to paste price, mileage, and
 VIN. Licensed and search still do not re-request the blocked page. With none of these

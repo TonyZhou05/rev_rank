@@ -133,9 +133,10 @@ and `browser_recovery_enabled`. Every import response carries `X-RevRank-Request
 - **Browse time cap.** One Playwright session is capped by `REVRANK_BROWSER_TIMEOUT_SECONDS`
   (default 20) inside the import token. A spent browse budget is recorded as a `browse` attempt
   with status `timeout` and recovery may fall through to MarketCheck, then search.
-  `REVRANK_BROWSER_RECOVERY_ENABLED` defaults off in Settings; Tongli opt-in for
-  production (not counsel clearance). Evidence `source` for browsed fields starts with
-  `user_vdp_browse`. For an allowlisted pasted VDP, browse runs before MarketCheck.
+  `REVRANK_BROWSER_RECOVERY_ENABLED` defaults off until Tongli opts in (not counsel
+  clearance; primary browse raises ToS hit rate). Evidence `source` for browsed
+  fields starts with `user_vdp_browse`. For an allowlisted pasted VDP, browse runs
+  before MarketCheck.
 - **Import budget spent before a result exists.** `503` with `{detail}`; nothing invented.
 - Concurrent imports share no cancellation state.
 

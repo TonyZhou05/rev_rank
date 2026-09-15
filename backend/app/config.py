@@ -39,8 +39,8 @@ class Settings:
     # answers with an honest deterministic report before the browser gives up.
     compare_timeout_seconds: float = 85.0
     # After Direct is blocked or thin: a private headless session of the buyer-supplied VDP.
-    # Settings/CI default off. Docker/Render may set true (Tongli inspect path).
-    # This is not counsel clearance.
+    # Off by default until Tongli opts in (primary browse raises ToS hit rate).
+    # This is not counsel clearance. Docker/Render must not set the flag on.
     browser_recovery_enabled: bool = False
     # Cap for one Playwright session. The import token is the outer wall.
     browser_timeout_seconds: float = 20.0
