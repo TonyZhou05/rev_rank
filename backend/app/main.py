@@ -17,19 +17,21 @@ from .analyst import analyze
 from .cancel import DISCONNECTED, TIMEOUT, Cancelled, CancelToken
 from .comparison import create_report
 from .config import Settings
+from .constraints import parse_constraints
 from .demo import demo_candidates
 from .extraction import apply_market_units, extract, import_status
 from .fetch import FetchError, fetch_listing
 from .listing_url import normalize_input_url, url_vin
 from .llm import assist_extraction, assist_report
-from .models import AIAnalysis, Candidate, CompareRequest, Evidence, ImportRequest, ImportResponse, Report
+from .models import (AIAnalysis, Candidate, CompareRequest, ConstraintRequest, ConstraintResponse, Evidence,
+                     ImportRequest, ImportResponse, Report)
 from .sources import sources_response
 from .retrieval import attach_original_msrp, recover_listing
 from . import usage
 
 settings = Settings.from_env()
 # Bump when the wire contract changes; the page warns when it talks to an older API process.
-API_REVISION = 5
+API_REVISION = 6
 REQUEST_ID_HEADER = "X-RevRank-Request-Id"
 # How often a long compare looks up from its worker thread to see whether the client is still there.
 POLL_SECONDS = 0.25
@@ -53,6 +55,8 @@ init_db()
 @app.get("/api/health")
 def health():
     return {"status": "ok", "api_revision": API_REVISION, "llm_enabled": settings.llm_enabled, "market_enabled": False,
+            # Non-secret model identity, so the page can name what it is talking to. Never the key.
+            "llm_model": settings.llm_model, "llm_endpoint_host": settings.llm_endpoint_host,
             "search_enabled": settings.search_enabled, "search_provider": settings.search_provider,
             "licensed_inventory_enabled": settings.marketcheck_enabled, "vin_decode_enabled": settings.vin_decode_enabled,
             "neovin_msrp_enabled": settings.neovin_msrp_enabled,
@@ -182,6 +186,12 @@ def timed_out(report: Report, seconds: float) -> Report:
     report.analysis_mode = "rules"
     report.ai_analysis = AIAnalysis(status="unavailable", message=note)
     return report
+
+
+@app.post("/api/constraints", response_model=ConstraintResponse)
+def constraints(request: ConstraintRequest):
+    """Free-form buyer constraints to validated preferences. Never touches a listing fact."""
+    return parse_constraints(request.message, request.preferences, settings)
 
 
 @app.post("/api/compare", response_model=Report)
