@@ -138,49 +138,52 @@ def _complaint_items(rows: list[dict]) -> list[NHTSAComplaint]:
     return items
 
 
+def _nhtsa_rows(url: str, params: dict, key: str) -> list[dict] | None:
+    """One NHTSA endpoint's rows, or None when that endpoint failed (as opposed to returning none)."""
+    try:
+        return [r for r in (_nhtsa(url, params).get(key) or []) if isinstance(r, dict)]
+    except Exception:  # Optional enrichment: no NHTSA failure may take the comparison down.
+        return None
+
+
 def fetch_nhtsa_safety(year: int, make: str, model: str) -> NHTSASafetyData | None:
     """Fetch NHTSA model-year safety data (recalls, complaints, ratings).
 
-    Returns structured data with fixed scope label. Never invents counts.
-    VIN-level recall status is OUT OF SCOPE.
+    Returns structured data with fixed scope label. Never invents counts: an endpoint that failed
+    leaves its count null (shown as unavailable), and the others still stand. None only when every
+    endpoint failed. VIN-level recall status is OUT OF SCOPE.
     """
-    try:
-        # Recalls
-        recalls_data = _nhtsa(f"{NHTSA}/recalls/recallsByVehicle", {"make": make, "model": model, "modelYear": year})
-        recall_rows = [r for r in (recalls_data.get("results") or []) if isinstance(r, dict)]
-
-        # Complaints
-        complaints_data = _nhtsa(f"{NHTSA}/complaints/complaintsByVehicle", {"make": make, "model": model, "modelYear": year})
-        complaint_rows = [r for r in (complaints_data.get("results") or []) if isinstance(r, dict)]
-
-        # Safety ratings
-        path = f"{NHTSA}/SafetyRatings/modelyear/{int(year)}/make/{quote(make, safe='')}/model/{quote(model, safe='')}"
-        variants = [v for v in (_nhtsa(path, {}).get("Results") or []) if isinstance(v, dict) and str(v.get("VehicleId", "")).isdigit()]
-
-        # A variant description unlocks the trim deep link; without one the URLs stay on the
-        # year/make/model landing, which still works for unrated model years.
-        description = next((str(v.get("VehicleDescription", "")) for v in variants if v.get("VehicleDescription")), None)
-        recalls_url = nhtsa_vehicle_page(year, make, model, description, "#recalls")
-        complaints_url = nhtsa_vehicle_page(year, make, model, description, "#complaints")
-        overall_rating = frontal_rating = side_rating = rollover_rating = None
-        if variants:
-            vehicle_id = int(variants[0]["VehicleId"])
-            row = (_nhtsa(f"{NHTSA}/SafetyRatings/VehicleId/{vehicle_id}", {}).get("Results") or [{}])[0]
-            overall_rating = str(row.get("OverallRating")) if row.get("OverallRating") else None
-            frontal_rating = str(row.get("OverallFrontCrashRating")) if row.get("OverallFrontCrashRating") else None
-            side_rating = str(row.get("OverallSideCrashRating")) if row.get("OverallSideCrashRating") else None
-            rollover_rating = str(row.get("RolloverRating")) if row.get("RolloverRating") else None
-
-        return NHTSASafetyData(
-            year=year, make=make, model=model,
-            recalls_count=len(recall_rows), complaints_count=len(complaint_rows),
-            overall_rating=overall_rating, frontal_rating=frontal_rating,
-            side_rating=side_rating, rollover_rating=rollover_rating,
-            recalls_url=recalls_url, complaints_url=complaints_url,
-            recalls=_recall_items(recall_rows), complaints=_complaint_items(complaint_rows)
-        )
-    except (ProviderError, Exception):
+    params = {"make": make, "model": model, "modelYear": year}
+    recall_rows = _nhtsa_rows(f"{NHTSA}/recalls/recallsByVehicle", params, "results")
+    complaint_rows = _nhtsa_rows(f"{NHTSA}/complaints/complaintsByVehicle", params, "results")
+    path = f"{NHTSA}/SafetyRatings/modelyear/{int(year)}/make/{quote(make, safe='')}/model/{quote(model, safe='')}"
+    variant_rows = _nhtsa_rows(path, {}, "Results")
+    if recall_rows is None and complaint_rows is None and variant_rows is None:
         return None
+    variants = [v for v in variant_rows or [] if str(v.get("VehicleId", "")).isdigit()]
+
+    # A variant description unlocks the trim deep link; without one the URLs stay on the
+    # year/make/model landing, which still works for unrated model years.
+    description = next((str(v.get("VehicleDescription", "")) for v in variants if v.get("VehicleDescription")), None)
+    recalls_url = nhtsa_vehicle_page(year, make, model, description, "#recalls")
+    complaints_url = nhtsa_vehicle_page(year, make, model, description, "#complaints")
+    overall_rating = frontal_rating = side_rating = rollover_rating = None
+    if variants:
+        row = (_nhtsa_rows(f"{NHTSA}/SafetyRatings/VehicleId/{int(variants[0]['VehicleId'])}", {}, "Results") or [{}])[0]
+        overall_rating = str(row.get("OverallRating")) if row.get("OverallRating") else None
+        frontal_rating = str(row.get("OverallFrontCrashRating")) if row.get("OverallFrontCrashRating") else None
+        side_rating = str(row.get("OverallSideCrashRating")) if row.get("OverallSideCrashRating") else None
+        rollover_rating = str(row.get("RolloverRating")) if row.get("RolloverRating") else None
+
+    return NHTSASafetyData(
+        year=year, make=make, model=model,
+        recalls_count=None if recall_rows is None else len(recall_rows),
+        complaints_count=None if complaint_rows is None else len(complaint_rows),
+        overall_rating=overall_rating, frontal_rating=frontal_rating,
+        side_rating=side_rating, rollover_rating=rollover_rating,
+        recalls_url=recalls_url, complaints_url=complaints_url,
+        recalls=_recall_items(recall_rows or []), complaints=_complaint_items(complaint_rows or [])
+    )
 
 VERSION = "revrank-rules/0.1"
 KM_PER_MILE = Decimal("1.609344")
