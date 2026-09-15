@@ -28,8 +28,9 @@ from .sources import source_for
 
 log = logging.getLogger("revrank.browse")
 
-# v1 host allowlist: CarMax, Carvana, and hosts whose single-listing URL we already recognize.
-# Unknown hosts are blocked. This is not counsel clearance; the feature flag stays off until Tongli opts in.
+# Marketplace listing-id schemes stay in MARKETPLACES. Indie/franchise rooftops are not
+# enumerated: browse_vdp_allowed is review-deny, then VDP-shape (VIN or inventory+token).
+# Flag stays off until Tongli opts in. Not counsel clearance.
 BROWSE_VDP_HOSTS = MARKETPLACES
 PASTE_HINT = "Paste the price, mileage, and VIN from the listing to continue."
 # Review, complaint, social and directory hosts. Marketplace VDPs (CarMax, Carvana, Cars.com, …)
@@ -68,17 +69,16 @@ def is_review_host(host: str) -> bool:
 
 
 def browse_vdp_allowed(url: str) -> tuple[bool, str]:
-    """Single buyer-supplied VDP on the v1 host allowlist, or a refused reason."""
-    host = bare_host(url)
-    if is_review_host(host):
+    """Review deny, then VDP-shape (marketplace listing-id or dealer VIN/inventory+token)."""
+    if is_review_host(bare_host(url)):
         return False, f"Review sites and dealer boards are not opened. {PASTE_HINT}"
-    if host not in BROWSE_VDP_HOSTS:
-        return False, ("This website is not on the private-browse allowlist "
-                       "(CarMax, Carvana, and recognized listing hosts). " + PASTE_HINT)
-    if is_listing_url(url) is not True:
+    listing = is_listing_url(url)
+    if listing is True:
+        return True, ""
+    if listing is False:
         return False, ("Private browse opens one vehicle listing page, not a search or category page. "
                        + PASTE_HINT)
-    return True, ""
+    return False, ("This URL is not a single vehicle listing we can open. " + PASTE_HINT)
 
 
 def robots_decision(url: str, settings: Settings, deadline: float) -> tuple[bool, str]:
@@ -111,7 +111,9 @@ def browse_listing(url: str, settings: Settings, token=None, timeout: float = 20
     if not allowed_vdp:
         raise BrowseError("refused", refused)
     source = source_for(host, settings)
-    if source["status"] != "allowed":
+    # Restricted registry hosts stay refused. Unsupported indie/franchise VDPs are allowed by
+    # VDP shape, not by adding the rooftop to REVRANK_ALLOWED_DOMAINS or BROWSE_VDP_HOSTS.
+    if source["status"] == "restricted":
         raise BrowseError("refused", source["reason"])
     seconds = cancel_budget(token, timeout, minimum=2.0) if token is not None else max(2.0, timeout)
     deadline = time.monotonic() + seconds

@@ -486,10 +486,13 @@ def recover_listing(request: ImportRequest, settings: Settings, original: Import
     source = request.recovery_source
     use_licensed = settings.marketcheck_enabled and source in ('auto', 'marketcheck')
     browse_configured = settings.browser_recovery_enabled and source in ('auto', 'browse')
-    # Tongli: browse-first for an allowlisted pasted VDP after Direct is blocked, failed, or thin.
-    # Restricted/unsupported stay Direct-policy misses. Explicit `marketcheck` source skips browse.
+    # Tongli: browse-first for a VDP-shaped pasted URL after Direct is blocked, failed, thin,
+    # or unsupported (indie/franchise hosts are not in the source registry). Restricted
+    # registry hosts stay Direct-policy misses. Explicit `marketcheck` source skips browse.
     thin_or_blocked = original.status in ('blocked', 'failed', 'partial')
-    use_browse = browse_configured and (source == 'browse' or thin_or_blocked)
+    pasted = normalize_input_url(request.url)
+    dealer_vdp = original.status == 'unsupported' and browse_vdp_allowed(pasted)[0]
+    use_browse = browse_configured and (source == 'browse' or thin_or_blocked or dealer_vdp)
     use_search = settings.search_enabled and source in ('auto', 'search')
     if source != 'auto' and not (use_licensed or use_search or browse_configured):
         if source == 'browse':

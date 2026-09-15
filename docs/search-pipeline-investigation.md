@@ -96,8 +96,11 @@ See [listing-browse-primary-addendum-20260915.md](listing-browse-primary-addendu
 What this is:
 
 - One private Chromium context per import, no stored cookies, no shared profile.
-- Host allowlist v1: CarMax, Carvana, and hosts already recognized in `listing_url`
-  `MARKETPLACES`. Unknown hosts are blocked. Search/category pages are refused.
+- VDP-shape gate (not a growing dealer host list): `browse_vdp_allowed` is review
+  deny, then `is_listing_url` / `is_dealer_vdp_url`. Marketplace listing-id schemes
+  stay in `MARKETPLACES`. Indie/franchise pages are allowed when (a) a check-digit
+  VIN is in the path/query or (b) a conservative inventory/VDP path has a vehicle
+  token. Review hosts, homepage, `/inventory` indexes, SRP, and sitemaps are refused.
 - Navigate only to the validated user-supplied URL. Same-host subresources may load so JS can
   render. Review/complaint/social hosts are aborted. Document navigations off the listing's
   registrable domain are aborted.
@@ -164,7 +167,7 @@ is not such a service.
 
 1. Private browse of the buyer-supplied listing URL, if Direct was blocked, failed,
    or thin and `REVRANK_BROWSER_RECOVERY_ENABLED=true`. Playwright Chromium, one
-   allowlisted VDP, no review sites, unknown hosts blocked, one attempt. A challenge
+   allowlisted VDP (marketplace or dealer inventory+identity), no review sites, one attempt. A challenge
    or 403 is recorded as blocked and the buyer is asked to paste price, mileage, and
    VIN; MarketCheck/search may still run. Flag stays default off until Tongli
    opts in. This is not counsel clearance.
