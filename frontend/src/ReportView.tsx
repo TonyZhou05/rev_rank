@@ -3,7 +3,7 @@ import { Check, CircleAlert, LoaderCircle, Sparkles } from 'lucide-react';
 import { allSame, comparable, constraintMetrics, constraintTone, delta, isCrossModel, metric, mileageValue, msrpNeoVinKind, msrpOrigin, msrpPctDelta, msrpSourceNote, msrpValue, mustHaveMetrics, numberIn, pctOfMsrp, pctOfMsrpText, priceValue, sharedAnnual, tradeOff, type DeltaKind } from './compare';
 import { ConstraintPanel } from './ConstraintPanel';
 import { SourceTable } from './Review';
-import type { AIAnalysis, Candidate, Claim, DealerInfo, NHTSASafetyData, Preferences, Report, SourceRef } from './types';
+import type { AIAnalysis, Candidate, Claim, DealerInfo, DealerSignals, NHTSASafetyData, Preferences, Report, SourceRef } from './types';
 import { carName, dateLabel, hostOf, money, safeUrl, unresolvedConflicts } from './utils';
 
 interface Row {
@@ -412,7 +412,68 @@ function DealerRow({ label, children }: { label: string; children: ReactNode }) 
   return <p className="dealer-row"><span className="dealer-label">{label}</span><span>{children}</span></p>;
 }
 
-function DealerCard({ car, dealer }: { car: Candidate; dealer: DealerInfo | null | undefined }) {
+const SIGNAL_KINDS: Record<string, string> = {
+  regulator: 'Government page', board: 'Complaint board', news: 'Dated article',
+};
+
+// A dealer flag is only ever a reading of the excerpts listed under it, so its citation numbers
+// point into that same card's list rather than into the vehicle analysis sources.
+function SignalCites({ claim, index }: { claim: Claim; index: Map<string, number> }) {
+  const shown = claim.citations.filter(id => index.has(id));
+  if (!shown.length) return <span className="cite missing" title="The excerpt behind this statement is not listed.">no source</span>;
+  return <>{shown.map(id => <span key={id} className="cite static" title={`Excerpt ${index.get(id)} below`}>{index.get(id)}</span>)}</>;
+}
+
+function DealerFlagBlock({ signals }: { signals: DealerSignals | null | undefined }) {
+  // Nothing to interpret, or the operator has not turned the pass on: say which, and stop there.
+  if (!signals || signals.status === 'disabled' || (!signals.signals?.length && !signals.green?.length && !signals.red?.length)) {
+    return <div className="dealer-flags">
+      <span className="dealer-flags-label">Dealer green/red flags · {signals && signals.status !== 'disabled' ? 'nothing found' : 'coming'}</span>
+      <p>{signals?.message
+        || 'Coming — we won’t invent a dealer score or cite chips yet. Nothing here is read from review sites, and this is never a VIN vehicle flag.'}</p>
+    </div>;
+  }
+  const list = signals.signals ?? [];
+  const index = new Map(list.map((s, i) => [s.id, i + 1]));
+  const cites = (claim: Claim) => <SignalCites claim={claim} index={index}/>;
+  const green = signals.green ?? [];
+  const red = signals.red ?? [];
+  return <div className="dealer-flags dealer-flags-live">
+    <span className="dealer-flags-label">Dealer green/red flags · about the business</span>
+    {green.length || red.length
+      ? <>
+          <FlagList tone="green" label="Dealer green flags" claims={green} cites={cites}/>
+          <FlagList tone="red" label="Dealer red flags" claims={red} cites={cites}/>
+        </>
+      : <p>{signals.message || 'No statement passed the citation checks, so none is shown.'}</p>}
+    {list.length > 0 && <details className="review-more dealer-signal-list">
+      <summary>What we found ({list.length}) — search excerpts, not verified</summary>
+      <ol>
+        {list.map((s, i) => {
+          const url = safeUrl(s.url);
+          return <li key={s.id} id={`dealer-signal-${i + 1}`}>
+            <span className="dealer-signal-kind">{SIGNAL_KINDS[s.category] ?? s.category}</span>
+            {url ? <a className="dealer-link" href={url} target="_blank" rel="noopener noreferrer">{s.label || s.host}</a> : (s.label || s.host)}
+            <span className="dealer-signal-meta">{s.host}{s.published ? ` · ${s.published}` : ' · undated'}</span>
+            <span className="dealer-signal-excerpt">“{s.excerpt}”</span>
+          </li>;
+        })}
+      </ol>
+    </details>}
+    {(signals.caveats ?? []).length > 0 && <ul className="dealer-notes">
+      {(signals.caveats ?? []).map(caveat => <li key={caveat}>{caveat}</li>)}
+    </ul>}
+    <p className="dealer-signal-meta">
+      {signals.searches} dealer search{signals.searches === 1 ? '' : 'es'}
+      {signals.credits ? ` · ${signals.credits} provider credit${signals.credits === 1 ? '' : 's'}` : ''}
+      {signals.model ? ` · ${signals.model}` : ''}
+    </p>
+  </div>;
+}
+
+function DealerCard({ car, dealer, signals }: {
+  car: Candidate; dealer: DealerInfo | null | undefined; signals?: DealerSignals | null;
+}) {
   const website = safeUrl(dealer?.website ?? null);
   const maps = safeUrl(dealer?.maps_url ?? null);
   const listing = safeUrl(dealer?.vdp_url ?? null);
@@ -447,10 +508,7 @@ function DealerCard({ car, dealer }: { car: Candidate; dealer: DealerInfo | null
       <CircleAlert size={14}/>
       No dealer record came with this car. Only a licensed inventory import carries dealer contact details, and we won’t guess a name or an address.
     </p>}
-    <div className="dealer-flags">
-      <span className="dealer-flags-label">Dealer green/red flags · coming</span>
-      <p>Coming — we won’t invent a dealer score or cite chips yet. Nothing here is read from review sites, and this is never a VIN vehicle flag.</p>
-    </div>
+    <DealerFlagBlock signals={signals}/>
   </article>;
 }
 
@@ -477,7 +535,7 @@ function DealerSection({ report }: { report: Report }) {
       </div>
     </div>}
     <div className={narrow ? 'dealer-grid dealer-grid-narrow' : 'dealer-grid'}>
-      {shown.map(c => <DealerCard key={c.id} car={c} dealer={c.dealer}/>)}
+      {shown.map(c => <DealerCard key={c.id} car={c} dealer={c.dealer} signals={report.dealer_signals?.[c.id] ?? null}/>)}
     </div>
   </section>;
 }

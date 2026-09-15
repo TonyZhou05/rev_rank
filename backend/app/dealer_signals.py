@@ -173,7 +173,10 @@ def validated_claims(items, signals: list[DealerSignal]) -> tuple[list[Claim], i
         if not text or not cited or SCORE_WORDS.search(text):
             dropped += 1
             continue
-        if not numbers(text) <= numbers(" ".join(by_id[c].excerpt + " " + by_id[c].label for c in cited)):
+        # The date the provider published for an excerpt is part of what was cited, so a claim may
+        # repeat it ("a release dated 2026-04-02"); every other figure must be in the text itself.
+        supported = numbers(" ".join(f"{by_id[c].excerpt} {by_id[c].label} {by_id[c].published or ''}" for c in cited))
+        if not numbers(text) <= supported:
             dropped += 1
             continue
         kept.append(Claim(text=text, citations=cited))
