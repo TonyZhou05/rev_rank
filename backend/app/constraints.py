@@ -57,7 +57,10 @@ YEARS_NOUN = re.compile(rf"{COUNT}[\s-]*(?:years?|yrs?)\s*(?:hold|ownership|hori
 BUDGET = re.compile(rf"(?:budget(?:\s+(?:of|is|around|about|near))?|under|below|up to|at most|no more than"
                     rf"|max(?:imum)?(?:\s+of)?|spend(?:ing)?|around|about|roughly|ideally)\s*\$?\s*{NUM}{SCALE}", re.I)
 NEGATED = re.compile(r"\b(?:no|not|non|never|without|avoid|avoiding|exclude|excluding|skip|anything but"
-                     r"|don'?t want|do not want|steer clear of|nothing with|rather not)\b[\sa-z']{0,14}$", re.I)
+                     r"|don'?t want|do not want|don'?t need|do not need|doesn'?t need|does not need|no need for"
+                     r"|steer clear of|nothing with|rather not)\b[\sa-z']{0,14}$", re.I)
+# "I don't need AWD": the must-have verb itself is negated, so no chip is read from what follows.
+NEGATED_VERB = re.compile(r"\b(?:don'?t|do not|doesn'?t|does not|won'?t|no)\s+$", re.I)
 LOCATION = re.compile(r"\b(?:in|near|around|based in|live in|i'?m in|located in)\s+"
                       r"([A-Z][A-Za-z.'\-]+(?:[ ][A-Z][A-Za-z.'\-]+){0,2},\s*[A-Z]{2})\b")
 EXPLICIT_MUST = re.compile(r"(?:must have|must-have|has to have|have to have|needs? to have|needs?|requires?"
@@ -111,6 +114,9 @@ PRIORITIES = {
 }
 TRANSMISSION = {"manual": ("manual", "stick shift", "stick-shift", "three pedals", "6mt", "5mt"),
                 "automatic": ("automatic", "auto box", "dct", "two pedals")}
+# "automatic climate control", "manual seats", "owner's manual": the word describes equipment, not a gearbox.
+NOT_GEARBOX = (r"(?!\s+(?:climate|temperature|a/?c|air|headlights?|high[- ]?beams?|lights?|wipers?|emergency|braking"
+               r"|brakes|parking|start|stop|tailgate|liftgate|doors?|seats?|mirrors?|windows?|locks?|dimming|leveling))")
 
 
 def _amount(digits: str, scale: str | None) -> float:
@@ -199,6 +205,9 @@ def rule_constraints(message: str) -> list[Found]:
         value = _amount(digits, scale)
         if not ("$" in phrase or scale or re.search(r"budget|spend", phrase, re.I) or value >= 1000):
             continue
+        # "under 2020 model year": a bare year with no $ or "k" is not a price.
+        if not ("$" in phrase or scale) and re.fullmatch(r"(?:19|20)\d{2}", digits):
+            continue
         if not _in_range("budget", value):
             continue
         spans.append(match.span())
@@ -208,7 +217,7 @@ def rule_constraints(message: str) -> list[Found]:
     for choice, terms in TRANSMISSION.items():
         other = "automatic" if choice == "manual" else "manual"
         for term in terms:
-            match = re.search(rf"(?<![a-z]){re.escape(term)}(?![a-z])", message, re.I)
+            match = re.search(rf"(?<![a-z])(?<!owner's )(?<!owners ){re.escape(term)}(?![a-z]){NOT_GEARBOX}", message, re.I)
             if not match:
                 continue
             negation = _negation_start(message, match.start())
@@ -227,6 +236,8 @@ def rule_constraints(message: str) -> list[Found]:
                 found.append(Found("must_haves", canonical, match.group(0), "rules"))
                 break
     for match in EXPLICIT_MUST.finditer(message):
+        if NEGATED_VERB.search(message[max(0, match.start() - 12):match.start()]):
+            continue
         phrase = ALIASES.get(_phrase(match.group(1)), _phrase(match.group(1)))
         # A vocabulary hit is the canonical chip, so an overlapping free phrase adds nothing.
         overlaps = any(_norm(phrase) in _norm(f.value) or _norm(f.value) in _norm(phrase)
@@ -274,13 +285,19 @@ def _grounded(quote, message: str) -> bool:
     return isinstance(quote, str) and bool(quote.strip()) and len(quote) <= 300 and _norm(quote) in _norm(message)
 
 
+QUOTED_NUMBER = re.compile(r"(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)\s*(k\b|grand|thousand|hundred)?", re.I)
+
+
 def _number_grounded(value: float, quote: str) -> bool:
-    """The value, or the value in thousands or hundreds, must be readable in its own quote."""
-    digits = re.sub(r"\D", "", quote)
-    if not digits:
-        return False
-    for scaled in (value, value / 1000, value / 100):
-        if scaled == int(scaled) and str(int(scaled)) in digits:
+    """The value must be a whole number the quote states, read with its own scale.
+
+    "30k" reads as 30,000 (or 30); "40" may also mean 40,000. A digit substring is not enough:
+    that let a model's 3,000 through for "about 30k".
+    """
+    for match in QUOTED_NUMBER.finditer(quote):
+        number, scale = float(match.group(1).replace(",", "")), (match.group(2) or "").lower()
+        readings = {number, number * 1000} if scale in ("", "k", "grand", "thousand") else {number, number * 100}
+        if value in readings:
             return True
     return False
 

@@ -3,7 +3,7 @@ import { Check, CircleAlert, LoaderCircle, Sparkles } from 'lucide-react';
 import { allSame, comparable, constraintMetrics, constraintTone, delta, isCrossModel, metric, mileageValue, msrpNeoVinKind, msrpOrigin, msrpPctDelta, msrpSourceNote, msrpValue, mustHaveMetrics, numberIn, pctOfMsrp, pctOfMsrpText, priceValue, sharedAnnual, tradeOff, type DeltaKind } from './compare';
 import { ConstraintPanel } from './ConstraintPanel';
 import { SourceTable } from './Review';
-import type { AIAnalysis, Candidate, Claim, DealerInfo, DealerSignals, NHTSASafetyData, Preferences, Report, SourceRef } from './types';
+import type { AIAnalysis, Candidate, Claim, ConstraintCheck, DealerInfo, DealerSignals, NHTSASafetyData, Preferences, Report, SourceRef } from './types';
 import { carName, dateLabel, hostOf, money, safeUrl, unresolvedConflicts } from './utils';
 
 interface Row {
@@ -24,6 +24,8 @@ const priceText = (c: Candidate) => c.price === null ? (unresolvedConflicts(c).i
 const mileageText = (c: Candidate) => c.mileage === null ? (unresolvedConflicts(c).includes('mileage') ? 'Sources disagree' : 'Unknown')
   : `${c.mileage.toLocaleString()} ${c.mileage_unit}`;
 const text = (value: string | number | null | undefined) => value === null || value === undefined || value === '' ? '—' : String(value);
+// A computed "% of original MSRP" metric value; anything else there is the backend's reason it was withheld.
+const MSRP_PERCENT = /^\d[\d,]*(\.\d+)?%$/;
 
 function rowsFor(report: Report, bench: Candidate, crossModel: boolean): Row[] {
   const odometer = metric(report, 'Projected odometer after');
@@ -38,23 +40,24 @@ function rowsFor(report: Report, bench: Candidate, crossModel: boolean): Row[] {
       hint: 'you entered, or decoded from the VIN',
       text: (c, i) => {
         const fromMetric = metric(report, '% of original MSRP')?.values[i];
-        if (fromMetric && fromMetric !== 'N/A' && fromMetric !== 'MSRP not confirmed') return `${fromMetric} of original MSRP (${msrpSourceNote(c) ?? 'sourced'})`;
-        if (fromMetric === 'MSRP not confirmed') return 'MSRP not confirmed';
+        if (fromMetric && MSRP_PERCENT.test(fromMetric)) return `${fromMetric} of original MSRP (${msrpSourceNote(c) ?? 'sourced'})`;
+        if (fromMetric && fromMetric !== 'N/A') return fromMetric;
         return pctOfMsrpText(c) ?? 'MSRP not entered — add it on Review';
       },
       rank: (c, i) => {
         const fromMetric = metric(report, '% of original MSRP')?.values[i];
-        if (fromMetric && /\d/.test(fromMetric)) return numberIn(fromMetric);
+        if (fromMetric) return MSRP_PERCENT.test(fromMetric) ? numberIn(fromMetric) : null;
         return pctOfMsrp(c);
       },
       cell: (c, i) => {
         const fromMetric = metric(report, '% of original MSRP')?.values[i];
-        if (fromMetric && fromMetric !== 'N/A' && fromMetric !== 'MSRP not confirmed') {
+        if (fromMetric && MSRP_PERCENT.test(fromMetric)) {
           return <span className="msrp-pct">{fromMetric} of original MSRP ({msrpSourceNote(c) ?? 'sourced'})</span>;
         }
         if (fromMetric === 'MSRP not confirmed') {
           return <span className="muted-cell msrp-cta">MSRP present but not sourced — confirm it on Review</span>;
         }
+        if (fromMetric && fromMetric !== 'N/A') return <span className="muted-cell">{fromMetric}</span>;
         const t = pctOfMsrpText(c);
         if (t) return <span className="msrp-pct">{t}</span>;
         return <span className="muted-cell msrp-cta">No MSRP yet — go back to Review and enter original MSRP (optional) to unlock % of sticker</span>;
@@ -143,13 +146,13 @@ function rowsFor(report: Report, bench: Candidate, crossModel: boolean): Row[] {
     { label: 'Location', text: c => text(c.location) },
   );
   for (const m of mustHaveMetrics(report)) rows.push({
-    label: m.label, text: (_, i) => m.values[i] ?? 'not established',
+    label: m.label, always: true, text: (_, i) => m.values[i] ?? 'not established',
     // "Not established" means the listing doesn't say; it is never shown as "no".
     cell: (_, i) => m.values[i] === 'listed' ? <span className="req listed">Listed</span> : <span className="req unknown">Not mentioned</span>,
   });
   // Odometer ceiling, gearbox and rule-outs, as the server read them against reviewed evidence.
   for (const m of constraintMetrics(report)) rows.push({
-    label: m.label, text: (_, i) => m.values[i] ?? 'unknown',
+    label: m.label, always: true, text: (_, i) => m.values[i] ?? 'unknown',
     cell: (_, i) => <span className={`req ${constraintTone(m.values[i])}`}>{m.values[i] ?? 'unknown'}</span>,
   });
   const fit = metric(report, 'Constraint fit');
@@ -303,11 +306,12 @@ function nhtsaFor(report: Report, c: Candidate): NHTSASafetyData | null {
 function nhtsaScope(data: NHTSASafetyData) {
   return data.scope || data.scope_label || 'Model-Year Safety Data (not VIN-specific)';
 }
+// Null means that NHTSA endpoint failed on this run: shown as unavailable, never as zero.
 function nhtsaRecalls(data: NHTSASafetyData) {
-  return data.recalls_count ?? data.recall_count ?? data.recalls?.length ?? 0;
+  return data.recalls_count ?? data.recall_count ?? null;
 }
 function nhtsaComplaints(data: NHTSASafetyData) {
-  return data.complaints_count ?? data.complaint_count ?? data.complaints?.length ?? 0;
+  return data.complaints_count ?? data.complaint_count ?? null;
 }
 function nhtsaOverall(data: NHTSASafetyData) {
   return data.overall_rating ?? data.rating?.overall_rating ?? null;
@@ -328,7 +332,11 @@ function NhtsaLink({ href, children }: { href: string; children: ReactNode }) {
 function NhtsaSection({ report }: { report: Report }) {
   const cars = report.candidates;
   const blocks = cars.map(c => ({ c, data: nhtsaFor(report, c) }));
-  if (!blocks.some(b => b.data)) return null;
+  if (!blocks.some(b => b.data)) return <section className="report-section nhtsa-section">
+    <h3>Model-year safety</h3>
+    <p className="muted-cell">NHTSA returned no recall, complaint or rating data for these cars on this run.
+      Check <NhtsaLink href={NHTSA_LOOKUP}>nhtsa.gov/recalls</NhtsaLink> with each car’s VIN.</p>
+  </section>;
   return <section className="report-section nhtsa-section">
     <h3>Model-year safety</h3>
     <p className="nhtsa-scope"><CircleAlert size={14}/> Model-Year Safety Data (not VIN-specific). Counts and ratings apply to the model year, not this vehicle’s VIN.</p>
@@ -338,9 +346,9 @@ function NhtsaSection({ report }: { report: Report }) {
         {!data ? <p className="muted-cell">No model-year NHTSA block for this car.</p> : <>
           <p className="nhtsa-label">{nhtsaScope(data)}</p>
           <p className="nhtsa-counts">
-            <NhtsaLink href={nhtsaRecallsHub(data)}><strong>{nhtsaRecalls(data)}</strong> recalls</NhtsaLink>
+            <NhtsaLink href={nhtsaRecallsHub(data)}><strong>{nhtsaRecalls(data) ?? 'Unavailable:'}</strong> recalls</NhtsaLink>
             {' · '}
-            <NhtsaLink href={nhtsaComplaintsHub(data)}><strong>{nhtsaComplaints(data)}</strong> complaints</NhtsaLink>
+            <NhtsaLink href={nhtsaComplaintsHub(data)}><strong>{nhtsaComplaints(data) ?? 'Unavailable:'}</strong> complaints</NhtsaLink>
             {nhtsaOverall(data) != null && <> · NHTSA overall {nhtsaOverall(data)}</>}
           </p>
           {!!data.recalls?.[0] && <p className="nhtsa-top">Top recall component: {data.recalls[0].component}</p>}
@@ -616,12 +624,53 @@ function AIComparison({ ai, cars }: { ai: AIAnalysis; cars: Candidate[] }) {
   </section>;
 }
 
+const CHECK_STATUS: Record<ConstraintCheck['status'], { label: string; tone: string }> = {
+  meets: { label: 'Meets', tone: 'listed' }, conflicts: { label: 'Conflicts', tone: 'conflict' },
+  not_established: { label: 'Not established', tone: 'unknown' }, unknown: { label: 'Unknown', tone: 'unknown' },
+};
+
+// The computed constraint-fit order: what the report stands on when no cited model ranking exists
+// (AI off, a server time limit, or a ranking that failed the evidence checks).
+function ShortlistSection({ report }: { report: Report }) {
+  const entries = [...(report.shortlist ?? [])].sort((a, b) => a.position - b.position);
+  if (!entries.some(entry => entry.checks.length)) return null;
+  const byId = new Map(report.candidates.map(c => [c.id, c]));
+  return <section className="report-section ai-ranking shortlist-section">
+    <p className="constraint-label">Shortlist by your stated constraints · computed from the reviewed details</p>
+    <ol>{entries.map(entry => {
+      const car = byId.get(entry.candidate_id);
+      return <li key={entry.candidate_id}>
+        <strong>{car ? carName(car) : 'Car'}</strong>
+        <span>{entry.meets} met · {entry.open_items} open · {entry.conflicts} conflicting</span>
+        <ul className="shortlist-checks">{entry.checks.map((check, i) => <li key={i}>
+          <span className={`req ${CHECK_STATUS[check.status].tone}`}>{CHECK_STATUS[check.status].label}</span>{' '}
+          {check.constraint}: {check.detail}
+        </li>)}</ul>
+      </li>;
+    })}</ol>
+    <p className="muted">Counts only your stated constraints. It is not a value, condition or reliability score, and a
+      constraint a listing never mentions counts as not established rather than met.</p>
+  </section>;
+}
+
 function ComingModule({ title, body, caveats }: { title: string; body: string; caveats: string[] }) {
   return <section className="report-section coming-module">
     <h3>{title}</h3>
     <p className="coming-copy"><CircleAlert size={15}/> Coming next: {body} We won’t invent a number.</p>
     {caveats.length > 0 && <ul className="coming-caveats">{caveats.map(w => <li key={w}>{w}</li>)}</ul>}
   </section>;
+}
+
+function useExpandDetailsForPrint() {
+  useEffect(() => {
+    const opened: HTMLDetailsElement[] = [];
+    const before = () => document.querySelectorAll<HTMLDetailsElement>('.report details:not([open])')
+      .forEach(el => { el.open = true; opened.push(el); });
+    const after = () => { opened.splice(0).forEach(el => { el.open = false; }); };
+    window.addEventListener('beforeprint', before);
+    window.addEventListener('afterprint', after);
+    return () => { window.removeEventListener('beforeprint', before); window.removeEventListener('afterprint', after); };
+  }, []);
 }
 
 export function ReportView({ report, preferences, setPreferences, onApply, onCancelCompare, compareError, buildSlow, busy, narrow, onBack, onReset }: {
@@ -637,15 +686,18 @@ export function ReportView({ report, preferences, setPreferences, onApply, onCan
   onBack: () => void;
   onReset: () => void;
 }) {
+  useExpandDetailsForPrint();
   const ai = report.ai_analysis;
   const cars = report.candidates;
   const aiQuestions = (id: string) => (ai?.questions ?? []).filter(q => q.candidate_id === id).map(q => q.text);
   const warnings = [...new Set(report.warnings)];
   const depCaveats = warnings.filter(w => /depreciat|resale|ownership|years kept|mileage when/i.test(w));
-  const condCaveats = warnings.filter(w => /condition|feature|history|accident|title|option/i.test(w));
+  const condCaveats = warnings.filter(w => /condition|feature|history|accident|title|\boptions?\b/i.test(w));
   const lifted = new Set([...depCaveats, ...condCaveats]);
   const remainingCaveats = warnings.filter(w => !lifted.has(w));
-  const synthetic = cars.length > 0 && cars.every(c => c.source_kind === 'synthetic' || c.retrieval_method === 'synthetic');
+  const isSynthetic = (c: Candidate) => c.source_kind === 'synthetic' || c.retrieval_method === 'synthetic';
+  const synthetic = cars.length > 0 && cars.every(isSynthetic);
+  const someSynthetic = cars.some(isSynthetic);
   const hasObs = cars.some(c => (c.observations?.length ?? 0) > 0);
   const marketEmpty = !report.market.comparables?.length
     || /unavailable|not available|disabled|no market|synthetic/i.test(report.market.message || '')
@@ -685,6 +737,9 @@ export function ReportView({ report, preferences, setPreferences, onApply, onCan
         <span className="mode-pill">{report.analysis_mode === 'llm' ? 'AI assisted' : 'Rules-based'}</span>
       </div>
 
+      {someSynthetic && <div className="notice synthetic-note" role="note"><CircleAlert size={15}/>
+        <span>{synthetic ? 'All cars in this report are' : 'This report includes'} synthetic example cars: invented prices and
+          details, not listings or market evidence.</span></div>}
       {ai && ai.status === 'partial' && ai.message && /time limit|timed out|stopped at the server/i.test(ai.message) &&
         <div className="ai-timeout-note" role="status"><CircleAlert size={15}/><span>{ai.message}</span></div>}
       {ai && ai.status !== 'unavailable' ? <AIComparison ai={ai} cars={cars}/>
@@ -692,12 +747,13 @@ export function ReportView({ report, preferences, setPreferences, onApply, onCan
           const timedOut = Boolean(ai?.message && /time limit|timed out|stopped at the server/i.test(ai.message));
           return <div className="ai-off"><Sparkles size={16}/><div>
             <strong>{timedOut ? 'AI stopped at the server time limit' : 'AI comparison not generated'}</strong>
-            <p>{ai?.message || 'Add an LLM API key on the server to get a cited, side-by-side verdict.'}
-              {' '}{timedOut
-                ? 'The comparison, metrics and evidence below are complete — nothing was invented from the unfinished AI run.'
-                : 'The table below is computed directly from your reviewed details.'}</p>
+            <p>{timedOut ? ai?.message
+              // Operator setup notes (env var names) are not buyer copy.
+              : ai?.message && !/REVRANK_/.test(ai.message) ? `${ai.message} The table below is computed directly from your reviewed details.`
+              : 'AI comparison is off for this workspace. The table below is computed directly from your reviewed details.'}</p>
           </div></div>;
         })()}
+      {!ai?.ranking?.length && <ShortlistSection report={report}/>}
 
       <section className="report-section">
         <h3>Side by side</h3>

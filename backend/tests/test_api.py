@@ -131,3 +131,16 @@ def test_uncaught_api_errors_are_json_not_plain_text(monkeypatch):
     assert 'application/json' in response.headers.get('content-type', '')
     assert 'detail' in response.json()
     assert '8000' not in response.json()['detail']
+
+
+def test_static_route_does_not_serve_files_outside_dist():
+    import pytest
+    from backend.app.main import DIST
+    if not DIST.exists():
+        pytest.skip('frontend/dist is not built, so the static route is not mounted')
+    # The path parameter arrives percent-decoded, so these reach the handler as "../..".
+    for path in ('/%2e%2e/package.json', '/%2e%2e/%2e%2e/AGENTS.md', '/..%2f..%2fAGENTS.md'):
+        response = client.get(path)
+        assert response.status_code == 200
+        assert response.headers['content-type'].startswith('text/html'), path
+        assert 'Paid API budget' not in response.text and 'revrank-frontend' not in response.text

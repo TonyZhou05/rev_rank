@@ -4,15 +4,17 @@ Fixed provider endpoints only. These are authorized data services, not a way to 
 blocked page: nothing here contacts the seller's website or reuses browser sessions.
 """
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 import json
 from math import isfinite
+from pathlib import Path
 import re
 import time
 import httpx
 
 from .config import Settings
 from .fetch import FetchError, validated_url
-from .usage import BudgetExceeded, spend
+from .usage import BudgetExceeded, spend, write_json_atomic
 
 MARKETCHECK_URL = 'https://api.marketcheck.com/v2/search/car/active'
 # Expired listings from the last 90 days. The active index drops a car the moment it stops being
@@ -215,6 +217,8 @@ class NeoVinMsrp:
     field: str
     # msrp_label, set only when the bare `msrp` field supplied the number.
     labeled_as: str | None = None
+    # When the paid decode ran; set on a figure replayed from the local cache instead of a new call.
+    cached_from: str | None = None
 
     @property
     def source(self) -> str:
@@ -244,13 +248,56 @@ def msrp_from_specs(payload, vin: str) -> NeoVinMsrp | None:
     return None
 
 
+def neovin_cache_path(settings: Settings) -> Path:
+    return settings.data_dir / 'neovin_msrp.json'
+
+
+# A factory MSRP never changes for a VIN, so a decoded figure is kept for good. "No MSRP" is retried
+# after this many days, since NeoVIN fills in figures for new model years over time.
+NEOVIN_MISS_DAYS = 30
+
+
+def _cached_msrp(settings: Settings, vin: str):
+    """(hit, figure): figure is None for a remembered "no usable MSRP"."""
+    try:
+        entry = json.loads(neovin_cache_path(settings).read_text()).get(vin)
+        decoded = datetime.fromisoformat(entry['decoded_at'])
+        if entry.get('amount') is None:
+            fresh = datetime.now(timezone.utc) - decoded < timedelta(days=NEOVIN_MISS_DAYS)
+            return fresh, None
+        return True, NeoVinMsrp(vin=vin, amount=float(entry['amount']), field=str(entry['field']),
+                                labeled_as=entry.get('labeled_as'), cached_from=entry['decoded_at'])
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        return False, None
+
+
+def _remember_msrp(settings: Settings, vin: str, found: NeoVinMsrp | None) -> None:
+    """Best effort: a lost entry only costs one more decode later."""
+    path = neovin_cache_path(settings)
+    try:
+        data = json.loads(path.read_text()) if path.exists() else {}
+        data = data if isinstance(data, dict) else {}
+        data[vin] = {'decoded_at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
+                     **({'amount': found.amount, 'field': found.field, 'labeled_as': found.labeled_as} if found else {})}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_json_atomic(path, data)
+    except (OSError, ValueError):
+        pass
+
+
 def decode_neovin_msrp(settings: Settings, vin: str, timeout: float = 8) -> NeoVinMsrp | None:
-    """One paid NeoVIN decode of a known VIN; None when it reports no factory MSRP we can stand behind."""
+    """One paid NeoVIN decode of a known VIN; None when it reports no factory MSRP we can stand behind.
+
+    An earlier decode of the same VIN is replayed from `.local/neovin_msrp.json` without a call.
+    """
     vin = vin.upper()
     if not VIN.fullmatch(vin):
         raise ValueError('Invalid VIN.')
     if not settings.marketcheck_enabled:
         raise ProviderError('Licensed VIN decode provider is not configured.')
+    hit, found = _cached_msrp(settings, vin)
+    if hit:
+        return found
     try:
         spend(settings, 'marketcheck')
     except BudgetExceeded as error:
@@ -261,7 +308,9 @@ def decode_neovin_msrp(settings: Settings, vin: str, timeout: float = 8) -> NeoV
     echoed = payload.get('vin')
     if isinstance(echoed, str) and echoed.strip().upper() not in ('', vin):
         raise ProviderError('The VIN decode describes a different vehicle.')
-    return msrp_from_specs(payload, vin)
+    found = msrp_from_specs(payload, vin)
+    _remember_msrp(settings, vin, found)
+    return found
 
 
 @dataclass(frozen=True)

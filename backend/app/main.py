@@ -112,6 +112,8 @@ async def import_listing(request: ImportRequest, http_request: Request, response
 
 def run_import(request: ImportRequest, token: CancelToken) -> ImportResponse:
     notes = []
+    # Where a VIN on the request came from: the buyer's own field, or the listing URL it was read from.
+    vin_from_url = False
     if request.url:
         # Accept pasted text around the URL and a missing scheme; read a VIN embedded in the URL.
         url = normalize_input_url(request.url)
@@ -120,6 +122,7 @@ def run_import(request: ImportRequest, token: CancelToken) -> ImportResponse:
             return ImportResponse(status="partial", candidate=None, recovery_status="identity_conflict",
                                   message=f"The VIN in the listing URL ({vin}) differs from the VIN you entered. Confirm which vehicle you mean.")
         if vin and not request.vin:
+            vin_from_url = True
             notes.append(dict(method="url", status="completed", detail=f"VIN {vin} read from the listing URL (check digit valid)."))
         request = request.model_copy(update={"url": url, "vin": request.vin or vin})
     source_url = request.url
@@ -151,11 +154,15 @@ def run_import(request: ImportRequest, token: CancelToken) -> ImportResponse:
             on_page = request.vin in raw.upper()
             candidate.evidence["vin"] = Evidence(value=request.vin, status="extracted", source=(
                 "VIN shown on the listing page" if on_page else "VIN in the listing URL (check digit valid)"))
+    elif vin_from_url and "vin" not in candidate.evidence:
+        candidate.evidence["vin"] = Evidence(value=request.vin, status="extracted",
+                                             source="VIN in the listing URL (check digit valid)")
     elif request.vin and "vin" not in candidate.evidence:
         # No page was read, so the VIN is the buyer's own input whether or not the text repeats it.
         candidate.evidence["vin"] = Evidence(value=request.vin, status="user_confirmed", source=(
             "VIN you entered; also in the pasted text" if request.vin in raw.upper() else "VIN you entered"))
-    candidate = assist_extraction(candidate, text, settings)
+    token.check()
+    candidate = assist_extraction(candidate, text, settings, token=token)
     candidate.retrieval_method = 'direct' if fetched else 'paste'
     status = import_status(candidate)
     message = "Candidate extracted. Review all fields and warnings before comparing."
@@ -175,7 +182,7 @@ def run_import(request: ImportRequest, token: CancelToken) -> ImportResponse:
     if response.candidate is not None and request.recovery_source in ('auto', 'marketcheck'):
         evidence = response.candidate.evidence.get('vin')
         attach_original_msrp(response.candidate, request.vin or (evidence.value.upper() if evidence else None),
-                             settings, response.attempts)
+                             settings, response.attempts, token=token)
     return response
 
 async def guarded(work: Callable[[], Work], http_request: Request, token: CancelToken) -> Work:
@@ -215,15 +222,16 @@ def interpret(report: Report, token: CancelToken) -> Report:
     # rest of the budget. Turned off by default, so most reports skip straight past it.
     working.dealer_signals = dealer_signals.attach(working, settings, token=token)
     working.ai_analysis = analyze(working, settings, token=token)
-    if working.ai_analysis.status != "unavailable":
-        working.analysis_mode = "llm"
+    # The mode names the cited analysis. A model that only reordered the findings (assist_report) is
+    # not an AI-assisted report, so an unavailable analysis leaves it rules-based.
+    working.analysis_mode = "llm" if working.ai_analysis.status != "unavailable" else "rules"
     return working
 
 
 def analysis_failed(report: Report) -> Report:
     """Keep the deterministic comparison when optional model work crashes."""
     note = ("AI analysis failed while the comparison was being written; nothing was inferred from the "
-            "unfinished run. The comparison, metrics and evidence above are complete.")
+            "unfinished run. The comparison, metrics and evidence in this report are complete.")
     report.warnings = list(dict.fromkeys(report.warnings + [note]))
     report.analysis_mode = "rules"
     report.ai_analysis = AIAnalysis(status="unavailable", message=note)
@@ -245,7 +253,7 @@ def spell_seconds(seconds: float) -> str:
 def timed_out(report: Report, seconds: float) -> Report:
     """Report the deterministic comparison honestly, with no analysis inferred from an unfinished run."""
     note = (f"AI analysis was stopped at the server time limit of {spell_seconds(seconds)}; nothing was inferred "
-            "from the unfinished run. The comparison, metrics and evidence above are complete.")
+            "from the unfinished run. The comparison, metrics and evidence in this report are complete.")
     report.warnings = list(dict.fromkeys(report.warnings + [note]))
     report.analysis_mode = "rules"
     report.ai_analysis = AIAnalysis(status="unavailable", message=note)
@@ -330,7 +338,9 @@ DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 if DIST.exists():
     @app.get("/{path:path}")
     def frontend(path: str):
-        requested = DIST / path
-        if path and requested.is_file() and DIST in requested.parents:
+        # Resolve before the containment check: the path arrives percent-decoded, so "%2e%2e/" would
+        # otherwise walk out of dist/ lexically and serve .env or /proc/self/environ.
+        requested = (DIST / path).resolve()
+        if path and requested.is_file() and requested.is_relative_to(DIST):
             return FileResponse(requested)
         return FileResponse(DIST / "index.html")

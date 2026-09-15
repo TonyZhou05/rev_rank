@@ -3,6 +3,7 @@
 The payload shapes mirror a real `/v2/decode/car/neovin/{vin}/specs` response; every VIN and price
 here is synthetic. No test performs network access.
 """
+import json
 import socket
 
 import httpx
@@ -147,8 +148,30 @@ class TestDecodeRequest:
         settings = Settings(marketcheck_api_key="secret-key", marketcheck_monthly_calls=1)
         vehicle_data.decode_neovin_msrp(settings, VIN)
         with pytest.raises(ProviderError, match="monthly budget reached"):
-            vehicle_data.decode_neovin_msrp(settings, VIN)
+            vehicle_data.decode_neovin_msrp(settings, OTHER_VIN)
         assert len(sent) == 1
+
+    def test_a_decoded_vin_is_replayed_without_another_call(self, monkeypatch):
+        sent = []
+        self.mock_client(monkeypatch, lambda request: sent.append(request) or httpx.Response(200, json=SPECS))
+        settings = Settings(marketcheck_api_key="secret-key", marketcheck_monthly_calls=1)
+        first = vehicle_data.decode_neovin_msrp(settings, VIN)
+        again = vehicle_data.decode_neovin_msrp(settings, VIN.lower())
+        assert len(sent) == 1
+        assert (again.amount, again.field) == (first.amount, first.field)
+        assert first.cached_from is None and again.cached_from
+
+    def test_a_remembered_miss_is_retried_once_it_is_stale(self, monkeypatch):
+        sent = []
+        self.mock_client(monkeypatch, lambda request: sent.append(request) or httpx.Response(200, json={"vin": VIN}))
+        settings = Settings(marketcheck_api_key="secret-key")
+        assert vehicle_data.decode_neovin_msrp(settings, VIN) is None
+        assert vehicle_data.decode_neovin_msrp(settings, VIN) is None
+        assert len(sent) == 1
+        path = vehicle_data.neovin_cache_path(settings)
+        path.write_text(json.dumps({VIN: {"decoded_at": "2020-01-01T00:00:00+00:00"}}))
+        vehicle_data.decode_neovin_msrp(settings, VIN)
+        assert len(sent) == 2
 
     def test_invalid_vin_and_missing_key_never_reach_the_provider(self, monkeypatch):
         self.mock_client(monkeypatch, forbidden)
@@ -352,3 +375,54 @@ class TestCompareGate:
         assert report.candidates[0].percent_of_msrp is None
         metric = next(m for m in report.metrics if m.label == "% of original MSRP")
         assert metric.values[0] == "MSRP not confirmed"
+
+
+def _two_demo_cars():
+    from backend.app.demo import demo_candidates
+    return demo_candidates()[:2]
+
+
+def test_a_zero_msrp_is_withheld_rather_than_crashing_the_report():
+    from backend.app.comparison import create_report
+    from backend.app.config import Settings
+    from backend.app.models import Preferences
+    cars = _two_demo_cars()
+    cars[0].msrp, cars[0].verified_fields = 0, ["msrp"]
+    report = create_report(cars, Preferences(), Settings())
+    assert report.candidates[0].percent_of_msrp is None
+    assert next(m for m in report.metrics if m.label == "% of original MSRP").values[0] == "MSRP not usable"
+
+
+def test_a_usd_neovin_msrp_is_not_divided_into_a_non_usd_price():
+    from backend.app.comparison import create_report
+    from backend.app.config import Settings
+    from backend.app.models import Evidence, Preferences
+    from backend.app.vehicle_data import NEOVIN_SOURCE
+    cars = _two_demo_cars()
+    for car, currency in zip(cars, ("CAD", "USD")):
+        car.currency, car.msrp = currency, 50000
+        car.evidence["msrp"] = Evidence(value="50000", source=f"{NEOVIN_SOURCE} decode", status="extracted")
+    report = create_report(cars, Preferences(), Settings())
+    values = next(m for m in report.metrics if m.label == "% of original MSRP").values
+    assert values[0] == "Not calculated: MSRP is USD, price is CAD"
+    assert report.candidates[0].percent_of_msrp is None
+    assert report.candidates[1].percent_of_msrp == 103.8 and values[1] == "103.8%"
+
+
+def test_an_msrp_typo_is_withheld_rather_than_failing_the_report():
+    from backend.app.comparison import create_report
+    from backend.app.config import Settings
+    from backend.app.models import Preferences
+    cars = _two_demo_cars()
+    cars[0].msrp, cars[0].verified_fields = 45, ["msrp"]  # $45 typed for $45,000.
+    report = create_report(cars, Preferences(), Settings())
+    assert report.candidates[0].percent_of_msrp is None
+    assert "MSRP looks wrong" in next(m for m in report.metrics if m.label == "% of original MSRP").values[0]
+
+
+def test_compare_ignores_a_percent_of_msrp_the_page_sent():
+    from backend.app.demo import demo_candidates
+    cars = [c.model_dump() for c in demo_candidates()[:2]]
+    cars[0]["percent_of_msrp"] = 121765.0  # Past the field's ceiling: used to be a 422.
+    response = TestClient(main.app).post("/api/compare", json={"candidates": cars, "preferences": {}})
+    assert response.status_code == 200

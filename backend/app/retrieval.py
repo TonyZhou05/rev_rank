@@ -59,6 +59,16 @@ def identity_seed(url: str):
     return bare_host(url), listing_id(url)
 
 
+def checkpoint(token: CancelToken | None) -> None:
+    """Stop before the next provider call once the buyer has gone or the import budget is spent.
+
+    The request handler stops waiting at once; this is what keeps the abandoned worker from going
+    on to spend paid MarketCheck or search calls nobody will read.
+    """
+    if token is not None:
+        token.check()
+
+
 def budget(deadline: float, cap: float) -> float:
     return max(.1, min(cap, deadline - time.monotonic()))
 
@@ -96,7 +106,7 @@ def listing_candidate(row: InventoryListing, past: bool = False) -> Candidate:
     return candidate
 
 
-def licensed_records(url, host, stock, target, settings, attempts, deadline):
+def licensed_records(url, host, stock, target, settings, attempts, deadline, token=None):
     # Only listing identity leaves the server: no zip codes, tracking or other query parameters.
     canonical = identity_url(url)
     seller_page = lambda row: same_listing(row.source_url, url)
@@ -111,6 +121,7 @@ def licensed_records(url, host, stock, target, settings, attempts, deadline):
         """
         if time.monotonic() >= deadline:
             return []
+        checkpoint(token)
         try:
             rows = inventory_search(settings, timeout=budget(deadline, 10), **query)
         except ProviderError as error:
@@ -185,7 +196,7 @@ def has_details(text: str, source_url: str) -> bool:
     return any(getattr(candidate, field) is not None for field in ('price', 'mileage'))
 
 
-def search_records(url, host, stock, target, request, settings, attempts, deadline):
+def search_records(url, host, stock, target, request, settings, attempts, deadline, cancel=None):
     # Remove query strings before sending URLs to a third-party search service.
     canonical = strip_tracking(url).split('?')[0]
     def vin_queries(vin):
@@ -208,6 +219,7 @@ def search_records(url, host, stock, target, request, settings, attempts, deadli
     for query_index in range(4):
         if query_index >= len(queries) or time.monotonic() >= deadline:
             break
+        checkpoint(cancel)
         try:
             scoped = host if not target or queries[query_index] not in vin_queries(target) else None
             hits = search(queries[query_index], settings, timeout=min(10, deadline-time.monotonic()), domain=scoped)
@@ -403,7 +415,8 @@ def browse_records(url, host, target, request, settings, attempts, token, deadli
 
 
 def attach_original_msrp(candidate: Candidate | None, vin: str | None, settings: Settings,
-                         attempts: list[RetrievalAttempt], timeout: float = 8) -> Candidate | None:
+                         attempts: list[RetrievalAttempt], timeout: float = 8,
+                         token: CancelToken | None = None) -> Candidate | None:
     """Fill Original MSRP from one NeoVIN decode of a bound VIN.
 
     A listing's own MSRP is unreliable (it often repeats the asking price), so the factory figure comes
@@ -415,6 +428,7 @@ def attach_original_msrp(candidate: Candidate | None, vin: str | None, settings:
     # One decode per VIN: an MSRP the buyer entered, or one an earlier step already decoded, stands.
     if candidate.msrp is not None or 'msrp' in candidate.evidence:
         return candidate
+    checkpoint(token)
     try:
         found = decode_neovin_msrp(settings, vin, timeout=timeout)
     except (ProviderError, ValueError) as error:
@@ -427,10 +441,11 @@ def attach_original_msrp(candidate: Candidate | None, vin: str | None, settings:
     candidate.msrp = found.amount
     candidate.evidence['msrp'] = Evidence(value=value_text(found.amount), source=found.source, status='extracted')
     candidate.observations = (candidate.observations + [Observation(
-        field='msrp', value=value_text(found.amount), source_url=found.source_url, retrieved_at=now(),
+        field='msrp', value=value_text(found.amount), source_url=found.source_url, retrieved_at=found.cached_from or now(),
         method='licensed', vin=found.vin)])[:150]
+    replay = f' (saved decode from {found.cached_from[:10]}; no call spent)' if found.cached_from else ''
     attempts.append(RetrievalAttempt(method='licensed', status='completed',
-                                     detail=f'NeoVIN decode reported {found.field} {found.amount:,.0f} as the original MSRP.'))
+                                     detail=f'NeoVIN decode reported {found.field} {found.amount:,.0f} as the original MSRP{replay}.'))
     return candidate
 
 
@@ -531,7 +546,7 @@ def recover_listing(request: ImportRequest, settings: Settings, original: Import
         if use_browse:
             records, target = browse_records(url, host, target, request, settings, result.attempts, token, deadline)
         if not records and use_licensed:
-            records, target = licensed_records(url, host, stock, target, settings, result.attempts, deadline)
+            records, target = licensed_records(url, host, stock, target, settings, result.attempts, deadline, token)
         if not records:
             licensed_failed = any(a.method == 'licensed' and a.status == 'failed' for a in result.attempts)
             licensed_used = use_licensed
@@ -539,7 +554,7 @@ def recover_listing(request: ImportRequest, settings: Settings, original: Import
             if use_search:
                 if licensed_used and not licensed_failed:
                     preface = LICENSED_MISS + ' '
-                records, target = search_records(url, host, stock, target, request, settings, result.attempts, deadline)
+                records, target = search_records(url, host, stock, target, request, settings, result.attempts, deadline, token)
             elif licensed_failed:
                 raise Stop('failed', _paste_detail('Licensed inventory lookup failed.'))
             elif use_licensed:
@@ -564,6 +579,7 @@ def recover_listing(request: ImportRequest, settings: Settings, original: Import
 
     decoded = None
     if settings.vin_decode_enabled and target:
+        checkpoint(token)
         try:
             decoded = decode_vin(target, timeout=budget(deadline, 8))
             result.attempts.append(RetrievalAttempt(method='registry', status='completed' if decoded else 'not_found',
@@ -717,7 +733,7 @@ def recover_listing(request: ImportRequest, settings: Settings, original: Import
     # The bound VIN unlocks the factory MSRP; the recovery-source switch still decides who may be called.
     # An expired-only recovery has no price for an MSRP to be a percentage of, so it does not buy the decode.
     if use_licensed and not expired_only:
-        attach_original_msrp(merged, target, settings, result.attempts, timeout=budget(deadline, 8))
+        attach_original_msrp(merged, target, settings, result.attempts, timeout=budget(deadline, 8), token=token)
     result.candidate = merged
     result.status = 'partial'
     if not records:

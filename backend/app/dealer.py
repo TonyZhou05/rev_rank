@@ -8,6 +8,7 @@ Two rules shape the code. A field the record did not carry stays null rather tha
 (a dealer name is never taken from a hostname), and a map link is a search query over the reported
 name and address, never a coordinate pin.
 """
+import re
 from urllib.parse import urlencode, urlsplit
 
 from .fetch import FetchError, validated_url
@@ -22,6 +23,8 @@ SCOPE_NOTE = ("Dealer details are as the licensed inventory record reported them
               "the business, not this VIN.")
 NAME_ONLY_NOTE = "The record carried no dealer address, so the map link searches the name alone."
 US_ZIP_LENGTH = 5
+# A hostname with no scheme, optionally followed by a path: "carmax.com", "www.example-motors.com/used".
+BARE_HOST = re.compile(r"(?i)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}(?:/[^\s]*)?")
 
 
 def clean(value, limit: int = 300) -> str | None:
@@ -36,6 +39,10 @@ def safe_link(value) -> str | None:
     """Keep a link only when it is a plain, credential-free HTTP(S) URL on its standard port."""
     if not isinstance(value, str) or len(value) > 2048:
         return None
+    value = value.strip()
+    # Inventory payloads carry the rooftop's site as a bare host ("carmax.com"); give it a scheme.
+    if BARE_HOST.fullmatch(value):
+        value = "https://" + value
     try:
         url, _, _ = validated_url(value)
     except FetchError:

@@ -438,3 +438,17 @@ class TestCrossModel:
         ]
         report = create_report(cars, Preferences(), SETTINGS)
         assert report.cross_model is False
+
+
+def test_one_failing_nhtsa_endpoint_keeps_the_others(monkeypatch):
+    def fake(url, params, limit=5_000_000):
+        if "complaints" in url:
+            raise comparison.ProviderError("Provider returned HTTP 400.")
+        if "recalls" in url:
+            return {"results": [{"NHTSACampaignNumber": "21V421000", "Component": "BRAKES"}]}
+        return {"Results": []}
+
+    monkeypatch.setattr(comparison, "_nhtsa", fake)
+    data = fetch_nhtsa_safety(2021, "BMW", "M2")
+    assert data.recalls_count == 1
+    assert data.complaints_count is None  # Unavailable, never a made-up zero.

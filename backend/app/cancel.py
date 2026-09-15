@@ -79,8 +79,11 @@ class CancelToken:
     @contextmanager
     def closing(self, close: Callable[[], None]):
         """Let a cancel run this closer while a blocking read is in flight."""
-        self.check()
+        # Check and register under the one lock cancel() takes: a cancel landing between a separate
+        # check and the append would never run this closer, and the read would wait out its timeout.
         with self._lock:
+            if self.cancelled:
+                raise Cancelled(self.reason)
             self._closers.append(close)
         try:
             yield

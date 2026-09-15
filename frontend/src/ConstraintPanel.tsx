@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { CircleAlert, LoaderCircle, Sparkles, X } from 'lucide-react';
 import { api, errorMessage } from './api';
-import type { Preferences } from './types';
+import type { ConstraintResult, Preferences } from './types';
 import { defaultPreferences } from './utils';
 
 const SUGGESTIONS = [
@@ -45,6 +45,44 @@ interface Turn {
   failure?: string;
 }
 
+/** A required number the buyer can clear and retype: the field keeps its own text while focused,
+ *  applies each in-range value, and snaps back into range (or to the last value) on blur. */
+function ClampedNumber({ value, min, max, onCommit }: { value: number; min: number; max: number; onCommit: (next: number) => void }) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const read = (raw: string) => raw.trim() === '' ? null : Number(raw);
+  return <input type="number" inputMode="numeric" min={min} max={max} value={draft ?? value}
+    onChange={e => {
+      setDraft(e.target.value);
+      const next = read(e.target.value);
+      if (next !== null && Number.isFinite(next) && next >= min && next <= max) onCommit(next);
+    }}
+    onBlur={e => {
+      const next = read(e.target.value);
+      if (next !== null && Number.isFinite(next)) onCommit(Math.min(max, Math.max(min, next)));
+      setDraft(null);
+    }}/>;
+}
+
+type ListField = 'must_haves' | 'excludes' | 'priorities';
+const LIST_FIELDS = new Set<string>(['must_haves', 'excludes', 'priorities']);
+
+/** Only the fields this message set, applied onto the chips as they are now: an edit made while the
+ *  message was being read is kept, not reset to the snapshot the request carried. */
+export function mergeParsed(latest: Preferences, sent: Preferences, parsed: ConstraintResult): Preferences {
+  const next: Preferences = { ...latest };
+  for (const field of new Set(parsed.constraints.map(c => c.field))) {
+    if (LIST_FIELDS.has(field)) {
+      const key = field as ListField;
+      const now = latest[key] ?? [], before = sent[key] ?? [];
+      const added = (parsed.preferences[key] ?? []).filter(item => !before.includes(item));
+      next[key] = [...now, ...added.filter(item => !now.includes(item))];
+    } else {
+      (next as unknown as Record<string, unknown>)[field] = (parsed.preferences as unknown as Record<string, unknown>)[field];
+    }
+  }
+  return next;
+}
+
 /** A short chat that only fills the chips below. It can write preference fields and nothing else:
  *  it never states or changes a fact about a car, and it is not inventory discovery — the
  *  shortlist stays the cars you imported. */
@@ -55,6 +93,8 @@ function ConstraintChat({ preferences, onChange, busy, mode }: {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [reading, setReading] = useState(false);
   const thread = useRef<HTMLDivElement>(null);
+  const latest = useRef(preferences);
+  latest.current = preferences;
   const nextCta = mode === 'report' ? 'Apply to report' : 'Generate comparison';
 
   // Keep the newest turn in view without yanking the whole page around.
@@ -71,8 +111,9 @@ function ConstraintChat({ preferences, onChange, busy, mode }: {
     setText('');
     setReading(true);
     try {
-      const parsed = await api.constraints(said, preferences);
-      onChange(parsed.preferences);
+      const sent = preferences;
+      const parsed = await api.constraints(said, sent);
+      onChange(mergeParsed(latest.current, sent, parsed));
       setTurns(current => current.map(turn => turn.id === id
         ? { ...turn, reply: parsed.reply, mode: parsed.mode, applied: parsed.constraints.length }
         : turn));
@@ -212,13 +253,13 @@ export function ConstraintPanel({ preferences, onChange, onApply, busy, mode, na
       </label>
       <label className="constraint-chip" role="listitem">
         <span>Years kept</span>
-        <input type="number" inputMode="numeric" min={1} max={30} value={preferences.ownership_years}
-          onChange={e => onChange({ ...preferences, ownership_years: Math.max(1, Number(e.target.value) || 1) })}/>
+        <ClampedNumber value={preferences.ownership_years} min={1} max={30}
+          onCommit={ownership_years => onChange({ ...preferences, ownership_years })}/>
       </label>
       <label className="constraint-chip" role="listitem">
         <span>Annual miles</span>
-        <input type="number" inputMode="numeric" min={0} value={preferences.annual_mileage}
-          onChange={e => onChange({ ...preferences, annual_mileage: Math.max(0, Number(e.target.value) || 0) })}/>
+        <ClampedNumber value={preferences.annual_mileage} min={0} max={200_000}
+          onCommit={annual_mileage => onChange({ ...preferences, annual_mileage })}/>
       </label>
       <label className="constraint-chip" role="listitem">
         <span>Max miles</span>

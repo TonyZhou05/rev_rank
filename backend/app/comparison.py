@@ -1,4 +1,5 @@
 """Reproducible buyer-aware comparisons. Asking prices never establish fair value."""
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal, ROUND_HALF_UP
 import re
 from urllib.parse import quote
@@ -33,7 +34,7 @@ _NHTSA_CACHE: dict = {}
 
 
 def _nhtsa(url: str, params: dict, limit: int = 5_000_000):
-    """Cached NHTSA API fetch - reuses pattern from analyst.py."""
+    """Cached NHTSA API fetch, shared with the analyst's recall, complaint and rating tools."""
     key = (url, tuple(sorted(params.items())))
     if key not in _NHTSA_CACHE:
         if len(_NHTSA_CACHE) > 128:
@@ -137,49 +138,52 @@ def _complaint_items(rows: list[dict]) -> list[NHTSAComplaint]:
     return items
 
 
+def _nhtsa_rows(url: str, params: dict, key: str) -> list[dict] | None:
+    """One NHTSA endpoint's rows, or None when that endpoint failed (as opposed to returning none)."""
+    try:
+        return [r for r in (_nhtsa(url, params).get(key) or []) if isinstance(r, dict)]
+    except Exception:  # Optional enrichment: no NHTSA failure may take the comparison down.
+        return None
+
+
 def fetch_nhtsa_safety(year: int, make: str, model: str) -> NHTSASafetyData | None:
     """Fetch NHTSA model-year safety data (recalls, complaints, ratings).
 
-    Returns structured data with fixed scope label. Never invents counts.
-    VIN-level recall status is OUT OF SCOPE.
+    Returns structured data with fixed scope label. Never invents counts: an endpoint that failed
+    leaves its count null (shown as unavailable), and the others still stand. None only when every
+    endpoint failed. VIN-level recall status is OUT OF SCOPE.
     """
-    try:
-        # Recalls
-        recalls_data = _nhtsa(f"{NHTSA}/recalls/recallsByVehicle", {"make": make, "model": model, "modelYear": year})
-        recall_rows = [r for r in (recalls_data.get("results") or []) if isinstance(r, dict)]
-
-        # Complaints
-        complaints_data = _nhtsa(f"{NHTSA}/complaints/complaintsByVehicle", {"make": make, "model": model, "modelYear": year})
-        complaint_rows = [r for r in (complaints_data.get("results") or []) if isinstance(r, dict)]
-
-        # Safety ratings
-        path = f"{NHTSA}/SafetyRatings/modelyear/{int(year)}/make/{quote(make, safe='')}/model/{quote(model, safe='')}"
-        variants = [v for v in (_nhtsa(path, {}).get("Results") or []) if isinstance(v, dict) and str(v.get("VehicleId", "")).isdigit()]
-
-        # A variant description unlocks the trim deep link; without one the URLs stay on the
-        # year/make/model landing, which still works for unrated model years.
-        description = next((str(v.get("VehicleDescription", "")) for v in variants if v.get("VehicleDescription")), None)
-        recalls_url = nhtsa_vehicle_page(year, make, model, description, "#recalls")
-        complaints_url = nhtsa_vehicle_page(year, make, model, description, "#complaints")
-        overall_rating = frontal_rating = side_rating = rollover_rating = None
-        if variants:
-            vehicle_id = int(variants[0]["VehicleId"])
-            row = (_nhtsa(f"{NHTSA}/SafetyRatings/VehicleId/{vehicle_id}", {}).get("Results") or [{}])[0]
-            overall_rating = str(row.get("OverallRating")) if row.get("OverallRating") else None
-            frontal_rating = str(row.get("OverallFrontCrashRating")) if row.get("OverallFrontCrashRating") else None
-            side_rating = str(row.get("OverallSideCrashRating")) if row.get("OverallSideCrashRating") else None
-            rollover_rating = str(row.get("RolloverRating")) if row.get("RolloverRating") else None
-
-        return NHTSASafetyData(
-            year=year, make=make, model=model,
-            recalls_count=len(recall_rows), complaints_count=len(complaint_rows),
-            overall_rating=overall_rating, frontal_rating=frontal_rating,
-            side_rating=side_rating, rollover_rating=rollover_rating,
-            recalls_url=recalls_url, complaints_url=complaints_url,
-            recalls=_recall_items(recall_rows), complaints=_complaint_items(complaint_rows)
-        )
-    except (ProviderError, Exception):
+    params = {"make": make, "model": model, "modelYear": year}
+    recall_rows = _nhtsa_rows(f"{NHTSA}/recalls/recallsByVehicle", params, "results")
+    complaint_rows = _nhtsa_rows(f"{NHTSA}/complaints/complaintsByVehicle", params, "results")
+    path = f"{NHTSA}/SafetyRatings/modelyear/{int(year)}/make/{quote(make, safe='')}/model/{quote(model, safe='')}"
+    variant_rows = _nhtsa_rows(path, {}, "Results")
+    if recall_rows is None and complaint_rows is None and variant_rows is None:
         return None
+    variants = [v for v in variant_rows or [] if str(v.get("VehicleId", "")).isdigit()]
+
+    # A variant description unlocks the trim deep link; without one the URLs stay on the
+    # year/make/model landing, which still works for unrated model years.
+    description = next((str(v.get("VehicleDescription", "")) for v in variants if v.get("VehicleDescription")), None)
+    recalls_url = nhtsa_vehicle_page(year, make, model, description, "#recalls")
+    complaints_url = nhtsa_vehicle_page(year, make, model, description, "#complaints")
+    overall_rating = frontal_rating = side_rating = rollover_rating = None
+    if variants:
+        row = (_nhtsa_rows(f"{NHTSA}/SafetyRatings/VehicleId/{int(variants[0]['VehicleId'])}", {}, "Results") or [{}])[0]
+        overall_rating = str(row.get("OverallRating")) if row.get("OverallRating") else None
+        frontal_rating = str(row.get("OverallFrontCrashRating")) if row.get("OverallFrontCrashRating") else None
+        side_rating = str(row.get("OverallSideCrashRating")) if row.get("OverallSideCrashRating") else None
+        rollover_rating = str(row.get("RolloverRating")) if row.get("RolloverRating") else None
+
+    return NHTSASafetyData(
+        year=year, make=make, model=model,
+        recalls_count=None if recall_rows is None else len(recall_rows),
+        complaints_count=None if complaint_rows is None else len(complaint_rows),
+        overall_rating=overall_rating, frontal_rating=frontal_rating,
+        side_rating=side_rating, rollover_rating=rollover_rating,
+        recalls_url=recalls_url, complaints_url=complaints_url,
+        recalls=_recall_items(recall_rows or []), complaints=_complaint_items(complaint_rows or [])
+    )
 
 VERSION = "revrank-rules/0.1"
 KM_PER_MILE = Decimal("1.609344")
@@ -521,8 +525,13 @@ def create_report(candidates: list[Candidate], prefs: Preferences, settings: Set
         low_id, high_id = min(normalized_mileage, key=normalized_mileage.get), max(normalized_mileage, key=normalized_mileage.get)
         if low_id != high_id:
             low, high = next(c for c in candidates if c.id == low_id), next(c for c in candidates if c.id == high_id)
+            # In the listings' own unit when they share one; converted to km only across units.
+            if low.mileage_unit == high.mileage_unit:
+                gap = f"{fmt(dec(high.mileage) - dec(low.mileage))} fewer {low.mileage_unit}"
+            else:
+                gap = f"{fmt(normalized_mileage[high_id] - normalized_mileage[low_id])} fewer km (after unit conversion)"
             add("Mileage difference",
-                f"{low.title} has {fmt(normalized_mileage[high_id] - normalized_mileage[low_id])} fewer km than {high.title} after unit conversion. "
+                f"{low.title} has {gap} than {high.title}. "
                 "Lower mileage alone does not establish condition or maintenance costs.", [low_id, high_id], ["mileage", "mileage_unit"])
     units = {c.mileage_unit for c in candidates if known_unit(c)}
     if len(units) == 1 and all(known_unit(c) for c in candidates):
@@ -619,8 +628,20 @@ def create_report(candidates: list[Candidate], prefs: Preferences, settings: Set
     # one the buyer confirmed or one a NeoVIN decode of the VIN reported.
     msrp_values = []
     for c in candidates:
+        # NeoVIN reports the US-market factory MSRP in USD; no exchange rate is assumed.
+        foreign = "msrp" not in c.verified_fields and c.currency != "USD"
         if c.msrp is not None and c.price is not None and usable(c, "price") and c.currency != "UNK":
-            if msrp_sourced(c):
+            if not c.msrp:
+                c.percent_of_msrp = None
+                msrp_values.append("MSRP not usable")
+            elif msrp_sourced(c) and foreign:
+                c.percent_of_msrp = None
+                msrp_values.append(f"Not calculated: MSRP is USD, price is {c.currency}")
+            elif msrp_sourced(c) and dec(c.price) > dec(c.msrp) * 100:
+                # Over 10,000% (the field's own ceiling) is a typo in the MSRP, not a price position.
+                c.percent_of_msrp = None
+                msrp_values.append("MSRP looks wrong (under 1% of the asking price)")
+            elif msrp_sourced(c):
                 pct = float((dec(c.price) / dec(c.msrp)) * 100)
                 c.percent_of_msrp = round(pct, 2)
                 msrp_values.append(f"{fmt(pct, 1)}%")
@@ -638,13 +659,15 @@ def create_report(candidates: list[Candidate], prefs: Preferences, settings: Set
     make_models = [(norm(c.make), norm(c.model)) for c in candidates]
     cross_model = len(set(make_models)) > 1
 
-    # A5: Deterministic NHTSA model-year safety data
+    # A5: Deterministic NHTSA model-year safety data, one lookup per distinct model year, run
+    # side by side: each is up to four sequential NHTSA calls, and the analysis needs the time left.
     nhtsa_data = {}
-    for c in candidates:
-        if token is not None and (token.cancelled or token.remaining() < NHTSA_MIN_SECONDS):
-            break
-        if c.year and c.make and c.model:
-            safety = fetch_nhtsa_safety(c.year, c.make, c.model)
+    identities = {(c.year, c.make, c.model) for c in candidates if c.year and c.make and c.model}
+    if identities and not (token is not None and (token.cancelled or token.remaining() < NHTSA_MIN_SECONDS)):
+        with ThreadPoolExecutor(max_workers=len(identities)) as pool:
+            safety_by_identity = dict(zip(identities, pool.map(lambda key: fetch_nhtsa_safety(*key), identities)))
+        for c in candidates:
+            safety = safety_by_identity.get((c.year, c.make, c.model))
             if safety:
                 nhtsa_data[c.id] = safety
                 c.nhtsa_safety = safety.model_dump()

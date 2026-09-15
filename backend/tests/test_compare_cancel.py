@@ -321,6 +321,21 @@ def test_safety_data_is_skipped_rather_than_spending_the_whole_budget(monkeypatc
     assert fetched == []
 
 
+def test_safety_data_is_fetched_once_per_model_year_and_side_by_side(monkeypatch):
+    started, release = [], threading.Barrier(2, timeout=5)
+
+    def fetch(year, make, model):
+        started.append((year, make, model))
+        release.wait()  # Only returns once both distinct lookups are running at the same time.
+        return None
+
+    monkeypatch.setattr(comparison, "fetch_nhtsa_safety", fetch)
+    first, second = cars()
+    twin = first.model_copy(update={"id": "twin"})
+    create_report([first, twin, second], Preferences(), SETTINGS, CancelToken(timeout=60))
+    assert sorted(started) == sorted({(c.year, c.make, c.model) for c in (first, second)})
+
+
 # ---- endpoint ---------------------------------------------------------------------------------
 def test_compare_returns_a_request_id_header_that_differs_per_call():
     with TestClient(main.app) as client:

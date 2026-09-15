@@ -165,3 +165,27 @@ def test_endpoint_rejects_an_empty_message_and_an_unknown_preference_field():
     assert client.post("/api/constraints", json={
         "message": "hi", "preferences": {"annual_mileage": 1000, "ownership_years": 2, "location": "",
                                           "priorities": [], "must_haves": [], "price": 100}}).status_code == 422
+
+
+@pytest.mark.parametrize("message, absent", [
+    ("I don't need AWD", ("must_haves", "all-wheel drive")),
+    ("We do not need a sunroof", ("must_haves", "sunroof")),
+    ("needs automatic climate control", ("transmission", "automatic")),
+    ("manual seats are fine", ("transmission", "manual")),
+    ("something newer than 2020 model year, under 2020 model year is out", ("budget", 2020.0)),
+])
+def test_rules_do_not_misread_these_phrases(message, absent):
+    assert absent not in [(c.field, c.value) for c in rule_constraints(message)]
+
+
+def test_rules_still_read_a_plain_gearbox_and_must_have():
+    found = [(c.field, c.value) for c in rule_constraints("has to be automatic and needs AWD")]
+    assert ("transmission", "automatic") in found and ("must_haves", "all-wheel drive") in found
+
+
+@pytest.mark.parametrize("value, quote, grounded", [
+    (30000, "about 30k", True), (3000, "about 30k", False), (40000, "under 40", True),
+    (35500, "$35,500 max", True), (3550, "$35,500 max", False), (1500, "15 hundred", True),
+])
+def test_model_numbers_must_be_read_with_their_own_scale(value, quote, grounded):
+    assert module._number_grounded(value, quote) is grounded
