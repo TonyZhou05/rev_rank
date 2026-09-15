@@ -56,8 +56,10 @@ def budget(deadline: float, cap: float) -> float:
     return max(.1, min(cap, deadline - time.monotonic()))
 
 
-def listing_candidate(row: InventoryListing) -> Candidate:
-    source = f'Licensed inventory record for {row.source_url}; provider last seen {row.last_seen or "date unknown"}'[:2000]
+def listing_candidate(row: InventoryListing, past: bool = False) -> Candidate:
+    kind = 'Expired licensed inventory record' if past else 'Licensed inventory record'
+    seen = f'provider last seen {row.last_seen or "date unknown"}'
+    source = f'{kind} for {row.source_url}; {seen}{"; no longer in active inventory" if past else ""}'[:2000]
     candidate = Candidate(id=str(uuid4()), title=(row.heading or 'Licensed inventory listing')[:300],
                           source_kind='listing', source_url=row.source_url, retrieval_method='licensed',
                           # A6: DOM fields from MarketCheck payload (0 extra paid calls)
@@ -124,22 +126,31 @@ def licensed_records(url, host, stock, target, settings, attempts, deadline):
         own = [r for r in lookup('Listing URL lookup', seller_page, vdp_url=canonical) if seller_page(r)]
     if not own and stock:
         own = [r for r in lookup('Seller stock lookup', seller_stock, stock_no=stock) if seller_stock(r)]
-    vins = {r.vin for r in own}
+    # Active inventory drops a car the moment it stops being listed, so nothing above can find a
+    # delisted listing. One scoped past-inventory call still binds its identity, and the buyer gets a
+    # dated history instead of nothing. It is spent only when every active lookup came back empty.
+    expired = []
+    if not own and not rows and settings.past_inventory_enabled:
+        expired = [r for r in lookup('Past inventory lookup', seller_page, vdp_url=canonical,
+                                     source=host, past=True) if seller_page(r)]
+    vins = {r.vin for r in own + expired}
     if len(vins) > 1:
         raise Stop('identity_conflict', 'Licensed inventory associates this listing with different VINs. Enter the correct VIN before recovery.')
     if vins and target and vins != {target}:
         raise Stop('identity_conflict', 'Licensed inventory lists a different VIN for this listing than the one supplied. Confirm vehicle identity.')
     # When the VIN came from the seller's record, no VIN lookup follows: syndicated copies are not worth a call.
     target = target or next(iter(vins), None)
-    rows = own + rows
-    own_urls = {r.source_url for r in own}
+    rows = own + expired + rows
+    own_urls = {r.source_url for r in own + expired}
+    gone = {r.source_url for r in expired}
     records, seen = [], set()
     for row in rows:
         if row.vin != target or row.source_url in seen:
             continue
         seen.add(row.source_url)
-        records.append(Record(listing_candidate(row), row.source_url, 'licensed', row.last_seen,
-                              primary=row.source_url in own_urls or same_listing(row.source_url, url)))
+        records.append(Record(listing_candidate(row, past=row.source_url in gone), row.source_url, 'licensed',
+                              row.last_seen, primary=row.source_url in own_urls or same_listing(row.source_url, url),
+                              historical=row.source_url in gone))
     return records, target
 
 
@@ -149,6 +160,11 @@ SOLD = "The seller's indexed page says this vehicle is no longer available. This
 # coverage or a car that is gone, and neither is a sale.
 LICENSED_MISS = ('Licensed inventory holds no active record of this listing, so it may already be sold or '
                  'removed. This does not confirm a sale.')
+# Only the past-inventory endpoint had it. That endpoint also infers sales; RevRank does not read or
+# repeat that inference, because a listing leaving the market is not evidence that it sold.
+PAST_ONLY = ('Licensed inventory holds only an expired record of this listing: it has left active '
+             'inventory, so it may be sold or removed. This does not confirm a sale. Its price and '
+             'mileage are shown as a dated past listing, never as current values.')
 
 
 def has_field(text: str, source_url: str, field: str) -> bool:
@@ -514,7 +530,8 @@ def recover_listing(request: ImportRequest, settings: Settings, original: Import
     # The dealer block travels with the seller's own licensed record only. A syndicated copy of the
     # same VIN may name a marketplace rather than the selling rooftop, so it leaves the block null
     # instead of attributing the car to the wrong business.
-    seller_record = next((r for r in records if r.method == 'licensed' and r.primary and r.candidate.dealer), None)
+    seller_record = next((r for r in records if r.method == 'licensed' and r.primary and not r.historical
+                          and r.candidate.dealer), None)
     if seller_record:
         merged.dealer = seller_record.candidate.dealer
     merged.title = ' '.join(str(getattr(merged, f)) for f in ('year', 'make', 'model', 'trim') if getattr(merged, f)) or merged.title
@@ -522,7 +539,10 @@ def recover_listing(request: ImportRequest, settings: Settings, original: Import
     merged.warnings.append('Recovery supplemented a blocked or incomplete direct import; see original retrieval attempts.')
     if not records:
         merged.warnings.append('Only the NHTSA VIN decode succeeded. It identifies the vehicle build, not this listing; enter price, mileage, and condition from the listing.')
-    if 'licensed' in methods:
+    expired_only = bool(records) and all(r.historical for r in records)
+    if expired_only:
+        merged.warnings.append(PAST_ONLY)
+    elif 'licensed' in methods:
         merged.warnings.append("Licensed inventory values are dated by the provider's last-seen time, not a live availability check. Confirm price and availability with the seller.")
     if 'search' in methods:
         merged.warnings.append('Search observation dates are unknown. Price, availability, and seller history require current confirmation.')
@@ -543,7 +563,8 @@ def recover_listing(request: ImportRequest, settings: Settings, original: Import
         merged.history = HISTORY_LABELS.get(history_method, HISTORY_LABELS['search']) + merged.history[:900]
         merged.evidence['history'].value = merged.history
     # The bound VIN unlocks the factory MSRP; the recovery-source switch still decides who may be called.
-    if use_licensed:
+    # An expired-only recovery has no price for an MSRP to be a percentage of, so it does not buy the decode.
+    if use_licensed and not expired_only:
         attach_original_msrp(merged, target, settings, result.attempts, timeout=budget(deadline, 8))
     result.candidate = merged
     result.status = 'partial'
@@ -552,6 +573,12 @@ def recover_listing(request: ImportRequest, settings: Settings, original: Import
         result.message = 'Recovered year/make/model from the NHTSA VIN decode only. Enter the listing price, mileage, and condition before comparing.'
         return result
     result.recovery_status = 'recovered'
+    if expired_only:
+        # Identity and a dated history, but nothing current. Say that before the buyer reads a price.
+        result.message = ('Recovered this vehicle from an expired licensed inventory record: it has left active '
+                          'inventory, which does not confirm a sale. Nothing here is a current price or mileage; '
+                          'enter them from the seller, or paste the listing text.')
+        return result
     found = 'matching VIN evidence' if target else "the listing's indexed summary (VIN unknown)"
     result.message = (f'Recovered {found} from {"licensed inventory" if licensed else "search"}. '
                       'Review sources, conflicts, and dates before comparing.')

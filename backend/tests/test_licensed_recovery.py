@@ -22,10 +22,10 @@ URL = f"https://www.carmax.com/car/{STOCK}"
 MIRROR = "https://www.example.com/listing/synthetic-m2"
 
 
-def row(vin=VIN, url=URL, price=42500, miles=18000, stock=STOCK, year=2017, **extra):
+def row(vin=VIN, url=URL, price=42500, miles=18000, stock=STOCK, year=2017, last_seen="2026-09-10T00:00:00Z", **extra):
     return InventoryListing(vin=vin, source_url=url, stock_no=stock, heading="2017 BMW M2", price=price,
                             miles=miles, year=year, make="BMW", model="M2", transmission="Manual",
-                            location="Austin, TX", last_seen="2026-09-10T00:00:00Z", **extra)
+                            location="Austin, TX", last_seen=last_seen, **extra)
 
 
 def decode(year=2017, make="Bmw", model="M2", problem=None, **build):
@@ -61,8 +61,11 @@ def licensed(search=False, decode_enabled=False):
 def stub_inventory(monkeypatch, by_filter):
     calls = []
 
-    def inventory_search(settings, timeout=10, **query):
+    def inventory_search(settings, timeout=10, source=None, past=False, **query):
         (key, value), = query.items()
+        # The past-inventory endpoint takes the same identity filters, scoped to the source website.
+        assert source == ("carmax.com" if past else None)
+        key = f"past_{key}" if past else key
         calls.append((key, value))
         result = by_filter.get(key, [])
         if isinstance(result, Exception):
@@ -193,11 +196,11 @@ def licensed_attempts(result):
 
 
 def test_lookup_that_received_nothing_is_not_reported_as_completed(monkeypatch):
-    """The CarMax report: two licensed lookups came back empty, and both read as successes."""
+    """The CarMax report: the licensed lookups came back empty, and each read as a success."""
     calls = stub_inventory(monkeypatch, {})
     result = recover(licensed())
-    assert calls == [("vdp_url", URL), ("stock_no", STOCK)]
-    assert [status for status, _ in licensed_attempts(result)] == ["not_found", "not_found"]
+    assert calls == [("vdp_url", URL), ("stock_no", STOCK), ("past_vdp_url", URL)]
+    assert [status for status, _ in licensed_attempts(result)] == ["not_found"] * 3
     assert all("holds no listing under this identity" in detail for _, detail in licensed_attempts(result))
     # A car missing from an active-inventory feed has not been observed to sell.
     assert "no active record" in result.message and "does not confirm a sale" in result.message
@@ -207,7 +210,7 @@ def test_lookup_that_received_nothing_is_not_reported_as_completed(monkeypatch):
 def test_lookup_that_received_other_cars_says_so(monkeypatch):
     stub_inventory(monkeypatch, {"vdp_url": [row(url="https://www.carmax.com/car/99999999", vin=OTHER_VIN, stock="99999999")]})
     statuses = licensed_attempts(recover(licensed()))
-    assert [status for status, _ in statuses] == ["not_found", "not_found"]
+    assert [status for status, _ in statuses] == ["not_found"] * 3
     assert "1 listings received, none of them this listing." in statuses[0][1]
 
 
@@ -217,6 +220,41 @@ def test_vin_lookup_counts_syndicated_copies_as_a_hit(monkeypatch):
     result = recover(licensed(), vin=VIN)
     assert result.recovery_status == "recovered"
     assert licensed_attempts(result)[0] == ("completed", "VIN lookup: 1 listings received, 1 matching this listing.")
+
+
+def test_expired_record_recovers_identity_but_never_a_current_price(monkeypatch):
+    """Active inventory drops a delisted car; the past-inventory endpoint still binds its identity."""
+    calls = stub_inventory(monkeypatch, {"past_vdp_url": [row(last_seen="2026-08-30T00:00:00Z")]})
+    monkeypatch.setattr(retrieval, "decode_vin", lambda vin, timeout=8: decode())
+    result = recover(licensed(decode_enabled=True))
+    assert calls[-1] == ("past_vdp_url", URL)
+    candidate = result.candidate
+    assert result.recovery_status == "recovered"
+    assert candidate.evidence["vin"].value == VIN
+    # The VIN decode identifies the car; the expired listing's own numbers stay in the past.
+    assert (candidate.make, candidate.model, candidate.year) == ("Bmw", "M2", 2017)
+    assert candidate.price is None and candidate.mileage is None
+    assert candidate.evidence["last_listed_price"].value == "$42,500 (2026-08-30T00:00:00Z)"
+    assert any(w.startswith("Licensed inventory holds only an expired record") for w in candidate.warnings)
+    assert "does not confirm a sale" in result.message
+    # An expired listing names a rooftop that no longer has the car.
+    assert candidate.dealer is None
+    # With no price, an MSRP is a percentage of nothing: the extra decode is not worth a call.
+    assert not any("NeoVIN" in a.detail for a in result.attempts)
+
+
+def test_active_inventory_hit_spends_no_past_inventory_call(monkeypatch):
+    calls = stub_inventory(monkeypatch, {"vdp_url": [row()], "past_vdp_url": [row()]})
+    assert recover(licensed()).recovery_status == "recovered"
+    assert calls == [("vdp_url", URL)]
+
+
+def test_past_inventory_lookup_can_be_switched_off(monkeypatch):
+    calls = stub_inventory(monkeypatch, {"past_vdp_url": [row()]})
+    settings = Settings(live_fetch_enabled=True, allowed_domains=("www.carmax.com",),
+                        marketcheck_api_key="test", marketcheck_past_enabled=False)
+    assert recover(settings).recovery_status == "not_found"
+    assert calls == [("vdp_url", URL), ("stock_no", STOCK)]
 
 
 def test_licensed_miss_is_named_when_search_then_fails(monkeypatch):
@@ -342,6 +380,17 @@ def test_inventory_request_keeps_key_out_of_errors_and_urls(monkeypatch):
     assert (params["vdp_url"], params["append_api_key"], params["nodedup"]) == (URL, "false", "true")
     with pytest.raises(ValueError):
         vehicle_data.inventory_search(settings, vin=VIN, vdp_url=URL)
+
+
+def test_past_inventory_uses_the_expired_endpoint_scoped_to_the_source(monkeypatch):
+    seen = []
+    mock_client(monkeypatch, lambda request: seen.append(request.url) or httpx.Response(200, json={"listings": []}))
+    settings = Settings(marketcheck_api_key="secret-key")
+    vehicle_data.inventory_search(settings, vdp_url=URL, source="carmax.com", past=True)
+    assert seen[0].path == "/v2/search/car/recents" and seen[0].params["source"] == "carmax.com"
+    # The endpoint refuses an unscoped search of 90 days of expired listings; never send one.
+    with pytest.raises(ValueError):
+        vehicle_data.inventory_search(settings, vdp_url=URL, past=True)
 
 
 def test_decoder_parses_registry_response(monkeypatch):

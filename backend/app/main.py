@@ -32,7 +32,7 @@ from . import usage
 
 settings = Settings.from_env()
 # Bump when the wire contract changes; the page warns when it talks to an older API process.
-API_REVISION = 8
+API_REVISION = 9
 REQUEST_ID_HEADER = "X-RevRank-Request-Id"
 # How often a long compare looks up from its worker thread to see whether the client is still there.
 POLL_SECONDS = 0.25
@@ -61,6 +61,7 @@ def health():
             "search_enabled": settings.search_enabled, "search_provider": settings.search_provider,
             "licensed_inventory_enabled": settings.marketcheck_enabled, "vin_decode_enabled": settings.vin_decode_enabled,
             "neovin_msrp_enabled": settings.neovin_msrp_enabled,
+            "past_inventory_enabled": settings.past_inventory_enabled,
             "dealer_signals_enabled": settings.dealer_signals_available,
             "compare_timeout_seconds": settings.compare_timeout_seconds,
             "usage": usage.summary(settings)}
