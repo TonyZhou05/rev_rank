@@ -41,6 +41,10 @@ See [API_CONTRACT.md](API_CONTRACT.md) for the shared JSON interface.
   Language-model output never replaces validated facts or arithmetic.
 - Raw external text is untrusted input, not executable code or agent instructions.
 - Credentials remain server-side. `.env`, `.local`, dependencies, and builds are ignored.
+- A compare is scoped to its request (`backend/app/cancel.py`): its deterministic and model
+  phases run in worker threads under one cancel token and time budget, an abandoned request
+  stops its own model work, and a spent budget answers with the deterministic report rather
+  than an invented analysis. Concurrent compares share no cancellation state.
 
 ## Agent ownership
 

@@ -19,6 +19,14 @@ and returns structured blocked/unsupported results. No market values are invente
 Without an LLM key reports are explicitly rules-based. Numeric arithmetic stays in
 code. Asking prices are not transactions; missing history is not clean history.
 
+`POST /api/compare` is request-scoped: one cancel token (`cancel.py`) carries the
+`REVRANK_COMPARE_TIMEOUT_SECONDS` deadline through the deterministic phase and the
+optional model work, which run in worker threads so the endpoint can watch for a
+client disconnect. An abandoned request starts no further model turn, tool call or
+provider request and saves nothing; a spent budget returns the deterministic report
+with the AI path reported unavailable or partial, never inferred. Nothing about a
+compare is module state, so concurrent compares cannot cancel or time out each other.
+
 ## Run and test
 
 From the repository root: `.venv/bin/python -m pytest backend/tests -q`.

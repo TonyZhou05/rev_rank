@@ -38,7 +38,7 @@ def scripted(turns):
     """Replays one assistant message per turn and records the tool results the model received."""
     seen = []
 
-    def chat(settings, messages, tools, timeout):
+    def chat(settings, messages, tools, timeout, token=None):
         seen.append([json.loads(m["content"]) for m in messages if m["role"] == "tool"])
         turn = turns[len(seen) - 1] if len(seen) <= len(turns) else []
         return {"role": "assistant", "content": "", "tool_calls": turn}

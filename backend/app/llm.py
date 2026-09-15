@@ -1,11 +1,14 @@
 """Optional structured assistance. Raw model prose never becomes report evidence."""
 import json
 import re
+import socket
+from typing import NoReturn
 from urllib.parse import urlsplit
 
 import httpx
 from pydantic import ValidationError
 
+from .cancel import Cancelled, CancelToken, budget, closing
 from .config import Settings
 from .extraction import distance, money, number
 from .models import Candidate, Evidence, Report, value_text
@@ -23,56 +26,85 @@ def check_endpoint(settings: Settings):
         raise LLMUnavailable("Invalid server-only model endpoint configuration.")
 
 
-def chat(settings: Settings, messages: list[dict], tools: list[dict], timeout: float) -> dict:
-    """One OpenAI-compatible chat completion with function tools; returns the assistant message."""
-    check_endpoint(settings)
+def abort(response: httpx.Response) -> None:
+    """Break a read that is blocked on the provider, from another thread.
+
+    httpx's own close() cannot touch a socket a worker thread is reading, so the connection is shut
+    down first: that read then fails at once instead of waiting out its timeout, and the provider
+    sees the request go away rather than finishing an answer nobody will read.
+    """
+    stream = response.extensions.get("network_stream")
+    raw = stream.get_extra_info("socket") if stream is not None else None
     try:
-        with httpx.Client(timeout=httpx.Timeout(max(1, timeout), connect=5), follow_redirects=False, trust_env=False) as client:
-            with client.stream("POST", settings.llm_base_url + "/chat/completions",
-                               headers={"Authorization": "Bearer " + settings.llm_api_key},
-                               json={"model": settings.llm_model, "temperature": 0, "max_tokens": 2500,
-                                     "messages": messages, "tools": tools}) as response:
+        if raw is not None:
+            raw.shutdown(socket.SHUT_RDWR)
+    finally:
+        response.close()
+
+
+def completion(settings: Settings, body: dict, timeout: float, limit: int, token: CancelToken | None) -> bytes:
+    """POST one chat completion and read its bounded body, abandoning it on cancel.
+
+    Every call builds its own client, so concurrent requests share no connection or model state.
+    The read stops at the first chunk after a cancel, and a cancel from the event loop aborts the
+    stream so a stalled read does not have to wait out its socket timeout.
+    """
+    seconds = budget(token, timeout)
+    with httpx.Client(timeout=httpx.Timeout(max(1.0, seconds), connect=min(5.0, seconds)),
+                      follow_redirects=False, trust_env=False) as client:
+        with client.stream("POST", settings.llm_base_url + "/chat/completions",
+                           headers={"Authorization": "Bearer " + settings.llm_api_key}, json=body) as response:
+            with closing(token, lambda: abort(response)):
                 response.raise_for_status()
                 chunks, size = [], 0
                 for chunk in response.iter_bytes():
+                    if token is not None:
+                        token.check()
                     size += len(chunk)
-                    if size > 256000:
+                    if size > limit:
                         raise LLMUnavailable("Model output exceeded limit.")
                     chunks.append(chunk)
-        message = json.loads(b"".join(chunks))["choices"][0]["message"]
+    return b"".join(chunks)
+
+
+def unavailable(token: CancelToken | None) -> NoReturn:
+    """A closed or timed-out stream reads as a transport error; report the cancel behind it."""
+    if token is not None and token.cancelled:
+        raise Cancelled(token.reason)
+    # Never expose response bodies, provider URLs, API keys or raw exception strings.
+    raise LLMUnavailable("Model response unavailable or invalid.")
+
+
+def chat(settings: Settings, messages: list[dict], tools: list[dict], timeout: float,
+         token: CancelToken | None = None) -> dict:
+    """One OpenAI-compatible chat completion with function tools; returns the assistant message."""
+    check_endpoint(settings)
+    try:
+        raw = completion(settings, {"model": settings.llm_model, "temperature": 0, "max_tokens": 2500,
+                                    "messages": messages, "tools": tools}, timeout, 256000, token)
+        message = json.loads(raw)["choices"][0]["message"]
         if not isinstance(message, dict):
             raise ValueError()
         return message
     except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError):
-        # Never expose response bodies, provider URLs, API keys or raw exception strings.
-        raise LLMUnavailable("Model response unavailable or invalid.")
+        unavailable(token)
 
 
-def request_json(settings: Settings, system: str, payload: dict) -> dict:
+def request_json(settings: Settings, system: str, payload: dict, token: CancelToken | None = None,
+                 timeout: float = 20) -> dict:
     check_endpoint(settings)
     try:
-        with httpx.Client(timeout=httpx.Timeout(20, connect=5), follow_redirects=False, trust_env=False) as client:
-            with client.stream("POST", settings.llm_base_url + "/chat/completions",
-                               headers={"Authorization": "Bearer " + settings.llm_api_key},
-                               json={"model": settings.llm_model, "temperature": 0,
-                                     "max_tokens": 1800, "response_format": {"type": "json_object"},
-                                     "messages": [{"role": "system", "content": system},
-                                                  {"role": "user", "content": json.dumps(payload)}]}) as response:
-                response.raise_for_status()
-                chunks, size = [], 0
-                for chunk in response.iter_bytes():
-                    size += len(chunk)
-                    if size > 128000:
-                        raise LLMUnavailable("Model output exceeded limit.")
-                    chunks.append(chunk)
-        result = json.loads(b"".join(chunks))["choices"][0]["message"]["content"]
-        value = json.loads(result)
+        raw = completion(settings, {"model": settings.llm_model, "temperature": 0,
+                                    "max_tokens": 1800, "response_format": {"type": "json_object"},
+                                    "messages": [{"role": "system", "content": system},
+                                                 {"role": "user", "content": json.dumps(payload)}]},
+                         timeout, 128000, token)
+        value = json.loads(json.loads(raw)["choices"][0]["message"]["content"])
         if not isinstance(value, dict):
             raise ValueError()
         return value
     except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError):
-        # Never expose response bodies, provider URLs, API keys or raw exception strings.
-        raise LLMUnavailable("Model response unavailable or invalid.")
+        unavailable(token)
 
 
 def assist_extraction(candidate: Candidate, text: str, settings: Settings) -> Candidate:
@@ -142,7 +174,7 @@ def assist_extraction(candidate: Candidate, text: str, settings: Settings) -> Ca
         return original
 
 
-def assist_report(report: Report, settings: Settings) -> Report:
+def assist_report(report: Report, settings: Settings, token: CancelToken | None = None) -> Report:
     if not settings.llm_enabled:
         return report
     try:
@@ -156,7 +188,7 @@ def assist_report(report: Report, settings: Settings) -> Report:
             "{candidate_id,field,value}]}. Include every finding exactly once, ordered by buyer relevance. "
             "Citations must be exact supplied facts. Do not generate new factual claims or numbers.",
             {"preferences": report.preferences.model_dump(),
-             "findings": [f.model_dump() for f in report.findings], "facts": facts})
+             "findings": [f.model_dump() for f in report.findings], "facts": facts}, token=token)
         order, citations = result.get("finding_order"), result.get("citations")
         if set(result) != {"finding_order", "citations"} or not isinstance(order, list) or not isinstance(citations, list):
             raise ValueError()

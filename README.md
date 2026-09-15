@@ -73,6 +73,10 @@ editing `.env`. Re-run the checks with `.venv/bin/python scripts/check_sources.p
   limits recovery to MarketCheck or to search, and shows this month's usage.
 - Without an AI key, extraction and reports use explicitly labeled rules-based
   analysis. The app does not pretend to have called an AI model.
+- One `POST /api/compare` is bounded by `REVRANK_COMPARE_TIMEOUT_SECONDS` (85s, just under the
+  page's own 90s limit) and stops within about 250ms of the page aborting the request. A spent
+  budget still returns the deterministic comparison, with the AI path reported unavailable rather
+  than invented. Each call is logged under one `X-RevRank-Request-Id`, also returned as a header.
 - CarMax (Akamai) and Carvana (Cloudflare challenge) deny RevRank's fetcher on
   every page, not just listings. RevRank does not evade bot managers. After a
   blocked import it can recover the vehicle from other sources. Licensed inventory
