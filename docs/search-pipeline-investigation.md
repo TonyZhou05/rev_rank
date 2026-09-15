@@ -1,9 +1,60 @@
 # Search-assisted listing recovery: feasibility investigation
 
 Investigated 2026-09-13. The original research and proposed design are below. The
-follow-up section records the 403 diagnosis and alternative channels. The search,
-licensed-inventory and VIN-decode adapters are now implemented behind opt-in settings.
-Live provider coverage is still unmeasured: no search or MarketCheck key is configured.
+follow-up sections record the 403 diagnosis and alternative channels, then a live
+recovery failure measured against the deployed app. The search, licensed-inventory
+and VIN-decode adapters are now implemented behind opt-in settings.
+
+## Follow-up (2026-09-15 UTC): a CarMax URL that no channel could recover
+
+Reported against https://revrank.onrender.com: importing
+`https://www.carmax.com/car/70199979` ended with the trail *Direct · blocked, Licensed ·
+completed, Licensed · completed, Search · failed, Recovery · failed*. Two licensed
+lookups reported as completed, followed by an overall failure, read as a bug in how
+recovery combines its sources. It was not. Each leg was isolated with the recovery-source
+switch (2 MarketCheck calls, 1 Tavily call):
+
+| Leg | Measured result |
+| --- | --- |
+| Direct | `robots.txt` itself returns HTTP 403 from the Render datacenter range, so the site's rules could not be read and nothing was fetched. Same Akamai classification as 2026-09-13, now applied to `/robots.txt` as well. |
+| Licensed, `vdp_url=https://www.carmax.com/car/70199979` | HTTP 200, **0 listings**. |
+| Licensed, `stock_no=70199979` | HTTP 200, **0 listings** — an index-wide lookup, not scoped to CarMax. |
+| Search (Tavily) | **HTTP 432**, Tavily's "plan limit exceeded": the account's credits are spent. No search ran. |
+
+What this rules out:
+
+- **Not a URL-pattern bug.** `normalize_input_url`, `identity_url` and `listing_id` return
+  `https://www.carmax.com/car/70199979` and `70199979`, and the 2026-09-13 probe recorded
+  `vdp_url=https://www.carmax.com/car/70181882` matching one CarMax row exactly. The same
+  pattern works; this car is not in the provider's index.
+- **Not a licensed-coverage-of-CarMax problem.** MarketCheck documents `carmax.com` as a
+  source and returned a CarMax row two days earlier.
+- **Not a sale.** `/v2/search/car/active` holds active inventory only, so a car that stops
+  being listed drops out of it. Nothing here observed a transaction.
+
+What was actually wrong in RevRank, and is fixed here:
+
+- `licensed_records()` labelled every lookup that got an HTTP 200 as `completed`, including
+  the two that returned nothing. Status now reflects what a lookup produced: `not_found`
+  when the provider held no row, or held rows that are not this listing. The detail says
+  which of the two happened.
+- The outcome message named only the search failure, so a licensed miss was invisible unless
+  the buyer opened "Import details". In `auto` mode the licensed miss is now stated first.
+- `Search provider returned HTTP 432.` said nothing an operator could act on. Refusal codes
+  (401, 403, 429, 432 for search; 401, 403, 422, 429 for MarketCheck) now carry their meaning,
+  and the recovery message repeats it instead of swallowing it.
+- The page's paid-provider meter read "Tavily 6/1000 credits" while Tavily was refusing every
+  call. `usage.py` counts only the calls this checkout sent, and on Render `.local/usage.json`
+  is on the ephemeral filesystem, so every deploy resets it to zero. The meter now says so on
+  hover. The provider's own limit is the one that refuses a call.
+
+Still open: nothing recovers a CarMax listing that has left active inventory. The candidate
+channel is MarketCheck's past-inventory endpoint, `/v2/search/car/recents` (last 90 days),
+which would bind the VIN and let the existing historical-record path show a dated
+`last_listed_price` rather than a current price. It is not implemented here: it adds a fourth
+paid call per import, above the "at most 3" budget recorded in `AGENTS.md`, and it needs a
+live probe of a known-delisted stock number to confirm the endpoint carries CarMax rows at
+all. That probe is 1 MarketCheck call and needs a key the cloud environment does not have.
 
 ## Follow-up (2026-09-13 UTC): why the pages are denied and which channels work
 

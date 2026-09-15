@@ -17,8 +17,11 @@ without a live call.**
 - `scripts/eval_imports.py` is a dry run unless given `--spend`. Narrow it first with `--only`,
   `--repeat 1` and `--source marketcheck|search`.
 - The backend meters paid calls in `.local/usage.json` and refuses them at `REVRANK_MARKETCHECK_MONTHLY_CALLS`
-  (default 500) and `REVRANK_SEARCH_MONTHLY_CREDITS` (default 1000). It counts only this checkout's
-  calls; `/api/health` reports the counts. Never reset the file to get around the limit.
+ (default 500) and `REVRANK_SEARCH_MONTHLY_CREDITS` (default 1000). It counts only this checkout's
+ calls; `/api/health` reports the counts. Never reset the file to get around the limit.
+- Do not read that meter as the remaining quota. On Render `.local/` is ephemeral, so each deploy
+ resets it: on 2026-09-15 it reported 6/1000 Tavily credits while Tavily refused every call with
+ HTTP 432 (plan limit exceeded). The provider's own refusal is the authoritative signal.
 - Tavily crawl cannot read carmax.com or carvana.com: it returned no pages on 2026-09-13. Don't retry it.
 - Never print, log or commit API keys. MarketCheck sends its key as a query parameter, so never echo
   request URLs.
