@@ -75,18 +75,43 @@ def unavailable(token: CancelToken | None) -> NoReturn:
     raise LLMUnavailable("Model response unavailable or invalid.")
 
 
+def _tool_names(tools: list[dict]) -> set[str]:
+    return {str(t.get("function", {}).get("name") or "") for t in tools if isinstance(t, dict)}
+
+
 def chat(settings: Settings, messages: list[dict], tools: list[dict], timeout: float,
          token: CancelToken | None = None) -> dict:
     """One OpenAI-compatible chat completion with function tools; returns the assistant message."""
     check_endpoint(settings)
+    body = {"model": settings.llm_model, "temperature": 0, "max_tokens": 4096,
+            "messages": messages, "tools": tools}
+    host = settings.llm_endpoint_host or ""
+    names = _tool_names(tools)
+    # deepseek-flash (V4.1) thinks by default. Thinking + tool_choice=auto often writes prose
+    # instead of calling add_finding; thinking also rejects tool_choice=required with HTTP 400.
+    if "deepseek.com" in host:
+        body["thinking"] = {"type": "disabled"}
+        if "add_finding" in names and not names & {"get_vehicle_facts", "get_recalls", "get_complaints",
+                                                   "get_safety_rating", "get_comparison_metrics"}:
+            body["tool_choice"] = "required"
     try:
-        raw = completion(settings, {"model": settings.llm_model, "temperature": 0, "max_tokens": 2500,
-                                    "messages": messages, "tools": tools}, timeout, 256000, token)
+        raw = completion(settings, body, timeout, 256000, token)
         message = json.loads(raw)["choices"][0]["message"]
         if not isinstance(message, dict):
             raise ValueError()
         return message
     except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError):
+        if "thinking" in body or "tool_choice" in body:
+            body.pop("thinking", None)
+            body.pop("tool_choice", None)
+            try:
+                raw = completion(settings, body, timeout, 256000, token)
+                message = json.loads(raw)["choices"][0]["message"]
+                if not isinstance(message, dict):
+                    raise ValueError()
+                return message
+            except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError):
+                unavailable(token)
         unavailable(token)
 
 

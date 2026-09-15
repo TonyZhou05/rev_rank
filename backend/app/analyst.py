@@ -9,6 +9,7 @@ from collections import Counter
 from datetime import datetime
 from itertools import combinations
 import json
+import logging
 import re
 import time
 from urllib.parse import quote
@@ -25,6 +26,7 @@ LABELS = "ABC"
 FACT_FIELDS = ("year", "make", "model", "trim", "price", "currency", "mileage", "mileage_unit", "transmission",
                "engine", "drivetrain", "body", "fuel_type", "location", "features", "history")
 NHTSA = "https://api.nhtsa.gov"
+log = logging.getLogger("revrank.analyst")
 MAX_TURNS, MAX_TOOL_CALLS, BUDGET_SECONDS = 24, 60, 170
 # How often finish may be turned away while nothing is recorded. A model that appends finish to
 # every batch still gets turns to record its findings, and one that only ever calls it still stops.
@@ -65,8 +67,8 @@ Process:
 5. Call set_ranking once: order every car best-first for this buyer, with one cited reason per car. Lead with the
    buyer's stated constraints (the M.*.fit results) and use the other metrics to break ties. A rejected ranking
    tells you why; fix and retry it.
-6. Call finish only after add_finding has accepted a verdict. Never attach finish to an
-   evidence-gathering turn, and never call finish instead of recording.
+6. After the tools return, you MUST record with add_finding. Do not write the analysis as
+   assistant text, and do not call finish until add_finding has accepted a verdict.
 
 What makes a good flag:
 - Be specific about THIS car and say why it matters to THIS buyer. Name the figure, the option, the campaign or the
@@ -87,7 +89,7 @@ What makes a good flag:
 - If a car genuinely has fewer than five of either, record fewer. Padding with vague flags is worse than silence.
 
 Rules for add_finding:
-- citations lists the ids of the tool results that support the text, e.g. "A.price", "M.price_gap.AB", "B.recall.21V421000".
+- citations is a comma-separated list of tool-result ids, e.g. "A.price, M.price_gap.AB".
 - Copy numbers exactly as they appear in the cited results. Never compute new numbers, percentages or estimates; use M.* metrics for differences.
 - No outside knowledge: no reliability reputations, specifications, market values or opinions the tools did not return.
 - Recalls and complaints are model-year records, not proof about this specific car; say so when you use them.
@@ -109,15 +111,15 @@ def tool_schemas(labels: list[str]) -> list[dict]:
         tool("get_comparison_metrics", "Deterministic comparisons: price and mileage gaps, age, mileage per year, "
              "budget, and how each car reads against the buyer's stated constraints.",
              {"type": "object", "properties": {}}),
-        tool("add_finding", "Record one cited statement. Returns ok, or the reason it was rejected.", {
+        tool("add_finding", "Record one cited statement. This is the only way a verdict, flag or comparison "
+             "appears in the report. Returns ok, or the reason it was rejected.", {
             "type": "object", "properties": {
                 "kind": {"type": "string", "enum": ["verdict", "green_flag", "red_flag", "comparison", "question"],
                          "description": "green_flag and red_flag are per-car; up to 5 of each."},
                 "car": {"type": "string", "enum": labels + ["all"], "description": "The car it is about; 'all' for verdict/comparison."},
                 "text": {"type": "string", "description": "One or two specific sentences (verdict: up to 4)."},
-                "citations": {"type": "array", "items": {"type": "string"}, "description": "Ids from tool results."},
-                "topic": {"type": "string", "description": "Comparison topic, e.g. price, mileage, safety."},
-                "favors": {"type": "string", "enum": labels + ["none"], "description": "Comparison only: which car the evidence favors."}},
+                "citations": {"type": "string",
+                              "description": "Comma-separated ids from tool results, e.g. A.price, M.price_gap.AB"}},
             "required": ["kind", "car", "text", "citations"]}),
         tool("set_ranking", "Rank the shortlist best-first for this buyer, with one cited reason per car. "
              "Returns ok, or the reason the whole ranking was rejected.", {
@@ -134,6 +136,33 @@ def tool_schemas(labels: list[str]) -> list[dict]:
         tool("finish", "Finish after add_finding has accepted a verdict. Do not call this while still fetching evidence.",
              {"type": "object", "properties": {}}),
     ]
+
+
+def tools_for(ws: "Workspace", labels: list[str]) -> list[dict]:
+    """Offer only the tools this phase can use, so flash cannot skip add_finding for finish.
+
+    Evidence tools are a one-field `car` argument; finish is empty. add_finding is the only
+    complex schema. While those easy tools are listed, deepseek-flash calls them and never
+    records. After evidence exists, only recording tools are listed; finish returns once a
+    verdict has been accepted.
+    """
+    by_name = {t["function"]["name"]: t for t in tool_schemas(labels)}
+    if not fetched_evidence(ws):
+        return [t for t in tool_schemas(labels) if t["function"]["name"] != "finish"]
+    if not verdict_recorded(ws):
+        return [by_name["add_finding"], by_name["set_ranking"]]
+    return [by_name["add_finding"], by_name["set_ranking"], by_name["finish"]]
+
+
+def remember_assistant(message: dict, calls: list[dict] | None = None) -> dict:
+    """Keep reasoning_content: V4 thinking-mode turns 400 if the next request drops it."""
+    out = {"role": "assistant", "content": str(message.get("content") or "")[:4000]}
+    if calls:
+        out["tool_calls"] = calls
+    reason = message.get("reasoning_content")
+    if isinstance(reason, str) and reason.strip():
+        out["reasoning_content"] = reason[:20000]
+    return out
 
 
 def numbers(text: str) -> set[float]:
@@ -647,7 +676,6 @@ def analyze(report: Report, settings: Settings, token: CancelToken | None = None
         return AIAnalysis(status="unavailable", message="AI comparison needs at least two distinct cars.")
     ws = Workspace(report, token)
     labels = list(ws.cars)
-    tools = tool_schemas(labels)
     messages = [{"role": "system", "content": SYSTEM},
                 {"role": "user", "content": json.dumps({"cars": {label: ws.cars[label].title for label in labels},
                                                         "buyer_preferences": ws.buyer, "buyer_preferences_id": "P.buyer"})}]
@@ -662,7 +690,8 @@ def analyze(report: Report, settings: Settings, token: CancelToken | None = None
                 # No further model turn is started; whatever passed the evidence checks still stands.
                 stopped = True
                 break
-            message = chat(settings, messages, tools, timeout=min(120, remaining), token=token)
+            active = tools_for(ws, labels)
+            message = chat(settings, messages, active, timeout=min(120, remaining), token=token)
             calls = [c for c in (message.get("tool_calls") or []) if isinstance(c, dict) and isinstance(c.get("function"), dict)]
             if not calls:
                 if verdict_recorded(ws):
@@ -673,19 +702,21 @@ def analyze(report: Report, settings: Settings, token: CancelToken | None = None
                         break
                     recording_nudge = True
                     nudged = True
-                    messages += [{"role": "assistant", "content": str(message.get("content") or "")[:4000]},
+                    messages += [remember_assistant(message),
                                  {"role": "user", "content": RECORD_FINDINGS}]
                     continue
                 if nudged:
                     break
                 nudged = True
-                messages += [{"role": "assistant", "content": str(message.get("content") or "")[:4000]},
+                messages += [remember_assistant(message),
                              {"role": "user", "content": "Use the tools: fetch evidence, record each statement with add_finding, then call finish."}]
                 continue
             calls = [{"id": str(c.get("id") or f"call_{turn}_{i}"), "type": "function",
                       "function": {"name": str(c["function"].get("name", "")), "arguments": c["function"].get("arguments") or "{}"}}
                      for i, c in enumerate(calls[:40])]
-            messages.append({"role": "assistant", "content": str(message.get("content") or ""), "tool_calls": calls})
+            log.info("analyst turn=%s offered=%s called=%s", turn,
+                     [t["function"]["name"] for t in active], [c["function"]["name"] for c in calls])
+            messages.append(remember_assistant(message, calls))
             # Run evidence and recording tools before evaluating finish so a batch that fetches
             # then calls finish is judged on what it just gathered, not on the previous turn.
             results: dict[str, dict] = {}
@@ -706,7 +737,10 @@ def analyze(report: Report, settings: Settings, token: CancelToken | None = None
             for call in calls:
                 messages.append({"role": "tool", "tool_call_id": call["id"],
                                  "content": json.dumps(results[call["id"]], default=str)[:7000]})
-            if finish_result is not None and not finish_result.get("ok") and fetched_evidence(ws) and not recording_nudge:
+            if gathered and not verdict_recorded(ws) and not recording_nudge:
+                recording_nudge = True
+                messages.append({"role": "user", "content": RECORD_FINDINGS})
+            elif finish_result is not None and not finish_result.get("ok") and fetched_evidence(ws) and not recording_nudge:
                 recording_nudge = True
                 messages.append({"role": "user", "content": RECORD_FINDINGS})
             if finished:

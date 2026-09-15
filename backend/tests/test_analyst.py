@@ -141,6 +141,70 @@ def test_a_model_that_only_calls_finish_still_stops(report, monkeypatch):
     assert len(seen) == turns and analysis.status == "unavailable"
 
 
+def test_deepseek_flash_records_once_easy_tools_are_no_longer_listed(report, monkeypatch):
+    """Live cause past the finish-gate: deepseek-flash calls one-arg evidence tools (and
+    finish, if listed) and never add_finding while those easy tools are in the same list.
+
+    After the gather, the loop must offer only recording tools. A flash-like stub that
+    refuses add_finding until then produces a model-written verdict, not a restatement.
+    """
+    monkeypatch.setattr(analyst, "nhtsa", lambda *args, **kwargs: {"results": [], "Results": []})
+    offered = []
+
+    def chat(settings, messages, tools, timeout, token=None):
+        names = [t["function"]["name"] for t in tools]
+        offered.append(names)
+        if any(name in analyst.EVIDENCE_TOOLS for name in names):
+            calls = nine_evidence()
+            if "finish" in names:
+                calls.append(call("finish"))
+            return {"role": "assistant", "content": "", "tool_calls": calls}
+        if "finish" in names:
+            return {"role": "assistant", "content": "", "tool_calls": [call("finish")]}
+        if "add_finding" in names:
+            return {"role": "assistant", "content": "", "tool_calls": [
+                call("add_finding", kind="verdict", car="all", citations="M.price_gap.AB",
+                     text="Car B is 3,496 USD cheaper than Car A.")]}
+        return {"role": "assistant", "content": "Here is the comparison.", "tool_calls": []}
+
+    monkeypatch.setattr(analyst, "chat", chat)
+    analysis = analyst.analyze(report, SETTINGS)
+    assert analysis.status == "complete"
+    assert analysis.verdict.text.startswith("2022 BMW M4 is 3,496 USD cheaper")
+    assert analyst.RESTATED not in analysis.message
+    assert analysis.dropped_claims == 0 and analysis.tool_calls == 10
+    assert "get_vehicle_facts" in offered[0] and "add_finding" in offered[0]
+    assert "finish" not in offered[0]
+    assert offered[1] == ["add_finding", "set_ranking"]
+
+
+def test_add_finding_accepts_a_comma_separated_citation_string(report):
+    ws = analyst.Workspace(report)
+    ws.run("get_vehicle_facts", {"car": "A"})
+    ws.run("get_vehicle_facts", {"car": "B"})
+    ws.run("get_comparison_metrics", {})
+    result = ws.add_finding({"kind": "verdict", "car": "all", "citations": "M.price_gap.AB, P.buyer",
+                             "text": "Car B is 3,496 USD cheaper than Car A and both fit the 70,000 budget."})
+    assert result == {"ok": True}
+    schema = next(t for t in analyst.tool_schemas(["A", "B"]) if t["function"]["name"] == "add_finding")
+    assert schema["function"]["parameters"]["properties"]["citations"]["type"] == "string"
+
+
+def test_reasoning_content_is_echoed_on_the_next_turn(report, monkeypatch):
+    forwarded = []
+
+    def chat(settings, messages, tools, timeout, token=None):
+        forwarded.append([m.get("reasoning_content") for m in messages if m.get("role") == "assistant"])
+        if len(forwarded) == 1:
+            return {"role": "assistant", "content": "", "reasoning_content": "think-1",
+                    "tool_calls": [call("get_vehicle_facts", car="A")]}
+        return {"role": "assistant", "content": "", "tool_calls": []}
+
+    monkeypatch.setattr(analyst, "chat", chat)
+    analyst.analyze(report, SETTINGS)
+    assert "think-1" in forwarded[1]
+
+
 def test_nine_evidence_tools_then_add_finding_keeps_the_model_verdict(report, monkeypatch):
     """A model that records on the turn after the gathering-batch nudge still wins over restatement."""
     monkeypatch.setattr(analyst, "nhtsa", lambda *args, **kwargs: {"results": [], "Results": []})
