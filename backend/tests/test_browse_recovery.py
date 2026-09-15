@@ -141,14 +141,24 @@ def test_unknown_host_is_blocked_before_playwright(monkeypatch):
 
 def test_dealer_inventory_vin_vdp_is_allowlisted(monkeypatch):
     launched = []
+    robots_http = []
     allowed, reason = browse_vdp_allowed(DEALER_VDP)
     assert allowed is True and reason == ""
     # VIN on a non-inventory path, and marketplace listing-id schemes, still work.
     assert browse_vdp_allowed(f"https://www.example-dealer.com/vehicle/{BMW_VIN}")[0] is True
     assert browse_vdp_allowed(URL)[0] is True
     assert browse_vdp_allowed("https://www.carmax.com/cars/bmw")[0] is False
-    # Do not stub robots_decision: the live miss was that check_robots → request_once
-    # raises Direct `unsupported` and browse refused with the allowlist paste hint.
+    # Do not stub robots_decision. Live RCA: check_robots → request_once raises Direct
+    # `unsupported` for /robots.txt; browse must proceed, not refuse with that copy.
+    from backend.app import fetch as fetch_mod
+
+    real_once = fetch_mod.request_once
+
+    def tracking_once(url, settings, deadline, limit):
+        robots_http.append(url)
+        return real_once(url, settings, deadline, limit)
+
+    monkeypatch.setattr(fetch_mod, "request_once", tracking_once)
     monkeypatch.setattr(browse, "_playwright_open",
                         lambda url, host, token, timeout: launched.append(url) or Page(text=DEALER_VDP_HTML, url=url))
     settings = Settings(live_fetch_enabled=True, browser_recovery_enabled=True)
@@ -156,6 +166,19 @@ def test_dealer_inventory_vin_vdp_is_allowlisted(monkeypatch):
     assert source_for("www.bmwbuffalo.com", settings)["status"] == "unsupported"
     page = browse.browse_listing(DEALER_VDP, settings)
     assert launched == [DEALER_VDP] and "47,995" in page.text
+    assert robots_http and all(str(url).rstrip("/").endswith("robots.txt") for url in robots_http)
+
+
+def test_robots_decision_proceeds_on_direct_unsupported():
+    """request_once raises unsupported before any HTTP; browse must not map that to refuse."""
+    import time
+    settings = Settings(live_fetch_enabled=True, browser_recovery_enabled=True)
+    allowed, note = browse.robots_decision(DEALER_VDP, settings, time.monotonic() + 10)
+    assert allowed is True
+    restricted = browse.robots_decision(
+        f"https://www.cargurus.com/Cars/inventorylisting/{BMW_VIN}",
+        settings, time.monotonic() + 10)
+    assert restricted == (False, source_for("www.cargurus.com", settings)["reason"])
 
 
 def test_direct_stays_unsupported_for_indie_dealer_host():
