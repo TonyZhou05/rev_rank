@@ -60,7 +60,9 @@ editing `.env`. Re-run the checks with `.venv/bin/python scripts/check_sources.p
   (`backend/app/analyst.py`) gets facts only through tools: reviewed listing fields,
   NHTSA recalls, complaints and 5-Star ratings, and RevRank's own calculations. A
   statement is kept only if it cites tool results from that run and every number in it
-  appears in them; unsupported statements are dropped and counted. The same gate covers
+  appears in them; unsupported statements are dropped and counted. When the model records
+  nothing usable, the report copies fetched tool results into per-car flags, year/spec
+  comparisons and seller questions rather than leaving those sections empty. The same gate covers
   the shortlist re-rank: an order is shown only when every position cites its evidence,
   otherwise the deterministic constraint-fit order stands. Small local models (for
   example 3B) mostly fail these checks, so use a capable hosted model.
