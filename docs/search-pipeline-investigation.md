@@ -48,13 +48,38 @@ What was actually wrong in RevRank, and is fixed here:
   is on the ephemeral filesystem, so every deploy resets it to zero. The meter now says so on
   hover. The provider's own limit is the one that refuses a call.
 
-Still open: nothing recovers a CarMax listing that has left active inventory. The candidate
-channel is MarketCheck's past-inventory endpoint, `/v2/search/car/recents` (last 90 days),
-which would bind the VIN and let the existing historical-record path show a dated
-`last_listed_price` rather than a current price. It is not implemented here: it adds a fourth
-paid call per import, above the "at most 3" budget recorded in `AGENTS.md`, and it needs a
-live probe of a known-delisted stock number to confirm the endpoint carries CarMax rows at
-all. That probe is 1 MarketCheck call and needs a key the cloud environment does not have.
+A second probe against the same URL, run independently with the account key, widened the
+licensed leg and agreed: `vdp_url` with and without `www` on `/active` → `num_found=0`;
+`stock_no=70199979` with and without `source=carmax.com` → `num_found=0`; and
+`/v2/search/car/all` → HTTP 404, since no such endpoint exists.
+
+**Is the car sold, or was it never in MarketCheck?** Nothing above can tell the two apart, and
+neither can the web: the Wayback availability API reports no snapshot of the URL ever, CarMax
+returns 403 to any request from here, and a search for the stock number finds no CarMax page.
+The one channel that distinguishes them is MarketCheck's past-inventory endpoint, and RevRank
+now asks it — see below. If it holds the row, the car was listed and has since expired; if it
+does not, MarketCheck never carried this listing.
+
+**Expired-listing recovery, implemented here.** `/v2/search/car/recents` covers expired listings
+from the last 90 days and takes the same `vdp_url` and `stock_no` filters as `/active`. Its one
+extra requirement is a scope parameter, and `source` — the listing's own website — satisfies it.
+Recovery now spends one scoped call there when every active lookup came back empty, which is an
+import that would otherwise recover nothing. An expired row binds the VIN, which unlocks the free
+NHTSA decode for year/make/model, and its price and mileage stay in the past: `Record(historical=True)`
+keeps them out of the candidate's current fields and routes the price to `last_listed_price`. The
+endpoint also publishes MarketCheck's own *inferred* sales; RevRank neither reads nor repeats that
+inference, because a listing leaving the market is not evidence that it sold.
+
+Still unverified against the live API: whether `source` + `vdp_url` is accepted on `/recents`, and
+whether CarMax rows appear there. One MarketCheck call settles it, against any CarMax stock number
+known to have been listed and then delisted:
+
+```sh
+curl -s "https://api.marketcheck.com/v2/search/car/recents?api_key=$MC_KEY&source=carmax.com&vdp_url=https://www.carmax.com/car/70199979&nodedup=true&append_api_key=false" | python3 -m json.tool | head -40
+```
+
+If it is rejected, the attempt is recorded as `licensed · failed` with the provider's reason and
+recovery carries on to search exactly as before; nothing regresses.
 
 ## Follow-up (2026-09-13 UTC): why the pages are denied and which channels work
 
