@@ -82,6 +82,7 @@ export function provenance(c: Candidate, field: string): Provenance | null {
   if (!evidence) return null;
   const source = evidence.source;
   if (evidence.status === 'user_confirmed') return { label: 'You', tone: 'user', source };
+  if (evidence.status === 'seller_claim') return { label: 'Seller claim', tone: 'listing', source };
   if (source.startsWith('NHTSA vPIC')) return { label: 'NHTSA', tone: 'registry', source };
   if (source.startsWith('MarketCheck NeoVIN')) return { label: field === 'msrp' ? 'Factory MSRP · NeoVIN' : 'NeoVIN', tone: 'licensed', source };
   if (source.startsWith('Inferred from source')) return { label: 'Inferred', tone: 'inferred', source };
