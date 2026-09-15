@@ -201,3 +201,5 @@
 @media(max-width:900px){
   .constraint-mobile{position:sticky;top:0;z-index:5}
 }
+
+.ai-timeout-note{display:flex;gap:8px;align-items:flex-start;margin:0 0 14px;padding:12px 14px;background:#fff8e5;border:1px solid #ead59a;border-radius:10px;color:#73570c;font-size:13px}

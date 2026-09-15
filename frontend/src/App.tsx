@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ArrowRight, Check, CircleAlert, FileText, Gauge, Link2, LoaderCircle, Pencil, Plus, RefreshCw, RotateCcw, Sparkles, X } from 'lucide-react';
-import { api, apiLog, API_REVISION, ApiError, errorMessage } from './api';
+import { api, apiLog, API_REVISION, ApiError, compareClientTimeoutMs, errorMessage } from './api';
 import { ApiInspector, JsonView } from './ApiInspector';
 import type { Candidate, Health, ImportSlot, Preferences, RecoverySource, Report } from './types';
 import { Review } from './Review';
@@ -113,7 +113,7 @@ export default function App() {
     compareAbort.current = ac;
     setBusy(true); setNotice(''); setCompareError(null); setBuildSlow(false);
     try {
-      const remote = await api.compare(candidates, preferences, ac.signal);
+      const remote = await api.compare(candidates, preferences, ac.signal, compareClientTimeoutMs(health?.compare_timeout_seconds));
       // Keep the MSRP this page holds if the backend omits it on the way back, with its own evidence:
       // a value the buyer typed stays "you entered", a VIN-decoded one keeps the NeoVIN source.
       const local = new Map(candidates.map(c => [c.id, c]));
@@ -136,8 +136,14 @@ export default function App() {
       const makes = new Set(merged.map(c => (c.make ?? '').trim().toLowerCase()));
       const models = new Set(merged.map(c => (c.model ?? '').trim().toLowerCase()));
       const cross = remote.cross_model ?? (merged.some(c => !c.make || !c.model) || makes.size > 1 || models.size > 1);
-      setReport({ ...remote, candidates: merged, cross_model: cross });
+      const next = { ...remote, candidates: merged, cross_model: cross };
+      setReport(next);
       setStep('report');
+      const aiMsg = next.ai_analysis?.message?.trim();
+      if (aiMsg && (next.ai_analysis?.status === 'unavailable' || next.ai_analysis?.status === 'partial')
+          && /time limit|timed out|stopped at the server/i.test(aiMsg)) {
+        setNotice(aiMsg);
+      }
     }
     catch (error) {
       const msg = errorMessage(error);
