@@ -95,9 +95,15 @@ as `compare_timeout_seconds`, so the page can align its own limit.
 - Concurrent compares share no cancellation state, model client or connection: each call owns its
   token and works on its own copy of the report.
 
-Abort detection depends on the disconnect reaching the API process, which a local run and a direct
-uvicorn deployment both do. Behind a proxy that holds the upstream connection open after the browser
-leaves, the time limit is the backstop rather than the abort.
+The page needs no request header for any of this: the id is generated per call server-side, and the
+abort is the HTTP disconnect itself.
+
+Abort detection depends on the disconnect reaching the API process. Uvicorn serving the built page
+delivers it directly. An intermediate proxy may not: Vite's dev proxy keeps the upstream request open
+when the browser aborts, because the proxy it bundles only reacts to a Node event that stops firing
+once the request body has arrived, so `frontend/vite.config.ts` forwards the abort explicitly. Where
+a proxy cannot be taught that, the time limit is the backstop rather than the abort, which is why the
+server enforces its own budget instead of trusting the disconnect.
 
 ### ImportResponse
 
