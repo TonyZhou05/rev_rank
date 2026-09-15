@@ -63,9 +63,17 @@ Reddit), marketplaces, social networks, directories and wikis.
 
 Every signal carries the four things needed to attribute it: the **quote** (a capped provider
 snippet), the **source** (page title and host), the **date** (or an explicit "undated") and the
-**URL**. It also carries a `nature` read from its own wording — `action` for a settlement, order or
-licence action, `allegation` for a filed suit, complaint or investigation, `unclear` otherwise — and
-the UI labels that distinction rather than collapsing both into one word.
+**URL**. Each *flag* repeats that attribution underneath its own sentence, so a reader never has to
+take a flag on trust or go hunting for what it was built from. A signal also carries a `nature` read
+from its own wording — `action` for a settlement, order or licence action, `allegation` for a filed
+suit, complaint or investigation, `unclear` otherwise — and the UI labels that distinction rather
+than collapsing both into one word.
+
+Two things the feature deliberately does not do to a shortlist. A candidate with no dealer record —
+a private sale, a pasted listing, a synthetic example — gets no block and triggers no search, because
+searching a private seller's name is not this feature. And no dealer signal is ever registered as
+analyst evidence, so no shortlist position, metric or filter can move on a dealer's record; a
+regression test asserts the analyst's citable sources contain none of these ids.
 
 The guardrails are structural, not prompt-deep:
 

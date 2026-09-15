@@ -169,6 +169,11 @@
 .dealer-nature.action{background:#fdeceb;color:#8f3b34}
 .dealer-nature.allegation{background:#fff4d5;color:#73570c}
 .dealer-signal-meta{display:block;margin-top:2px;font-size:11px;color:#8896a5}
+/* Each flag carries its own attribution, so quote, source, date and link sit under the sentence. */
+.dealer-flag-sources{display:block;margin-top:5px;padding-left:8px;border-left:2px solid #e3e9ef}
+.dealer-flag-source+.dealer-flag-source{margin-top:5px}
+.dealer-flag-source{display:block}
+.dealer-flag-quote{display:block;font-size:11.5px;font-style:italic;color:#52677e;line-height:1.4}
 .dealer-signal-excerpt{display:block;margin-top:3px;font-style:italic;color:#52677e}
 /* A dealer citation points at the excerpt list in the same card, so it is a label, not a control. */
 .cite.static,.cite.static:hover{cursor:default;background:#e8eef3;color:#4a5f75}

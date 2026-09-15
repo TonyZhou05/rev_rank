@@ -3,7 +3,7 @@ import { Check, CircleAlert, LoaderCircle, Sparkles } from 'lucide-react';
 import { allSame, comparable, constraintMetrics, constraintTone, delta, isCrossModel, metric, mileageValue, msrpNeoVinKind, msrpOrigin, msrpPctDelta, msrpSourceNote, msrpValue, mustHaveMetrics, numberIn, pctOfMsrp, pctOfMsrpText, priceValue, sharedAnnual, tradeOff, type DeltaKind } from './compare';
 import { ConstraintPanel } from './ConstraintPanel';
 import { SourceTable } from './Review';
-import type { AIAnalysis, Candidate, Claim, DealerInfo, DealerSignals, NHTSASafetyData, Preferences, Report, SourceRef } from './types';
+import type { AIAnalysis, Candidate, Claim, DealerInfo, DealerSignal, DealerSignals, NHTSASafetyData, Preferences, Report, SourceRef } from './types';
 import { carName, dateLabel, hostOf, money, safeUrl, unresolvedConflicts } from './utils';
 
 interface Row {
@@ -419,12 +419,35 @@ const SIGNAL_NATURES: Record<string, string> = {
   action: 'Concluded action', allegation: 'Allegation', unclear: 'Unclear from the excerpt',
 };
 
-// A dealer flag is only ever a reading of the excerpts listed under it, so its citation numbers
-// point into that same card's list rather than into the vehicle analysis sources.
-function SignalCites({ claim, index }: { claim: Claim; index: Map<string, number> }) {
-  const shown = claim.citations.filter(id => index.has(id));
+// A dealer flag is only ever a reading of the excerpts listed under it, so it carries its own
+// attribution: the numbered chips point into that card's excerpt list, and under the sentence sits
+// the quote, source, date and link for each excerpt it used. A reader never has to take the flag on
+// trust or go hunting for what it was built from.
+function SignalCites({ claim, index, byId }: {
+  claim: Claim; index: Map<string, number>; byId: Map<string, DealerSignal>;
+}) {
+  const shown = claim.citations.filter(id => index.has(id) && byId.has(id));
   if (!shown.length) return <span className="cite missing" title="The excerpt behind this statement is not listed.">no source</span>;
-  return <>{shown.map(id => <span key={id} className="cite static" title={`Excerpt ${index.get(id)} below`}>{index.get(id)}</span>)}</>;
+  return <>
+    {shown.map(id => <span key={id} className="cite static" title={`Excerpt ${index.get(id)} below`}>{index.get(id)}</span>)}
+    <span className="dealer-flag-sources">
+      {shown.map(id => {
+        const signal = byId.get(id) as DealerSignal;
+        const url = safeUrl(signal.url);
+        const quote = signal.excerpt.length > 150 ? `${signal.excerpt.slice(0, 150)}…` : signal.excerpt;
+        return <span className="dealer-flag-source" key={id}>
+          <span className="dealer-flag-quote" title={signal.excerpt}>“{quote}”</span>
+          <span className="dealer-signal-meta">
+            {signal.label || signal.host} · {signal.host} · {signal.published || 'undated'} ·{' '}
+            {url
+              ? <a className="dealer-link" href={url} target="_blank" rel="noopener noreferrer">source</a>
+              : 'no usable link'}
+            {' · '}{SIGNAL_NATURES[signal.nature ?? 'unclear']}
+          </span>
+        </span>;
+      })}
+    </span>
+  </>;
 }
 
 function DealerFlagBlock({ signals }: { signals: DealerSignals | null | undefined }) {
@@ -442,7 +465,8 @@ function DealerFlagBlock({ signals }: { signals: DealerSignals | null | undefine
   }
   const list = signals.signals ?? [];
   const index = new Map(list.map((s, i) => [s.id, i + 1]));
-  const cites = (claim: Claim) => <SignalCites claim={claim} index={index}/>;
+  const byId = new Map(list.map(s => [s.id, s]));
+  const cites = (claim: Claim) => <SignalCites claim={claim} index={index} byId={byId}/>;
   const green = signals.green ?? [];
   const red = signals.red ?? [];
   return <div className="dealer-flags dealer-flags-live">

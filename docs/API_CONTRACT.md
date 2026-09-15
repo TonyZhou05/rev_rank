@@ -403,7 +403,11 @@ excerpt, not a legal characterisation, and the UI shows it beside the source kin
 Rights and honesty guardrails:
 - **Nothing is fetched.** Only the provider's own title, snippet and date are stored, so no page is
   requested by RevRank and no site's terms are tested by a crawl. Excerpts are capped at 320 characters.
-  Each signal carries quote, source (title + host), date (or explicitly undated) and URL.
+  Each signal carries quote, source (title + host), date (or explicitly undated) and URL, and the UI
+  repeats that attribution under every flag that cites it.
+- **No dealer risk in ranking, and none forced onto a private sale.** A candidate with no `dealer`
+  block gets no DealerSignals at all and triggers no search, and dealer signals are never registered as
+  analyst evidence, so no shortlist position, metric or filter can rest on a dealer's record.
 - **No score.** `green`/`red` are capped, cited sentences. A claim is dropped unless it cites a returned
   signal id and every number in it appears in the cited excerpt, its title, or the date the provider
   supplied. A sentence that reads like a rating, star count, score or recommendation is dropped too.
