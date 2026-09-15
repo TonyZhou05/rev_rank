@@ -330,7 +330,9 @@ DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 if DIST.exists():
     @app.get("/{path:path}")
     def frontend(path: str):
-        requested = DIST / path
-        if path and requested.is_file() and DIST in requested.parents:
+        # Resolve before the containment check: the path arrives percent-decoded, so "%2e%2e/" would
+        # otherwise walk out of dist/ lexically and serve .env or /proc/self/environ.
+        requested = (DIST / path).resolve()
+        if path and requested.is_file() and requested.is_relative_to(DIST):
             return FileResponse(requested)
         return FileResponse(DIST / "index.html")
