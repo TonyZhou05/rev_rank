@@ -250,8 +250,9 @@ class Claim(Model):
 class VehicleAnalysis(Model):
     candidate_id: Short
     summary: Claim | None = None
-    strengths: Annotated[list[Claim], Field(max_length=4)] = Field(default_factory=list)
-    risks: Annotated[list[Claim], Field(max_length=4)] = Field(default_factory=list)
+    # The report calls these green and red flags; up to five each, and only ones that were cited.
+    strengths: Annotated[list[Claim], Field(max_length=5)] = Field(default_factory=list)
+    risks: Annotated[list[Claim], Field(max_length=5)] = Field(default_factory=list)
 
 
 class ComparisonPoint(Model):

@@ -26,8 +26,11 @@ FACT_FIELDS = ("year", "make", "model", "trim", "price", "currency", "mileage", 
                "engine", "drivetrain", "body", "fuel_type", "location", "features", "history")
 NHTSA = "https://api.nhtsa.gov"
 MAX_TURNS, MAX_TOOL_CALLS, BUDGET_SECONDS = 24, 60, 170
-PROMPT_VERSION = "analyst-tools-v3"
-LIMITS = {"verdict": 1, "strength": 3, "risk": 3, "comparison": 5, "question": 2}
+PROMPT_VERSION = "analyst-tools-v4"
+LIMITS = {"verdict": 1, "strength": 5, "risk": 5, "comparison": 5, "question": 2}
+# The model speaks in green and red flags; storage keeps the older strength/risk names, and both
+# spellings are accepted so a model that reaches for either is not punished for it.
+FLAG_KINDS = {"green_flag": "strength", "red_flag": "risk", "strength": "strength", "risk": "risk"}
 NUMBER = re.compile(r"(?<![A-Za-z])\d[\d,]*(?:\.\d+)?")
 CITATION_TOKEN = re.compile(r"\(?\[?\b(?:[ABCMP])\.[\w.\-]+\]?\)?")
 # Left of the request's hard wall so the loop stops itself and reports what it validated.
@@ -40,22 +43,39 @@ Process:
 1. Call get_vehicle_facts for every car.
 2. For every car with a known year, make and model, call get_recalls, get_complaints and get_safety_rating.
 3. Call get_comparison_metrics.
-4. Record each statement with add_finding: one overall verdict (car "all"), up to 3 strengths and 3 risks per car,
-   up to 5 comparisons, up to 2 seller questions per car. add_finding tells you if a statement was rejected and why;
-   fix and retry rejected statements.
+4. Record each statement with add_finding: one overall verdict (car "all"), up to 5 green_flag and up to 5 red_flag
+   per car, up to 5 comparisons, up to 2 seller questions per car. add_finding tells you if a statement was rejected
+   and why; fix and retry rejected statements.
 5. Call set_ranking once: order every car best-first for this buyer, with one cited reason per car. Lead with the
    buyer's stated constraints (the M.*.fit results) and use the other metrics to break ties. A rejected ranking
    tells you why; fix and retry it.
 6. Call finish.
+
+What makes a good flag:
+- Be specific about THIS car and say why it matters to THIS buyer. Name the figure, the option, the campaign or the
+  constraint you are relying on.
+- Weak, do not write: "good value", "clean example", "higher mileage", "some recalls", "well equipped".
+- Strong, write like this: "Asks 27,500 USD, 2,500 under the stated 30,000 budget before taxes and fees."
+  "Covers 34,000 mi in 4 years, about 8,500 mi per year, below the buyer's 12,000 mi per year."
+  "Asks 92.1% of its original MSRP, so little of the first-owner depreciation has been passed on."
+  "Listed with Apple CarPlay and all-wheel drive, both stated must-haves; confirm them on the car."
+  "Model year has 3 NHTSA recall campaigns including AIR BAGS 21V421000; that is a model-year record, so check this
+  VIN's repair status with a dealer."
+- Reach for concrete evidence in this order: the buyer's stated constraints (M.*.fit), price against budget and
+  against original MSRP, mileage per year, listed equipment against must-haves, days on market, then NHTSA recalls,
+  complaints and 5-Star ratings as model-year caveats.
+- A missing or disputed field is a seller question, not a red flag. "Not mentioned in the listing" is never a
+  negative claim about the car.
+- Do not repeat the same evidence as both a green and a red flag, and do not restate one flag in two wordings.
+- If a car genuinely has fewer than five of either, record fewer. Padding with vague flags is worse than silence.
 
 Rules for add_finding:
 - citations lists the ids of the tool results that support the text, e.g. "A.price", "M.price_gap.AB", "B.recall.21V421000".
 - Copy numbers exactly as they appear in the cited results. Never compute new numbers, percentages or estimates; use M.* metrics for differences.
 - No outside knowledge: no reliability reputations, specifications, market values or opinions the tools did not return.
 - Recalls and complaints are model-year records, not proof about this specific car; say so when you use them.
-- Unknown or disputed fields are questions for the seller, not negatives.
 - A statement about Car B must cite Car B's evidence.
-- Be brief: one sentence per statement; the verdict may use up to 3 sentences.
+- One or two sentences per flag, whichever reads more clearly; the verdict may use up to 4 sentences.
 - Refer to cars as Car A, Car B, Car C."""
 
 
@@ -74,9 +94,10 @@ def tool_schemas(labels: list[str]) -> list[dict]:
              {"type": "object", "properties": {}}),
         tool("add_finding", "Record one cited statement. Returns ok, or the reason it was rejected.", {
             "type": "object", "properties": {
-                "kind": {"type": "string", "enum": ["verdict", "strength", "risk", "comparison", "question"]},
+                "kind": {"type": "string", "enum": ["verdict", "green_flag", "red_flag", "comparison", "question"],
+                         "description": "green_flag and red_flag are per-car; up to 5 of each."},
                 "car": {"type": "string", "enum": labels + ["all"], "description": "The car it is about; 'all' for verdict/comparison."},
-                "text": {"type": "string", "description": "One sentence (verdict: up to 3)."},
+                "text": {"type": "string", "description": "One or two specific sentences (verdict: up to 4)."},
                 "citations": {"type": "array", "items": {"type": "string"}, "description": "Ids from tool results."},
                 "topic": {"type": "string", "description": "Comparison topic, e.g. price, mileage, safety."},
                 "favors": {"type": "string", "enum": labels + ["none"], "description": "Comparison only: which car the evidence favors."}},
@@ -256,6 +277,18 @@ class Workspace:
                 gap = budget - c.price
                 add(f"M.{label}.budget", f"Car {label} is {abs(gap):,.0f} {c.currency} {'under' if gap >= 0 else 'over'} "
                                            f"the {budget:,.0f} budget (budget currency assumed {c.currency}).")
+            # Already derived at compare time from a buyer-confirmed or NeoVIN-decoded MSRP only.
+            if c.percent_of_msrp is not None and c.msrp is not None:
+                add(f"M.{label}.msrp_pct", f"Car {label} asks {c.percent_of_msrp:,.1f}% of its original MSRP "
+                                           f"({c.price:,.0f} {c.currency} against an original {c.msrp:,.0f} {c.currency}). "
+                                           "A lower share of the original sticker means more of the first owner's "
+                                           "depreciation has already been taken.")
+            if c.dom is not None or c.dom_active is not None:
+                parts = [f"{c.dom:,.0f} days on market" if c.dom is not None else None,
+                         f"{c.dom_active:,.0f} of them active" if c.dom_active is not None else None]
+                add(f"M.{label}.dom", f"Car {label} has been listed " + ", ".join(p for p in parts if p)
+                                      + (f", first seen {c.first_seen_at}." if c.first_seen_at else ".")
+                                      + " Time on market is not by itself evidence about the car or the price.")
         for (la, a), (lb, b) in combinations(self.cars.items(), 2):
             if usable(a, "price") and usable(b, "price") and a.currency == b.currency != "UNK":
                 low, high = sorted(((la, a), (lb, b)), key=lambda item: item[1].price)
@@ -283,15 +316,18 @@ class Workspace:
         return {"metrics": items, "buyer": self.buyer, "buyer_id": "P.buyer"}
 
     def add_finding(self, args: dict) -> dict:
-        kind = str(args.get("kind", "")).lower().strip()
+        spoken = str(args.get("kind", "")).lower().strip()
+        # green_flag/red_flag are the prompt's vocabulary; strength/risk is what storage calls them.
+        kind = FLAG_KINDS.get(spoken, spoken)
         label = str(args.get("car", "all")).strip().upper().removeprefix("CAR ").strip()
         if kind not in LIMITS:
-            return {"ok": False, "reason": "kind must be verdict, strength, risk, comparison or question."}
+            return {"ok": False, "reason": "kind must be verdict, green_flag, red_flag, comparison or question."}
+        named = "green_flag" if kind == "strength" else "red_flag" if kind == "risk" else kind
         if kind in ("strength", "risk", "question") and label not in self.cars:
-            return {"ok": False, "reason": f"A {kind} must name one car: {', '.join(self.cars)}."}
+            return {"ok": False, "reason": f"A {named} must name one car: {', '.join(self.cars)}."}
         scope = label if kind in ("strength", "risk", "question") else "all"
         if sum(f["kind"] == kind and f["scope"] == scope for f in self.findings) >= LIMITS[kind]:
-            return {"ok": False, "reason": f"Limit reached for {kind}; move on or call finish."}
+            return {"ok": False, "reason": f"Limit reached for {named} on car {scope}; move on or call finish."}
         reasons: list = []
         if kind == "question":
             text = CITATION_TOKEN.sub("", str(args.get("text", ""))).strip()[:300]
