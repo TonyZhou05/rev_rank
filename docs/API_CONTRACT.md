@@ -52,8 +52,7 @@ this confirms user input, NOT independent factual verification of seller claims.
 ## Endpoints
 
 - `GET /api/health` -> `{status: 'ok', llm_enabled: boolean, market_enabled: boolean, api_revision: number,
-  licensed_inventory_enabled: boolean, vin_decode_enabled: boolean, neovin_msrp_enabled: boolean,
-  compare_timeout_seconds: number, usage: {...}}`.
+  licensed_inventory_enabled: boolean, vin_decode_enabled: boolean, neovin_msrp_enabled: boolean, usage: {...}}`.
 - `GET /api/sources` -> `{sources: [{domain,name,status,reason}], live_fetch_enabled: boolean}`.
   Source status strings: `allowed | restricted | unsupported` (not "unreviewed"). Restricted/unsupported do not fetch.
   Note: Local allowlist ≠ reuse license; verify source-specific rights before integration.
@@ -78,7 +77,8 @@ It is the only identifier the server logs for a compare, so a client retry is di
 the attempt it replaced. It is not a report id and is not persisted.
 
 One request-scoped budget covers both compare phases: `REVRANK_COMPARE_TIMEOUT_SECONDS`, 85s by
-default, just under the page's own 90s compare limit. `GET /api/health` reports the configured value.
+default, just under the page's own 90s compare limit. `GET /api/health` reports the configured value
+as `compare_timeout_seconds`, so the page can align its own limit.
 
 - **Client abort.** When the page aborts the fetch, the server notices the disconnect within about
   250ms and stops the work: no further model turn, tool call or provider request starts, an in-flight
