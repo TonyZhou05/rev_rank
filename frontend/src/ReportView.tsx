@@ -433,33 +433,51 @@ function DealerCard({ car, dealer }: { car: Candidate; dealer: DealerInfo | null
         : <span className="muted-cell">Not in the record</span>}</DealerRow>
       {phone && <DealerRow label="Phone">{dialable(phone) ? <a className="dealer-link" href={dialable(phone)!}>{phone}</a> : phone}</DealerRow>}
       {listing && <DealerRow label="Listing"><a className="dealer-link" href={listing} target="_blank" rel="noopener noreferrer">The listing this record came from</a></DealerRow>}
-      {links.length > 0 && <p className="dealer-lookups">
+      {links.length > 0 && <div className="dealer-lookups">
         <span className="dealer-label">Look up yourself</span>
-        {links.map(link => <a key={link.url} className="dealer-link" href={safeUrl(link.url)!} target="_blank" rel="noopener noreferrer" title={link.note}>{link.label}</a>)}
-      </p>}
+        <ul className="dealer-lookup-list">
+          {links.map(link => <li key={link.url}>
+            <a className="dealer-link" href={safeUrl(link.url)!} target="_blank" rel="noopener noreferrer">{link.label}</a>
+            {link.note && <span className="dealer-link-note">{link.note}</span>}
+          </li>)}
+        </ul>
+      </div>}
       {notes.length > 0 && <ul className="dealer-notes">{notes.map(note => <li key={note}>{note}</li>)}</ul>}
     </> : <p className="honest-empty" role="status">
       <CircleAlert size={14}/>
       No dealer record came with this car. Only a licensed inventory import carries dealer contact details, and we won’t guess a name or an address.
     </p>}
     <div className="dealer-flags">
-      <span className="dealer-flags-label">Dealer signals · not a vehicle flag</span>
-      <p>Coming — we won’t invent a dealer score. Nothing here is read from review sites.</p>
+      <span className="dealer-flags-label">Dealer green/red flags · coming</span>
+      <p>Coming — we won’t invent a dealer score or cite chips yet. Nothing here is read from review sites, and this is never a VIN vehicle flag.</p>
     </div>
   </article>;
 }
 
 function DealerSection({ report }: { report: Report }) {
+  const cars = report.candidates;
+  // Same breakpoint as CompareTable one-car focus — not the Import side-panel hide.
+  const narrow = useNarrowViewport(NARROW_COMPARE);
+  const [activeId, setActiveId] = useState(cars[0]?.id);
+  const active = cars.find(c => c.id === activeId) ?? cars[0];
+  const shown = narrow && active ? [active] : cars;
   return <section className="report-section dealer-section">
     <h3>Dealer</h3>
     <p className="dealer-scope" role="note">
       <CircleAlert size={14}/>
       <span>{DEALER_CAVEAT} Contact details are as the licensed listing record reported them — not verified by
-        RevRank, and not evidence about the car. Green and red labels elsewhere in this report describe the
-        vehicle, never the seller.</span>
+        RevRank, and not evidence about the car. Vehicle green/red flags elsewhere describe the car,
+        never the seller — and we won’t invent a dealer score here.</span>
     </p>
-    <div className="dealer-grid">
-      {report.candidates.map(c => <DealerCard key={c.id} car={c} dealer={c.dealer}/>)}
+    {narrow && cars.length > 1 && active && <div className="compare-controls dealer-focus">
+      <span className="control-label" id="dealer-focus-label">Dealer for one car</span>
+      <div className="segmented" role="radiogroup" aria-labelledby="dealer-focus-label">
+        {cars.map(c => <button key={c.id} type="button" role="radio" aria-checked={c.id === active.id}
+          className={c.id === active.id ? 'on' : ''} onClick={() => setActiveId(c.id)}>{carName(c)}</button>)}
+      </div>
+    </div>}
+    <div className={narrow ? 'dealer-grid dealer-grid-narrow' : 'dealer-grid'}>
+      {shown.map(c => <DealerCard key={c.id} car={c} dealer={c.dealer}/>)}
     </div>
   </section>;
 }
@@ -612,13 +630,12 @@ export function ReportView({ report, preferences, setPreferences, onApply, onCan
           </div></div>;
         })()}
 
-      <NhtsaSection report={report}/>
-
       <section className="report-section">
         <h3>Side by side</h3>
         <CompareTable report={report}/>
       </section>
 
+      <NhtsaSection report={report}/>
       <DealerSection report={report}/>
 
       <ComingModule title="Depreciation" body="ownership-horizon depreciation from cited market observations." caveats={depCaveats}/>
