@@ -191,7 +191,7 @@ function SourceSwitch({ value, onChange, health }: { value: RecoverySource; onCh
   const neovin = health?.neovin_msrp_enabled ? ' One extra call decodes a known VIN for its original MSRP.' : '';
   const options: { key: RecoverySource; label: string; ready: boolean; hint: string }[] = [
     { key: 'auto', label: 'Auto', ready: true, hint: health?.browser_recovery_enabled
-      ? `MarketCheck first; private browse of your listing URL only if MarketCheck misses; ${search} after that.${neovin}`
+      ? `Private browse of your listing URL first; MarketCheck and ${search} only if browse misses.${neovin}`
       : `MarketCheck first, then ${search}. Private browse is off (Tongli opt-in; not counsel clearance).${neovin}` },
     { key: 'marketcheck', label: 'MarketCheck', ready: Boolean(health?.licensed_inventory_enabled), hint: `Only MarketCheck is called: usually 1 call per import, at most 3.${neovin}` },
     { key: 'browse', label: 'Private browse', ready: Boolean(health?.browser_recovery_enabled), hint: 'Off by default. When enabled, opens only the listing URL you pasted. No review sites. Bot-manager blocks are reported, not bypassed. Enablement waits on Research rights guidance and Tongli opt-in; not counsel clearance.' },

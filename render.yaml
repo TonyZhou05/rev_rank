@@ -12,3 +12,5 @@ services:
         value: "false"
       - key: REVRANK_DATA_DIR
         value: /app/.local
+      - key: REVRANK_BROWSER_RECOVERY_ENABLED
+        value: "true"
