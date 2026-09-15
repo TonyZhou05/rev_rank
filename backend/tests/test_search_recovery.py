@@ -1,10 +1,11 @@
 """Offline regressions for identity-gated search recovery; all vehicles are synthetic."""
 import socket
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.app import main, retrieval
+from backend.app import main, retrieval, search as search_module
 from backend.app.config import Settings
 from backend.app.fetch import FetchError, Page
 from backend.app.models import ImportRequest, ImportResponse
@@ -531,3 +532,25 @@ def test_lone_higher_seller_reading_does_not_override_the_consensus(configured, 
     candidate = mileage_case(monkeypatch, configured, results)
     assert candidate.mileage == 2322 and "mileage" in candidate.conflicts
     assert any("another source reports 21,252" in w for w in candidate.warnings)
+
+
+def search_transport(monkeypatch, handler):
+    real = httpx.Client
+    monkeypatch.setattr(search_module.httpx, "Client",
+                        lambda **kwargs: real(transport=httpx.MockTransport(handler), **kwargs))
+
+
+@pytest.mark.parametrize("code,reason", [
+    (432, "the account's usage limit is exhausted"),
+    (429, "the provider is rate limiting this server"),
+    (401, "the API key was rejected"),
+    (500, None),
+])
+def test_provider_refusal_names_what_the_operator_must_fix(monkeypatch, code, reason):
+    """RevRank's own meter counts only this checkout, so a spent key is invisible until the API says so."""
+    search_transport(monkeypatch, lambda request: httpx.Response(code, json={"detail": {"error": "nope"}}))
+    settings = Settings(search_provider="tavily", search_api_key="test")
+    with pytest.raises(SearchError) as error:
+        search_module.search("anything", settings)
+    assert f"HTTP {code}" in str(error.value)
+    assert (reason in str(error.value)) if reason else str(error.value).endswith(f"HTTP {code}.")

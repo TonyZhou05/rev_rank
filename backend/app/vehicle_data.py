@@ -32,6 +32,14 @@ class ProviderError(Exception):
     pass
 
 
+# What a refusal means, so nobody has to look the code up. A spent or rejected key is the operator's
+# to fix, and it is invisible in RevRank's own meter: that counts only the calls this checkout sent.
+HTTP_REASON = {401: 'the API key was rejected',
+               403: 'the account may not make this request',
+               422: 'the request parameters were rejected',
+               429: 'the provider is rate limiting this server; try again shortly'}
+
+
 def get_json(url: str, params: dict, timeout: float, limit: int = 1_000_000):
     timeout = max(.1, min(timeout, 10))
     deadline = time.monotonic() + timeout
@@ -40,7 +48,9 @@ def get_json(url: str, params: dict, timeout: float, limit: int = 1_000_000):
                           follow_redirects=False, trust_env=False) as client:
             with client.stream('GET', url, params=params, headers={'Accept': 'application/json'}) as response:
                 if response.status_code != 200:
-                    raise ProviderError(f'Provider returned HTTP {response.status_code}.')
+                    reason = HTTP_REASON.get(response.status_code)
+                    raise ProviderError(f'Provider returned HTTP {response.status_code}'
+                                        + (f': {reason}.' if reason else '.'))
                 chunks, size = [], 0
                 for chunk in response.iter_bytes(chunk_size=8192):
                     size += len(chunk)
