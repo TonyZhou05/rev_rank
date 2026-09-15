@@ -247,8 +247,12 @@ function CompareTable({ report, activeId, onActive }: {
     <div className="compare-controls">
       <span className="control-label">Compare against</span>
       <div className="segmented" role="radiogroup" aria-label="Benchmark car">
+        {/* On a narrow screen this is often the table's only car control — a shortlist of two never
+            earns the focus picker below — so choosing a benchmark also moves the per-car sections to
+            that car. Otherwise the reader can set a benchmark here and find the Dealer card still on
+            the previous car, with nothing on screen explaining the difference. */}
         {cars.map(c => <button key={c.id} type="button" role="radio" aria-checked={c.id === bench.id} className={c.id === bench.id ? 'on' : ''}
-          onClick={() => setBenchId(c.id)}>{carName(c)}</button>)}
+          onClick={() => { setBenchId(c.id); if (narrow) onActive?.(c.id); }}>{carName(c)}</button>)}
       </div>
       <label className="diff-toggle"><input type="checkbox" checked={diffOnly} onChange={e => setDiffOnly(e.target.checked)}/> Differences only</label>
     </div>
