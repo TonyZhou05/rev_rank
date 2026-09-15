@@ -26,14 +26,17 @@ FACT_FIELDS = ("year", "make", "model", "trim", "price", "currency", "mileage", 
                "engine", "drivetrain", "body", "fuel_type", "location", "features", "history")
 NHTSA = "https://api.nhtsa.gov"
 MAX_TURNS, MAX_TOOL_CALLS, BUDGET_SECONDS = 24, 60, 170
-# How often finish may be turned away while nothing is recorded. A model that appends finish to
-# every batch still gets turns to record its findings, and one that only ever calls it still stops.
-MAX_FINISH_REFUSALS = 2
+# How often finish may be turned away, and how often a turn that calls no tool at all may be
+# prompted again, while nothing is recorded. Both let a model that has only fetched evidence get
+# back to recording findings, and both are capped so a model that will not cooperate still stops.
+MAX_FINISH_REFUSALS, MAX_QUIET_TURNS = 2, 2
 PROMPT_VERSION = "analyst-tools-v4"
 LIMITS = {"verdict": 1, "strength": 5, "risk": 5, "comparison": 5, "question": 2}
 # The model speaks in green and red flags; storage keeps the older strength/risk names, and both
 # spellings are accepted so a model that reaches for either is not punished for it.
 FLAG_KINDS = {"green_flag": "strength", "red_flag": "risk", "strength": "strength", "risk": "risk"}
+# Claim.text's own limit. Kept here because the label-to-name expansion has to fit inside it.
+CLAIM_LIMIT = 700
 NUMBER = re.compile(r"(?<![A-Za-z])\d[\d,]*(?:\.\d+)?")
 CITATION_TOKEN = re.compile(r"\(?\[?\b(?:[ABCMP])\.[\w.\-]+\]?\)?")
 # Left of the request's hard wall so the loop stops itself and reports what it validated.
@@ -347,7 +350,7 @@ class Workspace:
             # Questions are not claims, but they must not smuggle in invented figures.
             if not text or not numbers(text) <= numbers(" ".join(s.detail for s in self.sources.values())):
                 return self.refuse("Questions may only use numbers from tool results.")
-            self.findings.append({"kind": kind, "scope": scope, "text": humanize(self, text)})
+            self.findings.append({"kind": kind, "scope": scope, "text": humanize(self, text, 300)})
             return {"ok": True}
         claim = check(self, args.get("text"), args.get("citations"), reasons)
         if not claim:
@@ -447,7 +450,7 @@ def citation_list(raw) -> list[str]:
 
 def check(ws: Workspace, text, citations, rejected: list) -> Claim | None:
     raw = re.sub(r"\s+", " ", str(text or "")).strip()
-    text = CITATION_TOKEN.sub("", raw).replace(" .", ".").strip()[:700]
+    text = CITATION_TOKEN.sub("", raw).replace(" .", ".").strip()[:CLAIM_LIMIT]
     cited = [c for c in dict.fromkeys(citation_list(citations)) if c in ws.sources]
     if not text:
         return None
@@ -463,7 +466,7 @@ def check(ws: Workspace, text, citations, rejected: list) -> Claim | None:
         if not any(covers(c, label) for c in cited):
             rejected.append({"text": text[:160], "reason": f"The statement mentions Car {label} but cites none of Car {label}'s evidence."})
             return None
-    return Claim(text=humanize(ws, text), citations=cited[:12])
+    return Claim(text=humanize(ws, text, CLAIM_LIMIT), citations=cited[:12])
 
 
 def covers(citation: str, label: str) -> bool:
@@ -472,8 +475,23 @@ def covers(citation: str, label: str) -> bool:
     return parts[0] == label or (parts[0] == "M" and (parts[1] == label or (len(parts) > 2 and label in parts[-1])))
 
 
-def humanize(ws: Workspace, text: str) -> str:
-    return re.sub(r"\b[Cc]ar ([ABC])\b", lambda m: ws.name(m.group(1)) if m.group(1) in ws.cars else m.group(0), text)
+def trim(text: str, limit: int) -> str:
+    """Cut to a stored field's limit, at a sentence end when one falls close enough to the cut."""
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    end = max(cut.rfind(". "), cut.rfind("! "), cut.rfind("? "))
+    return (cut[:end + 1] if end >= limit // 2 else cut).strip()
+
+
+def humanize(ws: Workspace, text: str, limit: int | None = None) -> str:
+    """Car labels are for the model; readers see names.
+
+    "Car B" becomes "2021 Mercedes-Benz E-Class", so the text grows, and a claim already sitting at
+    its own length limit grows past it. Callers writing a validated field pass that field's limit.
+    """
+    named = re.sub(r"\b[Cc]ar ([ABC])\b", lambda m: ws.name(m.group(1)) if m.group(1) in ws.cars else m.group(0), text)
+    return trim(named, limit) if limit is not None else named
 
 
 def assemble(ws: Workspace, settings: Settings) -> AIAnalysis:
@@ -502,7 +520,8 @@ def assemble(ws: Workspace, settings: Settings) -> AIAnalysis:
     return AIAnalysis(status=status, message=message, model=f"{settings.llm_model} / {PROMPT_VERSION}", verdict=verdict,
                       vehicles=vehicles, comparisons=comparisons, questions=questions, ranking=ranking,
                       # Car labels are for the model; readers see names. Validation already ran on the raw text.
-                      sources=[ws.sources[i].model_copy(update={"detail": humanize(ws, ws.sources[i].detail)}) for i in used],
+                      sources=[ws.sources[i].model_copy(update={"detail": humanize(ws, ws.sources[i].detail, 1500)})
+                               for i in used],
                       tool_calls=ws.tool_calls, dropped_claims=ws.rejected)
 
 
@@ -539,7 +558,7 @@ def analyze(report: Report, settings: Settings, token: CancelToken | None = None
     # Own budget, kept inside the request's remaining time so the loop stops before the hard wall.
     limit = BUDGET_SECONDS if token is None else max(0.0, min(BUDGET_SECONDS, token.remaining() - RESERVE_SECONDS))
     deadline = time.monotonic() + limit
-    nudged, stopped, refusals = False, False, 0
+    stopped, refusals, quiet = False, 0, 0
     try:
         for turn in range(MAX_TURNS):
             remaining = deadline - time.monotonic()
@@ -550,11 +569,13 @@ def analyze(report: Report, settings: Settings, token: CancelToken | None = None
             message = chat(settings, messages, tools, timeout=min(120, remaining), token=token)
             calls = [c for c in (message.get("tool_calls") or []) if isinstance(c, dict) and isinstance(c.get("function"), dict)]
             if not calls:
-                if nudged or ws.findings and any(f["kind"] == "verdict" for f in ws.findings):
+                # A turn of prose records nothing. While there is still no verdict the model is told
+                # what is outstanding rather than reminded once and then dropped mid-analysis.
+                if quiet >= MAX_QUIET_TURNS or any(f["kind"] == "verdict" for f in ws.findings):
                     break
-                nudged = True
+                quiet += 1
                 messages += [{"role": "assistant", "content": str(message.get("content") or "")[:4000]},
-                             {"role": "user", "content": "Use the tools: fetch evidence, record each statement with add_finding, then call finish."}]
+                             {"role": "user", "content": "Use the tools, not prose. " + next_step(ws)}]
                 continue
             calls = [{"id": str(c.get("id") or f"call_{turn}_{i}"), "type": "function",
                       "function": {"name": str(c["function"].get("name", "")), "arguments": c["function"].get("arguments") or "{}"}}

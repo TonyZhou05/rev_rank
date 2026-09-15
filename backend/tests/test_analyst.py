@@ -162,6 +162,72 @@ def test_a_full_flag_slot_is_not_counted_as_a_rejected_claim(report):
     assert ws.rejected == 0
 
 
+def test_the_live_signature_records_findings_instead_of_an_empty_analysis(report, monkeypatch):
+    """The shape seen on revrank.onrender.com: nine tool calls, nothing kept, nothing rejected.
+
+    Nine is the complete evidence sweep for two cars — facts, recalls, complaints and 5-Star ratings
+    for each, plus the metrics — and finish is the one tool that does not count towards it. The model
+    worked the prompt's numbered steps in two batches and ended each with finish; the second was
+    honoured, so the run stopped before step 4 ever recorded a statement.
+    """
+    monkeypatch.setattr(analyst, "nhtsa", lambda url, params, limit=0: {"results": [], "Results": []})
+    chat, _ = scripted([
+        [call("get_vehicle_facts", car="A"), call("get_vehicle_facts", car="B"), call("finish")],
+        [call("get_recalls", car="A"), call("get_complaints", car="A"), call("get_safety_rating", car="A"),
+         call("get_recalls", car="B"), call("get_complaints", car="B"), call("get_safety_rating", car="B"),
+         call("get_comparison_metrics"), call("finish")],
+        [call("add_finding", kind="verdict", car="all", citations=["M.price_gap.AB"],
+              text="Car B is 3,496 USD cheaper than Car A."),
+         call("add_finding", kind="green_flag", car="A", citations=["M.A.mileage_per_year"],
+              text="Car A covers 16,151 mi over 5 years, about 3,230 mi per year."),
+         call("finish")],
+    ])
+    monkeypatch.setattr(analyst, "chat", chat)
+    analysis = analyst.analyze(report, SETTINGS)
+    assert analysis.status == "complete" and analysis.dropped_claims == 0
+    # Nine for the sweep plus the two statements the run used to be cut off before reaching.
+    assert analysis.tool_calls == 11
+    assert analysis.verdict is not None and len(analysis.vehicles[0].strengths) == 1
+
+
+def test_a_long_claim_survives_the_expansion_from_labels_to_names(report):
+    # "Car B" becomes "2022 BMW M4" on the way out, so a claim already at Claim.text's limit grows
+    # past it. That used to raise ValidationError out of add_finding and fail the whole compare.
+    ws = analyst.Workspace(report)
+    for label in ("A", "B"):
+        ws.run("get_vehicle_facts", {"car": label})
+    text = ("Car A is the safer buy for this buyer and Car B is the cheaper one; confirm both on the car "
+            "before deciding. " * 7)[:analyst.CLAIM_LIMIT]
+    assert len(text) == analyst.CLAIM_LIMIT
+    assert ws.add_finding({"kind": "verdict", "car": "all", "text": text,
+                           "citations": ["A.price", "B.price"]}) == {"ok": True}
+    kept = analyst.assemble(ws, SETTINGS).verdict
+    assert len(kept.text) <= analyst.CLAIM_LIMIT and "Car A" not in kept.text
+    # Trimmed at a sentence end rather than mid-word.
+    assert kept.text.endswith(".")
+
+
+def test_a_quiet_turn_is_told_what_is_outstanding_more_than_once(report, monkeypatch):
+    # The model stops calling tools with its evidence fetched and nothing recorded, then comes back.
+    chat, seen = scripted([
+        [call("get_vehicle_facts", car="A"), call("get_vehicle_facts", car="B"), call("get_comparison_metrics")],
+        [],
+        [],
+        [call("add_finding", kind="verdict", car="all", citations=["M.price_gap.AB"],
+              text="Car B is 3,496 USD cheaper than Car A."), call("finish")],
+    ])
+    monkeypatch.setattr(analyst, "chat", chat)
+    analysis = analyst.analyze(report, SETTINGS)
+    assert len(seen) == 4 and analysis.status == "complete"
+
+
+def test_a_model_that_stays_quiet_still_stops(report, monkeypatch):
+    chat, seen = scripted([[call("get_vehicle_facts", car="A")]] + [[]] * 8)
+    monkeypatch.setattr(analyst, "chat", chat)
+    analyst.analyze(report, SETTINGS)
+    assert len(seen) == analyst.MAX_QUIET_TURNS + 2
+
+
 def test_recall_tool_scopes_and_cites_model_year(report, monkeypatch):
     monkeypatch.setattr(analyst, "nhtsa", lambda url, params, limit=0: {"results": [
         {"NHTSACampaignNumber": "21V421000", "Component": "AIR BAGS", "Summary": "Warning lamp may fail.",
