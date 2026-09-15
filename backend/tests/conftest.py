@@ -1,14 +1,16 @@
 import pytest
 
 # The repository-root conftest.py has already blanked .env credentials before this import.
-from backend.app import comparison, usage
+from backend.app import comparison, usage, vehicle_data
 from backend.app.vehicle_data import ProviderError
 
 
 @pytest.fixture(autouse=True)
 def isolated_usage(monkeypatch, tmp_path):
-    # Tests must never read or advance the real paid-provider meter in .local/usage.json.
+    # Tests must never read or advance the real paid-provider meter in .local/usage.json, or read
+    # the real NeoVIN cache (a hit there would skip the stubbed provider).
     monkeypatch.setattr(usage, "usage_path", lambda settings: tmp_path / "usage.json")
+    monkeypatch.setattr(vehicle_data, "neovin_cache_path", lambda settings: tmp_path / "neovin_msrp.json")
 
 
 @pytest.fixture(autouse=True)

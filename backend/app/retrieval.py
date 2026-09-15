@@ -427,10 +427,11 @@ def attach_original_msrp(candidate: Candidate | None, vin: str | None, settings:
     candidate.msrp = found.amount
     candidate.evidence['msrp'] = Evidence(value=value_text(found.amount), source=found.source, status='extracted')
     candidate.observations = (candidate.observations + [Observation(
-        field='msrp', value=value_text(found.amount), source_url=found.source_url, retrieved_at=now(),
+        field='msrp', value=value_text(found.amount), source_url=found.source_url, retrieved_at=found.cached_from or now(),
         method='licensed', vin=found.vin)])[:150]
+    replay = f' (saved decode from {found.cached_from[:10]}; no call spent)' if found.cached_from else ''
     attempts.append(RetrievalAttempt(method='licensed', status='completed',
-                                     detail=f'NeoVIN decode reported {found.field} {found.amount:,.0f} as the original MSRP.'))
+                                     detail=f'NeoVIN decode reported {found.field} {found.amount:,.0f} as the original MSRP{replay}.'))
     return candidate
 
 

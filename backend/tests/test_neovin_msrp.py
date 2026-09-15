@@ -3,6 +3,7 @@
 The payload shapes mirror a real `/v2/decode/car/neovin/{vin}/specs` response; every VIN and price
 here is synthetic. No test performs network access.
 """
+import json
 import socket
 
 import httpx
@@ -147,8 +148,30 @@ class TestDecodeRequest:
         settings = Settings(marketcheck_api_key="secret-key", marketcheck_monthly_calls=1)
         vehicle_data.decode_neovin_msrp(settings, VIN)
         with pytest.raises(ProviderError, match="monthly budget reached"):
-            vehicle_data.decode_neovin_msrp(settings, VIN)
+            vehicle_data.decode_neovin_msrp(settings, OTHER_VIN)
         assert len(sent) == 1
+
+    def test_a_decoded_vin_is_replayed_without_another_call(self, monkeypatch):
+        sent = []
+        self.mock_client(monkeypatch, lambda request: sent.append(request) or httpx.Response(200, json=SPECS))
+        settings = Settings(marketcheck_api_key="secret-key", marketcheck_monthly_calls=1)
+        first = vehicle_data.decode_neovin_msrp(settings, VIN)
+        again = vehicle_data.decode_neovin_msrp(settings, VIN.lower())
+        assert len(sent) == 1
+        assert (again.amount, again.field) == (first.amount, first.field)
+        assert first.cached_from is None and again.cached_from
+
+    def test_a_remembered_miss_is_retried_once_it_is_stale(self, monkeypatch):
+        sent = []
+        self.mock_client(monkeypatch, lambda request: sent.append(request) or httpx.Response(200, json={"vin": VIN}))
+        settings = Settings(marketcheck_api_key="secret-key")
+        assert vehicle_data.decode_neovin_msrp(settings, VIN) is None
+        assert vehicle_data.decode_neovin_msrp(settings, VIN) is None
+        assert len(sent) == 1
+        path = vehicle_data.neovin_cache_path(settings)
+        path.write_text(json.dumps({VIN: {"decoded_at": "2020-01-01T00:00:00+00:00"}}))
+        vehicle_data.decode_neovin_msrp(settings, VIN)
+        assert len(sent) == 2
 
     def test_invalid_vin_and_missing_key_never_reach_the_provider(self, monkeypatch):
         self.mock_client(monkeypatch, forbidden)

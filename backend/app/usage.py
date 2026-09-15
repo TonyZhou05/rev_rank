@@ -91,7 +91,7 @@ def _exclusive(settings: Settings):
             handle.close()  # Closing releases the flock.
 
 
-def _write(path: Path, data: dict) -> None:
+def write_json_atomic(path: Path, data: dict) -> None:
     """Replace the file atomically, so a crash mid-write cannot leave JSON that reads back as empty."""
     fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=path.name, suffix='.tmp')
     try:
@@ -121,7 +121,7 @@ def spend(settings: Settings, provider: str) -> None:
                                  f'raise REVRANK_{"MARKETCHECK_MONTHLY_CALLS" if provider == "marketcheck" else "SEARCH_MONTHLY_CREDITS"} to allow more.')
         current[provider] = spent + cost
         try:
-            _write(path, data)
+            write_json_atomic(path, data)
         except OSError:
             pass  # Unrecorded usage still went out; the limit is a safeguard, not billing.
 
