@@ -10,6 +10,7 @@ name and address, never a coordinate pin.
 """
 from urllib.parse import urlencode, urlsplit
 
+from .fetch import FetchError, validated_url
 from .models import DealerInfo, DealerLink
 
 MAPS_SEARCH = "https://www.google.com/maps/search/?"
@@ -35,7 +36,6 @@ def safe_link(value) -> str | None:
     """Keep a link only when it is a plain, credential-free HTTP(S) URL on its standard port."""
     if not isinstance(value, str) or len(value) > 2048:
         return None
-    from .fetch import FetchError, validated_url
     try:
         url, _, _ = validated_url(value)
     except FetchError:
@@ -44,7 +44,9 @@ def safe_link(value) -> str | None:
 
 
 def host_of(url: str | None) -> str | None:
-    return (urlsplit(url).hostname or "").removeprefix("www.") or None if url else None
+    if not url:
+        return None
+    return (urlsplit(url).hostname or "").removeprefix("www.") or None
 
 
 def address_line(street=None, city=None, state=None, postal_code=None) -> str | None:
