@@ -214,6 +214,23 @@ def test_a_full_flag_slot_is_not_counted_as_a_rejected_claim(report):
     assert ws.rejected == 0
 
 
+def test_a_long_claim_survives_the_expansion_from_labels_to_names(report):
+    # "Car B" becomes "2022 BMW M4" on the way out, so a claim already at Claim.text's limit grows
+    # past it. That used to raise ValidationError out of add_finding and fail the whole compare.
+    ws = analyst.Workspace(report)
+    for label in ("A", "B"):
+        ws.run("get_vehicle_facts", {"car": label})
+    text = ("Car A is the safer buy for this buyer and Car B is the cheaper one; confirm both on the car "
+            "before deciding. " * 7)[:analyst.CLAIM_LIMIT]
+    assert len(text) == analyst.CLAIM_LIMIT
+    assert ws.add_finding({"kind": "verdict", "car": "all", "text": text,
+                           "citations": ["A.price", "B.price"]}) == {"ok": True}
+    kept = analyst.assemble(ws, SETTINGS).verdict
+    assert len(kept.text) <= analyst.CLAIM_LIMIT and "Car A" not in kept.text
+    # Trimmed at a sentence end rather than mid-word.
+    assert kept.text.endswith(".")
+
+
 def test_recall_tool_scopes_and_cites_model_year(report, monkeypatch):
     monkeypatch.setattr(analyst, "nhtsa", lambda url, params, limit=0: {"results": [
         {"NHTSACampaignNumber": "21V421000", "Component": "AIR BAGS", "Summary": "Warning lamp may fail.",
