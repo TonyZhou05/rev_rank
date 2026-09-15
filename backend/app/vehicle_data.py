@@ -15,6 +15,10 @@ from .fetch import FetchError, validated_url
 from .usage import BudgetExceeded, spend
 
 MARKETCHECK_URL = 'https://api.marketcheck.com/v2/search/car/active'
+# Expired listings from the last 90 days. The active index drops a car the moment it stops being
+# listed, so this is the only licensed place a delisted listing still exists. Rows from it are past
+# records: MarketCheck also infers sales here, and RevRank neither reads nor repeats that inference.
+MARKETCHECK_PAST_URL = 'https://api.marketcheck.com/v2/search/car/recents'
 NEOVIN_URL = 'https://api.marketcheck.com/v2/decode/car/neovin/{vin}/specs'
 VPIC_URL = 'https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVinValues/{vin}'
 VIN = re.compile(r'^[A-HJ-NPR-Z0-9]{17}$')
@@ -178,20 +182,25 @@ def parse_listing(row) -> InventoryListing | None:
 
 
 def inventory_search(settings: Settings, *, vin: str | None = None, vdp_url: str | None = None,
-                     stock_no: str | None = None, timeout: float = 10) -> list[InventoryListing]:
+                     stock_no: str | None = None, source: str | None = None, past: bool = False,
+                     timeout: float = 10) -> list[InventoryListing]:
     if not settings.marketcheck_enabled:
         raise ProviderError('Licensed inventory provider is not configured.')
     filters = {k: v for k, v in (('vin', vin), ('vdp_url', vdp_url), ('stock_no', stock_no)) if v}
     if len(filters) != 1:
         raise ValueError('Use exactly one identity filter.')
+    # Past inventory is too large to search unscoped, so the endpoint requires a scope. `source` is
+    # the site the buyer pasted, which is the scope we want anyway.
+    if past and not source:
+        raise ValueError('Past inventory search must be scoped to a source website.')
     # nodedup keeps syndicated copies visible; append_api_key=false keeps the key out of returned URLs.
     params = {'api_key': settings.marketcheck_api_key, 'rows': 10, 'nodedup': 'true',
-              'append_api_key': 'false', **filters}
+              'append_api_key': 'false', **filters, **({'source': source} if source else {})}
     try:
         spend(settings, 'marketcheck')
     except BudgetExceeded as error:
         raise ProviderError(str(error)) from None
-    payload = get_json(MARKETCHECK_URL, params, timeout)
+    payload = get_json(MARKETCHECK_PAST_URL if past else MARKETCHECK_URL, params, timeout)
     rows = payload.get('listings') if isinstance(payload, dict) else None
     if not isinstance(rows, list):
         raise ProviderError('Provider response unavailable or malformed.')
