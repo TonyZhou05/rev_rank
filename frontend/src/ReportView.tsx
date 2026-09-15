@@ -3,8 +3,8 @@ import { Check, CircleAlert, LoaderCircle, Sparkles } from 'lucide-react';
 import { allSame, comparable, constraintMetrics, constraintTone, delta, isCrossModel, metric, mileageValue, msrpNeoVinKind, msrpOrigin, msrpPctDelta, msrpSourceNote, msrpValue, mustHaveMetrics, numberIn, pctOfMsrp, pctOfMsrpText, priceValue, sharedAnnual, tradeOff, type DeltaKind } from './compare';
 import { ConstraintPanel } from './ConstraintPanel';
 import { SourceTable } from './Review';
-import type { AIAnalysis, Candidate, Claim, NHTSASafetyData, Preferences, Report, SourceRef } from './types';
-import { carName, dateLabel, money, safeUrl, unresolvedConflicts } from './utils';
+import type { AIAnalysis, Candidate, Claim, DealerInfo, NHTSASafetyData, Preferences, Report, SourceRef } from './types';
+import { carName, dateLabel, hostOf, money, safeUrl, unresolvedConflicts } from './utils';
 
 interface Row {
   label: string;
@@ -398,6 +398,72 @@ function FlagList({ tone, label, claims, cites }: {
   </div>;
 }
 
+// One caveat carried by the whole Dealer block. It is deliberately the first thing the section says:
+// a dealer's rating, address or phone is about the business, and says nothing about this car.
+const DEALER_CAVEAT = 'About the dealer, not this VIN.';
+
+// A dialable string only; the reported text ("(512) 555-0100 ext 2") stays as the visible label.
+function dialable(phone: string): string | null {
+  const digits = phone.replace(/[^\d+]/g, '');
+  return digits.replace(/\D/g, '').length >= 7 ? `tel:${digits}` : null;
+}
+
+function DealerRow({ label, children }: { label: string; children: ReactNode }) {
+  return <p className="dealer-row"><span className="dealer-label">{label}</span><span>{children}</span></p>;
+}
+
+function DealerCard({ car, dealer }: { car: Candidate; dealer: DealerInfo | null | undefined }) {
+  const website = safeUrl(dealer?.website ?? null);
+  const maps = safeUrl(dealer?.maps_url ?? null);
+  const listing = safeUrl(dealer?.vdp_url ?? null);
+  const phone = dealer?.phone ?? null;
+  const links = (dealer?.links ?? []).filter(link => safeUrl(link.url));
+  // The section-level caveat already says this, so the note that repeats it is not shown twice.
+  const notes = (dealer?.notes ?? []).filter(note => !/not this VIN/i.test(note));
+  const identified = Boolean(dealer && (dealer.name || dealer.address || website || phone));
+  return <article className="dealer-card">
+    <h4>{carName(car)}</h4>
+    {identified && dealer ? <>
+      <p className="dealer-name">{dealer.name ?? <span className="muted-cell">Dealer name not in the record</span>}</p>
+      {dealer.address
+        ? <DealerRow label="Address">{dealer.address}{maps && <> · <a className="dealer-link" href={maps} target="_blank" rel="noopener noreferrer">Open in Maps</a></>}</DealerRow>
+        : <DealerRow label="Address"><span className="muted-cell">Not in the record</span>{maps && <> · <a className="dealer-link" href={maps} target="_blank" rel="noopener noreferrer">Search the name in Maps</a></>}</DealerRow>}
+      <DealerRow label="Website">{website
+        ? <a className="dealer-link" href={website} target="_blank" rel="noopener noreferrer">{dealer.source_domain ?? hostOf(website)}</a>
+        : <span className="muted-cell">Not in the record</span>}</DealerRow>
+      {phone && <DealerRow label="Phone">{dialable(phone) ? <a className="dealer-link" href={dialable(phone)!}>{phone}</a> : phone}</DealerRow>}
+      {listing && <DealerRow label="Listing"><a className="dealer-link" href={listing} target="_blank" rel="noopener noreferrer">The listing this record came from</a></DealerRow>}
+      {links.length > 0 && <p className="dealer-lookups">
+        <span className="dealer-label">Look up yourself</span>
+        {links.map(link => <a key={link.url} className="dealer-link" href={safeUrl(link.url)!} target="_blank" rel="noopener noreferrer" title={link.note}>{link.label}</a>)}
+      </p>}
+      {notes.length > 0 && <ul className="dealer-notes">{notes.map(note => <li key={note}>{note}</li>)}</ul>}
+    </> : <p className="honest-empty" role="status">
+      <CircleAlert size={14}/>
+      No dealer record came with this car. Only a licensed inventory import carries dealer contact details, and we won’t guess a name or an address.
+    </p>}
+    <div className="dealer-flags">
+      <span className="dealer-flags-label">Dealer signals · not a vehicle flag</span>
+      <p>Coming — we won’t invent a dealer score. Nothing here is read from review sites.</p>
+    </div>
+  </article>;
+}
+
+function DealerSection({ report }: { report: Report }) {
+  return <section className="report-section dealer-section">
+    <h3>Dealer</h3>
+    <p className="dealer-scope" role="note">
+      <CircleAlert size={14}/>
+      <span>{DEALER_CAVEAT} Contact details are as the licensed listing record reported them — not verified by
+        RevRank, and not evidence about the car. Green and red labels elsewhere in this report describe the
+        vehicle, never the seller.</span>
+    </p>
+    <div className="dealer-grid">
+      {report.candidates.map(c => <DealerCard key={c.id} car={c} dealer={c.dealer}/>)}
+    </div>
+  </section>;
+}
+
 function AIComparison({ ai, cars }: { ai: AIAnalysis; cars: Candidate[] }) {
   const index = new Map(ai.sources.map((s, i) => [s.id, i + 1]));
   const byId = new Map(ai.sources.map(s => [s.id, s]));
@@ -552,6 +618,8 @@ export function ReportView({ report, preferences, setPreferences, onApply, onCan
         <h3>Side by side</h3>
         <CompareTable report={report}/>
       </section>
+
+      <DealerSection report={report}/>
 
       <ComingModule title="Depreciation" body="ownership-horizon depreciation from cited market observations." caveats={depCaveats}/>
       <ComingModule title="Condition & feature vs price" body="condition and option content weighed against asking price with evidence." caveats={condCaveats}/>

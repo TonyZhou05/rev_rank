@@ -43,6 +43,31 @@ export interface NHTSASafetyData {
   complaints_url?: string | null;
 }
 
+// A search URL the backend constructed from the dealer's own name and place. RevRank does not read
+// or score what these pages say, so there is never a rating to render beside them.
+export interface DealerLink { label: string; url: string; note?: string }
+// The selling business as the licensed listing reported it — business level, never VIN level.
+// Every field can be null: an absent one means the record did not carry it, not that it is unknown
+// to the dealer. `maps_url` is a Google Maps search over the reported text, never a coordinate pin.
+export interface DealerInfo {
+  scope?: string;
+  name?: string | null;
+  website?: string | null;
+  phone?: string | null;
+  street?: string | null;
+  city?: string | null;
+  state?: string | null;
+  postal_code?: string | null;
+  address?: string | null;
+  vehicle_location?: string | null;
+  maps_url?: string | null;
+  vdp_url?: string | null;
+  source_domain?: string | null;
+  source?: string;
+  notes?: string[];
+  links?: DealerLink[];
+}
+
 export type EvidenceStatus = 'seller_claim' | 'user_confirmed' | 'extracted' | 'synthetic';
 export interface Evidence { value: string; source: string; status: EvidenceStatus }
 export interface Observation {
@@ -84,6 +109,8 @@ export interface Candidate {
   dom_active?: number | null;
   first_seen_at?: string | null;
   nhtsa_safety?: NHTSASafetyData | null;
+  // Dealer contact details from the licensed inventory record; null on every other import path.
+  dealer?: DealerInfo | null;
   features: string[];
   history: string | null;
   source_url: string | null;
