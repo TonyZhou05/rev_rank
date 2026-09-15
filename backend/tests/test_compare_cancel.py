@@ -136,6 +136,26 @@ def test_a_completion_without_a_token_still_reads_normally(monkeypatch):
     assert llm.chat(LLM_SETTINGS, [], [], timeout=30) == message
 
 
+def test_deepseek_tool_turns_disable_thinking_and_require_recording(monkeypatch):
+    """V4 flash thinking+auto skips add_finding; thinking also 400s tool_choice=required."""
+    captured = []
+
+    def handler(request):
+        captured.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": "", "tool_calls": []}}]})
+
+    stub_transport(monkeypatch, handler)
+    settings = Settings(llm_api_key="test-key", llm_model="deepseek-flash")
+    tools = analyst.tool_schemas(["A", "B"])
+    llm.chat(settings, [], tools, timeout=5)
+    assert captured[0]["thinking"] == {"type": "disabled"}
+    assert "tool_choice" not in captured[0]
+    recording = [t for t in tools if t["function"]["name"] in ("add_finding", "set_ranking")]
+    llm.chat(settings, [], recording, timeout=5)
+    assert captured[1]["thinking"] == {"type": "disabled"}
+    assert captured[1]["tool_choice"] == "required"
+
+
 def test_a_cancel_mid_stream_beats_an_otherwise_usable_answer(monkeypatch):
     token = CancelToken(timeout=30)
 
