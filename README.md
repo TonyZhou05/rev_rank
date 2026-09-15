@@ -92,7 +92,9 @@ editing `.env`. Re-run the checks with `.venv/bin/python scripts/check_sources.p
   every page, not just listings. RevRank does not evade bot managers. After a
   blocked import it can recover the vehicle from other sources. Licensed inventory
   runs first (`REVRANK_MARKETCHECK_API_KEY`: listing URL, stock number, VIN, with
-  provider dates). Active inventory drops a car the moment it stops being listed, so
+  provider dates). If that misses, a private in-app browse of **only the listing
+  URL the buyer pasted** may run (`REVRANK_BROWSER_RECOVERY_ENABLED`, Playwright on
+  the server). Active inventory drops a car the moment it stops being listed, so
   when every active lookup is empty one scoped call goes to MarketCheck's expired
   listings (`REVRANK_MARKETCHECK_PAST_INVENTORY_ENABLED`, default on). Those rows bind
   the VIN and show a dated last-listed price; they never supply a current price or
@@ -100,6 +102,8 @@ editing `.env`. Re-run the checks with `.venv/bin/python scripts/check_sources.p
   Search runs next (`REVRANK_SEARCH_PROVIDER`, `REVRANK_SEARCH_API_KEY`).
   `REVRANK_VIN_DECODE_ENABLED=true` adds a free NHTSA VIN decode that cross-checks
   year/make/model. See [recovery findings](docs/search-pipeline-investigation.md).
+- One `POST /api/import` is bounded by `REVRANK_IMPORT_TIMEOUT_SECONDS` (55s) and
+  stops when the page aborts, the same way compare does.
 - Market evidence is separate from listing extraction. Missing licensed data must
   produce an unavailable state, not fabricated fair-value estimates.
 - `.env` and `.local/` are ignored by Git. Keep keys server-side.

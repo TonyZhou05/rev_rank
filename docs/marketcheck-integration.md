@@ -111,7 +111,8 @@ is recorded as `licensed · failed` with the provider's reason and recovery cont
 Implemented, with offline tests, and verified live on 2026-09-13:
 
 - **Recovery source switch:** `ImportRequest.recovery_source` is `auto` (the default: MarketCheck first,
-  search only on a miss), `marketcheck` or `search`. The import page has a "Recovery source (debug)"
+  then a private browse of the buyer-supplied URL when Direct was blocked and browse is enabled,
+  then search only on a miss), `marketcheck`, `browse`, or `search`. The import page has a "Recovery source (debug)"
   control that shows this month's metered usage. Cached browser results are keyed by source.
 - **Call order, cheapest first:** a known VIN goes first (1 call returns the seller's record and its
   copies). Otherwise: listing URL, then the seller's stock number only if the URL missed. Once the

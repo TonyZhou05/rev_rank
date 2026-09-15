@@ -95,7 +95,7 @@ def main_() -> int:
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--only", default="")
     parser.add_argument("--corpus", default=str(ROOT / "scripts/url_corpus.json"))
-    parser.add_argument("--source", choices=("auto", "marketcheck", "search"), default="auto")
+    parser.add_argument("--source", choices=("auto", "marketcheck", "search", "browse"), default="auto")
     parser.add_argument("--spend", action="store_true", help="actually call the paid providers")
     args = parser.parse_args()
     cases = ([{"label": u, "input": u, "expect": {}} for u in args.urls] if args.urls
@@ -106,9 +106,9 @@ def main_() -> int:
     # Worst case per import: 3 MarketCheck inventory calls plus 1 NeoVIN MSRP decode; 4 searches
     # (8 Tavily credits). Blocked pages only.
     per_import = 4 if settings.neovin_msrp_enabled else 3
-    worst = {"marketcheck": per_import * imports if settings.marketcheck_enabled and args.source != "search" else 0,
+    worst = {"marketcheck": per_import * imports if settings.marketcheck_enabled and args.source not in ("search", "browse") else 0,
              settings.search_provider: 4 * usage.COST.get(settings.search_provider, 1) * imports
-             if settings.search_enabled and args.source != "marketcheck" else 0}
+             if settings.search_enabled and args.source not in ("marketcheck", "browse") else 0}
     left = {p: usage.limit(settings, p) - usage.used(settings, p) for p in worst if worst[p]}
     print(f"{imports} imports; worst case " + ", ".join(f"{p} {n} {usage.UNIT.get(p, 'units')} ({left.get(p, 0)} left this month)"
                                                           for p, n in worst.items() if n))

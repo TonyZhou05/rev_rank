@@ -105,14 +105,14 @@ export type EvidenceStatus = 'seller_claim' | 'user_confirmed' | 'extracted' | '
 export interface Evidence { value: string; source: string; status: EvidenceStatus }
 export interface Observation {
   field: string; value: string; source_url: string; retrieved_at: string;
-  observed_at: string | null; method: 'search' | 'direct' | 'licensed' | 'registry'; vin: string | null;
+  observed_at: string | null; method: 'search' | 'direct' | 'licensed' | 'registry' | 'browse'; vin: string | null;
 }
 export interface ImportAttempt { method: string; status: string; detail: string }
 // Debug switch for which paid recovery provider the server may call; omitted means "auto".
-export type RecoverySource = 'auto' | 'marketcheck' | 'search';
+export type RecoverySource = 'auto' | 'marketcheck' | 'search' | 'browse';
 export interface ImportRequest { url?: string; text?: string; vin?: string; recover?: boolean; recovery_source?: Exclude<RecoverySource, 'auto'> }
 export interface Candidate {
-  retrieval_method?: 'direct' | 'search' | 'licensed' | 'registry' | 'paste' | 'synthetic';
+  retrieval_method?: 'direct' | 'search' | 'licensed' | 'registry' | 'paste' | 'synthetic' | 'browse';
   observations?: Observation[];
   conflicts?: string[];
   id: string;
@@ -250,7 +250,7 @@ export interface ImportResult {
 }
 export interface SourceInfo { sources: { domain: string; name: string; status: string; reason: string }[]; live_fetch_enabled: boolean }
 // llm_model and llm_endpoint_host name the configured model; the API key never leaves the server.
-export interface Health { status: string; api_revision?: number; llm_enabled: boolean; llm_model?: string; llm_endpoint_host?: string; market_enabled: boolean; search_enabled?: boolean; search_provider?: string; licensed_inventory_enabled?: boolean; vin_decode_enabled?: boolean; neovin_msrp_enabled?: boolean; past_inventory_enabled?: boolean; compare_timeout_seconds?: number; usage?: Record<string, ProviderUsage> }
+export interface Health { status: string; api_revision?: number; llm_enabled: boolean; llm_model?: string; llm_endpoint_host?: string; market_enabled: boolean; search_enabled?: boolean; search_provider?: string; licensed_inventory_enabled?: boolean; vin_decode_enabled?: boolean; neovin_msrp_enabled?: boolean; past_inventory_enabled?: boolean; browser_recovery_enabled?: boolean; compare_timeout_seconds?: number; import_timeout_seconds?: number; usage?: Record<string, ProviderUsage> }
 export interface ProviderUsage { used: number; limit: number; unit: string; month: string }
 export interface ImportSlot {
   id: string;

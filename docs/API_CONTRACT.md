@@ -13,7 +13,7 @@ transmission/body/engine/drivetrain/fuel_type/location: string|null; features: s
 source_url: string|null; source_kind: 'synthetic'|'user'|'listing';
 evidence: Record<string, {value: string, source: string, status: 'seller_claim'|'user_confirmed'|'extracted'|'synthetic'}>;
 warnings: string[]; verified_fields: string[];
-retrieval_method: 'direct'|'search'|'licensed'|'registry'|'paste'|'synthetic';
+retrieval_method: 'direct'|'search'|'licensed'|'registry'|'paste'|'synthetic'|'browse';
 observations: Observation[]; conflicts: string[]`.
 
 Recovery fields (populated during listing recovery):
@@ -59,7 +59,8 @@ this confirms user input, NOT independent factual verification of seller claims.
 - `GET /api/health` -> `{status: 'ok', llm_enabled: boolean, llm_model: string, llm_endpoint_host: string,
   market_enabled: boolean, api_revision: number, licensed_inventory_enabled: boolean,
   vin_decode_enabled: boolean, neovin_msrp_enabled: boolean, past_inventory_enabled: boolean,
-  dealer_signals_enabled: boolean, usage: {...}}`.
+  dealer_signals_enabled: boolean, browser_recovery_enabled: boolean,
+  compare_timeout_seconds: number, import_timeout_seconds: number, usage: {...}}`.
   `past_inventory_enabled` is true when a licensed key is configured and recovery may spend one
   extra call on MarketCheck's expired-listing endpoint after active inventory holds nothing.
   `dealer_signals_enabled` is true only when search-derived dealer flags are switched on *and* a
@@ -70,14 +71,15 @@ this confirms user input, NOT independent factual verification of seller claims.
   Source status strings: `allowed | restricted | unsupported` (not "unreviewed"). Restricted/unsupported do not fetch.
   Note: Local allowlist ≠ reuse license; verify source-specific rights before integration.
 - `GET /api/demo` -> `{candidates: Candidate[]}`. Three clearly synthetic candidates.
-- `POST /api/import` body `{url?: string, text?: string, vin?: string, recover?: boolean, recovery_source?: 'auto'|'marketcheck'|'search'}` ->
+- `POST /api/import` body `{url?: string, text?: string, vin?: string, recover?: boolean, recovery_source?: 'auto'|'marketcheck'|'search'|'browse'}` ->
   ImportResponse (see below).
   User text may accompany a URL and is analyzed locally/through configured LLM without fetching URL.
   Operational import failures are structured results; invalid schemas use 422.
   When the import ends with a known VIN (pasted, read from the URL, shown on the page, or bound during
   recovery) and `neovin_msrp_enabled`, one MarketCheck NeoVIN decode fills `candidate.msrp`. It runs once
   per import, is skipped when an MSRP is already present, and is reported as a `licensed` attempt.
-  `recovery_source: 'search'` suppresses it, like every other MarketCheck call.
+  `recovery_source: 'search'` or `'browse'` suppresses it, like every other MarketCheck call.
+  Import is cancellable and time-bounded; see "Import cancellation and timeout" below.
 - `POST /api/constraints` body `{message: string, preferences?: Preferences}` -> ConstraintResponse.
   Maps free-form buyer language onto Preferences and nothing else; it never returns a vehicle fact.
 - `POST /api/compare` body `{candidates: Candidate[2..3], preferences: Preferences}` -> Report.
@@ -120,6 +122,20 @@ once the request body has arrived, so `frontend/vite.config.ts` forwards the abo
 a proxy cannot be taught that, the time limit is the backstop rather than the abort, which is why the
 server enforces its own budget instead of trusting the disconnect.
 
+### Import cancellation and timeout
+
+`POST /api/import` uses the same request-scoped cancel token and `guarded()` worker as compare.
+`GET /api/health` reports `import_timeout_seconds` (`REVRANK_IMPORT_TIMEOUT_SECONDS`, default 55)
+and `browser_recovery_enabled`. Every import response carries `X-RevRank-Request-Id`.
+
+- **Client abort.** Disconnect within about 250ms stops Direct, licensed lookup, private browse
+  (Chromium is closed), and search. Status `499`.
+- **Browse time cap.** One Playwright session is capped by `REVRANK_BROWSER_TIMEOUT_SECONDS`
+  (default 20) inside the import token. A spent browse budget is recorded as a `browse` attempt
+  with status `timeout` and recovery may fall through to search.
+- **Import budget spent before a result exists.** `503` with `{detail}`; nothing invented.
+- Concurrent imports share no cancellation state.
+
 ### ImportResponse
 
 ```
@@ -133,7 +149,7 @@ server enforces its own budget instead of trusting the disconnect.
 ```
 
 **recovery_status** (frozen vocabulary):
-- `recovered` - Successfully recovered from licensed inventory or search
+- `recovered` - Successfully recovered from licensed inventory, private browse, or search
 - `identity_only` - Only NHTSA VIN decode succeeded; listing details unknown
 - `identity_conflict` - Sources disagree on VIN or identity
 - `not_found` - No matching listing found

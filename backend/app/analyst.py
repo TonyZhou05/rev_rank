@@ -442,6 +442,8 @@ def provenance(c: Candidate, field: str) -> tuple[str, str | None]:
         return "licensed inventory record", url
     if c.source_kind == "synthetic":
         return "synthetic demo data", None
+    if c.retrieval_method == "browse":
+        return "private browse of the listing you supplied", url
     if c.retrieval_method == "search":
         return "search excerpt, date unknown", url
     if c.source_kind == "user":

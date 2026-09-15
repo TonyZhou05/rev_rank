@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ArrowRight, Check, CircleAlert, FileText, Gauge, Link2, LoaderCircle, Pencil, Plus, RefreshCw, RotateCcw, Sparkles, X } from 'lucide-react';
-import { api, apiLog, API_REVISION, ApiError, compareClientTimeoutMs, errorMessage } from './api';
+import { api, apiLog, API_REVISION, ApiError, compareClientTimeoutMs, errorMessage, importClientTimeoutMs } from './api';
 import { ApiInspector, JsonView } from './ApiInspector';
 import type { Candidate, Health, ImportSlot, Preferences, RecoverySource, Report } from './types';
 import { Review } from './Review';
@@ -40,6 +40,7 @@ export default function App() {
   const [compareError, setCompareError] = useState<string | null>(null);
   const [buildSlow, setBuildSlow] = useState(false);
   const compareAbort = useRef<AbortController | null>(null);
+  const importAbort = useRef<AbortController | null>(null);
   const candidates = useMemo(() => slots.map(s => s.candidate).filter((c): c is Candidate => Boolean(c)), [slots]);
   const narrowConstraints = useNarrowViewport(CONSTRAINT_NARROW);
 
@@ -72,8 +73,11 @@ export default function App() {
       return;
     }
     setBusy(true); setLoadingSlot(slot.id); setNotice('');
+    importAbort.current?.abort();
+    const ac = new AbortController();
+    importAbort.current = ac;
     try {
-      const result = await api.import(body);
+      const result = await api.import(body, ac.signal, importClientTimeoutMs(health?.import_timeout_seconds));
       cacheImport(body, result);
       updateSlot(slot.id, { candidate: result.candidate, status: result.status, message: result.message, attempts: result.attempts,
                             recovery_status: result.recovery_status, cachedAt: undefined, editing: false, raw: { request: body, status: 200, response: result } });
@@ -105,6 +109,7 @@ export default function App() {
     }));
     setReport(null);
   };
+  const cancelImport = () => { importAbort.current?.abort('cancel'); };
   const cancelCompare = () => { compareAbort.current?.abort('cancel'); };
   const generateReport = async () => {
     if (candidates.length < 2) { setNotice('Import at least two candidates before generating a report.'); return; }
@@ -164,9 +169,9 @@ export default function App() {
       {step === 'import' && <section className="intro"><div><p className="eyebrow">COMPARE THE CARS, NOT THE HYPE</p><h1>Make the next car decision with evidence.</h1><p className="lede">Bring in the listings you’re considering. RevRank extracts the details, checks the tradeoffs, and builds a report around what matters to you.</p></div><div className="status-card"><span className="status-dot"/>Local workspace<br/><small>Your draft stays in this browser.</small></div></section>}
       <nav className="steps" aria-label="Comparison steps">{[['import','01','Import listings'],['review','02','Review details'],['report','03','Read report']].map(([key,num,label], i) => <button key={key} className={step === key ? 'step active' : 'step'} onClick={() => (key === 'review' && candidates.length === 0) ? setNotice('Import a listing first.') : setStep(key as typeof step)}><span>{num}</span>{label}{i < 2 && <ArrowRight size={15}/>}</button>)}</nav>
       {health && health.api_revision !== API_REVISION && <div className="notice" role="alert"><CircleAlert size={17}/><span>The running RevRank backend is older than this page (API revision {health.api_revision ?? 1}, expected {API_REVISION}). Its results may be wrong, for example rejecting enabled websites. Stop scripts/dev.py with Ctrl+C and start it again.</span></div>}
-      {health?.search_enabled === false && !health.licensed_inventory_enabled && <div className="notice" role="status"><CircleAlert size={17}/><span>{!health.search_provider?.trim() || health.search_provider === 'none' ? 'Search recovery is unavailable: no search provider is configured.' : `Search recovery is unavailable (provider setting: ${health.search_provider}).`} For local setup, set REVRANK_SEARCH_PROVIDER to brave or tavily and REVRANK_SEARCH_API_KEY (or a licensed REVRANK_MARKETCHECK_API_KEY) in the backend’s local .env, then restart the backend and reload this page. Keep the key server-side. Paste listing text to continue without search.</span></div>}
+      {health?.search_enabled === false && !health.licensed_inventory_enabled && !health.browser_recovery_enabled && <div className="notice" role="status"><CircleAlert size={17}/><span>{!health.search_provider?.trim() || health.search_provider === 'none' ? 'Search recovery is unavailable: no search provider is configured.' : `Search recovery is unavailable (provider setting: ${health.search_provider}).`} For local setup, set REVRANK_SEARCH_PROVIDER to brave or tavily and REVRANK_SEARCH_API_KEY (or a licensed REVRANK_MARKETCHECK_API_KEY, or REVRANK_BROWSER_RECOVERY_ENABLED) in the backend’s local .env, then restart the backend and reload this page. Keep the key server-side. Paste listing text to continue without search.</span></div>}
       {notice && <div className="notice"><CircleAlert size={17}/><span>{notice}</span></div>}
-      {step === 'import' && <section className="workspace"><div className="panel main-panel"><div className="panel-heading"><div><p className="eyebrow">START HERE</p><h2>Import the cars you’re considering</h2></div><button className="secondary-button" onClick={loadDemo} disabled={busy}><Sparkles size={16}/> Use examples</button></div><p className="muted">Paste a listing URL from a supported source, or paste the listing text when a website blocks automated access.</p><SourceSwitch value={recoverySource} onChange={setRecoverySource} health={health}/><div className="import-grid">{slots.map((slot, index) => <ImportCard key={slot.id} slot={slot} index={index} busy={busy} loading={loadingSlot === slot.id} canRemove={slots.length > 1 || Boolean(slot.candidate || slot.url || slot.text || slot.vin)} onChange={update => updateSlot(slot.id, update)} onImport={refresh => importSlot(slot, refresh)} onRemove={() => removeSlot(s => s.id !== slot.id)} onEditField={(field, raw) => slot.candidate && updateCandidate(slot.candidate.id, field, raw)} />)}{slots.length < 3 && <button className="add-card" onClick={addSlot}><Plus size={18}/><strong>Add a {slots.length === 1 ? 'second' : 'third'} car</strong><span>Compare up to three listings</span></button>}</div><div className="import-footer"><p className="muted">{candidates.length} of {slots.length} {slots.length === 1 ? 'car' : 'cars'} imported{candidates.length < 2 ? ' · import at least two to generate a report' : ''}</p><button className="primary-button" disabled={!candidates.length} onClick={() => setStep('review')}>Review details <ArrowRight size={16}/></button></div></div><aside className="panel side-panel"><Gauge size={21} className="amber"/><h3>What happens next</h3><ol><li>We identify the exact model, generation, mileage, and price.</li><li>You confirm anything missing or unclear.</li><li>Price, mileage, and evidence quality shape the final comparison.</li></ol><div className="side-callout"><strong>Built for uncertainty</strong><p>Seller claims and unknown history remain labeled in your report.</p></div></aside></section>}
+      {step === 'import' && <section className="workspace"><div className="panel main-panel"><div className="panel-heading"><div><p className="eyebrow">START HERE</p><h2>Import the cars you’re considering</h2></div><button className="secondary-button" onClick={loadDemo} disabled={busy}><Sparkles size={16}/> Use examples</button></div><p className="muted">Paste a listing URL from a supported source, or paste the listing text when a website blocks automated access.</p><SourceSwitch value={recoverySource} onChange={setRecoverySource} health={health}/><div className="import-grid">{slots.map((slot, index) => <ImportCard key={slot.id} slot={slot} index={index} busy={busy} loading={loadingSlot === slot.id} canRemove={slots.length > 1 || Boolean(slot.candidate || slot.url || slot.text || slot.vin)} onChange={update => updateSlot(slot.id, update)} onImport={refresh => importSlot(slot, refresh)} onCancel={cancelImport} onRemove={() => removeSlot(s => s.id !== slot.id)} onEditField={(field, raw) => slot.candidate && updateCandidate(slot.candidate.id, field, raw)} />)}{slots.length < 3 && <button className="add-card" onClick={addSlot}><Plus size={18}/><strong>Add a {slots.length === 1 ? 'second' : 'third'} car</strong><span>Compare up to three listings</span></button>}</div><div className="import-footer"><p className="muted">{candidates.length} of {slots.length} {slots.length === 1 ? 'car' : 'cars'} imported{candidates.length < 2 ? ' · import at least two to generate a report' : ''}</p><button className="primary-button" disabled={!candidates.length} onClick={() => setStep('review')}>Review details <ArrowRight size={16}/></button></div></div><aside className="panel side-panel"><Gauge size={21} className="amber"/><h3>What happens next</h3><ol><li>We identify the exact model, generation, mileage, and price.</li><li>You confirm anything missing or unclear.</li><li>Price, mileage, and evidence quality shape the final comparison.</li></ol><div className="side-callout"><strong>Built for uncertainty</strong><p>Seller claims and unknown history remain labeled in your report.</p></div></aside></section>}
       {step === 'review' && <Review candidates={candidates} preferences={preferences} setPreferences={setPreferences} updateCandidate={updateCandidate} removeCandidate={(id) => removeSlot(s => s.candidate?.id !== id)} generateReport={generateReport} onCancelCompare={cancelCompare} compareError={compareError} buildSlow={buildSlow} onAddMore={() => { addSlot(); setStep('import'); }} busy={busy} narrow={narrowConstraints} />}
       {step === 'report' && !report && <div className="panel main-panel"><h2>Generate an updated report</h2><p>Your inputs have changed or no report has been generated yet.</p><button className="primary-button" onClick={() => setStep(candidates.length ? 'review' : 'import')}>Return to {candidates.length ? 'review' : 'import'}</button></div>}
       {step === 'report' && report && <ReportView report={report} preferences={preferences} setPreferences={setPreferences} onApply={generateReport} onCancelCompare={cancelCompare} compareError={compareError} buildSlow={buildSlow} busy={busy} narrow={narrowConstraints} onBack={() => setStep('review')} onReset={reset} />}
@@ -185,8 +190,9 @@ function SourceSwitch({ value, onChange, health }: { value: RecoverySource; onCh
   // One more MarketCheck call decodes a known VIN for the factory MSRP; say so, the quota is small.
   const neovin = health?.neovin_msrp_enabled ? ' One extra call decodes a known VIN for its original MSRP.' : '';
   const options: { key: RecoverySource; label: string; ready: boolean; hint: string }[] = [
-    { key: 'auto', label: 'Auto', ready: true, hint: `MarketCheck first; ${search} only when MarketCheck has no match.${neovin}` },
+    { key: 'auto', label: 'Auto', ready: true, hint: `MarketCheck first; private browse of your listing URL when MarketCheck has no match; ${search} only after that.${neovin}` },
     { key: 'marketcheck', label: 'MarketCheck', ready: Boolean(health?.licensed_inventory_enabled), hint: `Only MarketCheck is called: usually 1 call per import, at most 3.${neovin}` },
+    { key: 'browse', label: 'Private browse', ready: Boolean(health?.browser_recovery_enabled), hint: 'Opens only the listing URL you pasted in a server-side headless session. No review sites. Bot-manager blocks are reported, not bypassed.' },
     { key: 'search', label: search, ready: Boolean(health?.search_enabled), hint: `Only ${search} is called: up to 4 searches per import. Excerpts can be stale.` },
   ];
   const chosen = options.find(o => o.key === value) ?? options[0];
@@ -207,13 +213,13 @@ function SourceSwitch({ value, onChange, health }: { value: RecoverySource; onCh
 const ORDINALS = ['First', 'Second', 'Third'];
 const METHOD_LABELS: Record<string, string> = {
   direct: 'Fetched from listing', search: 'Recovered via search', licensed: 'MarketCheck inventory',
-  registry: 'VIN decode only', paste: 'From pasted text', synthetic: 'Synthetic example',
+  browse: 'Private browse of listing', registry: 'VIN decode only', paste: 'From pasted text', synthetic: 'Synthetic example',
 };
 
 type StatField = 'price' | 'mileage' | 'location';
 interface ImportCardProps {
   slot: ImportSlot; index: number; busy: boolean; loading: boolean; canRemove: boolean;
-  onChange: (update: Partial<ImportSlot>) => void; onImport: (refresh: boolean) => void; onRemove: () => void;
+  onChange: (update: Partial<ImportSlot>) => void; onImport: (refresh: boolean) => void; onCancel?: () => void; onRemove: () => void;
   onEditField: (field: StatField, raw: string) => void;
 }
 
@@ -272,7 +278,7 @@ function recoveryOutcomeLine(slot: ImportSlot): string | null {
   return `Tried ${parts.join(', then ')} — paste the listing text or add a VIN to continue.`;
 }
 
-function ImportCard({ slot, index, busy, loading, canRemove, onChange, onImport, onRemove, onEditField }: ImportCardProps) {
+function ImportCard({ slot, index, busy, loading, canRemove, onChange, onImport, onCancel, onRemove, onEditField }: ImportCardProps) {
   const candidate = slot.candidate;
   const showForm = !candidate || slot.editing;
   const ready = slot.status === 'success' || (candidate !== null && reviewItems(candidate).length === 0);
@@ -302,10 +308,11 @@ function ImportCard({ slot, index, busy, loading, canRemove, onChange, onImport,
         <button className="primary-button full" onClick={() => onImport(false)} disabled={busy || (!slot.url.trim() && !slot.text.trim())}>
           {loading ? <LoaderCircle className="spin" size={16}/> : <Link2 size={16}/>} {loading ? 'Importing…' : candidate ? 'Import replacement' : 'Import car'}
         </button>
+        {loading && onCancel && <button type="button" className="secondary-button full" onClick={onCancel}>Cancel</button>}
         {candidate && <button className="secondary-button full" onClick={() => onChange({ editing: false })}>Cancel</button>}
       </div>
       {!candidate && slot.message && !pasteNeeded && <p className="import-error"><CircleAlert size={15}/><span>{buyerImportMessage(slot.message) ?? slot.message}</span></p>}
-    </> : <VehicleSummary slot={slot} busy={busy} loading={loading} onEdit={() => onChange({ editing: true })} onRefresh={() => onImport(true)} onEditField={onEditField} />}
+    </> : <VehicleSummary slot={slot} busy={busy} loading={loading} onEdit={() => onChange({ editing: true })} onRefresh={() => onImport(true)} onCancel={onCancel} onEditField={onEditField} />}
     {outcome && <p className="recovery-outcome"><CircleAlert size={14}/><span>{outcome}</span></p>}
     {(slot.message || !!slot.attempts?.length) && <details className="import-log">
       <summary>Import details</summary>
@@ -369,7 +376,7 @@ function EditableStat({ car, field, label, display, empty, note, unit, disabled,
   </div>;
 }
 
-function VehicleSummary({ slot, busy, loading, onEdit, onRefresh, onEditField }: { slot: ImportSlot; busy: boolean; loading: boolean; onEdit: () => void; onRefresh: () => void; onEditField: (field: StatField, raw: string) => void }) {
+function VehicleSummary({ slot, busy, loading, onEdit, onRefresh, onCancel, onEditField }: { slot: ImportSlot; busy: boolean; loading: boolean; onEdit: () => void; onRefresh: () => void; onCancel?: () => void; onEditField: (field: StatField, raw: string) => void }) {
   const car = slot.candidate as Candidate;
   const unresolved = (car.conflicts ?? []).filter(field => !car.verified_fields.includes(field));
   const unknown = (field: StatField) => unresolved.includes(field) ? 'Sources disagree' : 'Unknown';
@@ -401,8 +408,10 @@ function VehicleSummary({ slot, busy, loading, onEdit, onRefresh, onEditField }:
       </span>}
       {slot.cachedAt && <span className="tag" title="Reused a result saved in this browser; Refresh requests it again.">Saved {dateLabel(new Date(slot.cachedAt).toISOString())}</span>}
     </div>
-    {(car.retrieval_method === 'search' || car.retrieval_method === 'licensed') &&
-      <p className="vehicle-recovered"><CircleAlert size={15}/><span>Recovered from inventory data — please confirm price and mileage.</span></p>}
+    {(car.retrieval_method === 'search' || car.retrieval_method === 'licensed' || car.retrieval_method === 'browse') &&
+      <p className="vehicle-recovered"><CircleAlert size={15}/><span>{car.retrieval_method === 'browse'
+        ? 'Recovered from a private browse of this listing — please confirm price and mileage.'
+        : 'Recovered from inventory data — please confirm price and mileage.'}</span></p>}
     {review.length ? <p className="vehicle-review"><CircleAlert size={15}/><span>Check before comparing: {review.join(', ')}.</span></p>
                    : <p className="vehicle-ok"><Check size={15}/><span>Key details found. Click a value to correct it.</span></p>}
     <div className="vehicle-actions">
@@ -410,6 +419,7 @@ function VehicleSummary({ slot, busy, loading, onEdit, onRefresh, onEditField }:
       {(slot.url.trim() || slot.text.trim()) && <button className="secondary-button" onClick={onRefresh} disabled={busy}>
         {loading ? <LoaderCircle className="spin" size={14}/> : <RefreshCw size={14}/>} {loading ? 'Refreshing…' : 'Refresh'}
       </button>}
+      {loading && onCancel && <button type="button" className="secondary-button" onClick={onCancel}>Cancel</button>}
     </div>
   </div>;
 }

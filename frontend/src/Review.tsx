@@ -13,7 +13,7 @@ const GROUPS: { title: string; fields: (keyof Candidate)[] }[] = [
 ];
 const METHODS: Record<string, string> = {
   direct: 'Fetched from listing', search: 'Recovered via search', licensed: 'Licensed inventory',
-  registry: 'VIN decode only', paste: 'Pasted text', synthetic: 'Synthetic example',
+  browse: 'Private browse of listing', registry: 'VIN decode only', paste: 'Pasted text', synthetic: 'Synthetic example',
 };
 const CURRENCIES = ['USD', 'CAD', 'EUR', 'GBP', 'AUD', 'JPY'];
 
