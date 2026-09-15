@@ -15,7 +15,10 @@ without a live call.**
 - Before any live call, tell the user how many calls or credits it will use and why. Stay under 10
   calls per task unless the user approves more.
 - `scripts/eval_imports.py` is a dry run unless given `--spend`. Narrow it first with `--only`,
-  `--repeat 1` and `--source marketcheck|search`.
+ `--repeat 1` and `--source marketcheck|search`.
+- `scripts/dealer_signal_smoke.py` is the only sanctioned live check of the dealer-signal search: one
+ dealer, 1–3 searches, dry run unless `--spend`. Record the outcome in
+ `docs/dealer-report-section.md` instead of re-running it.
 - The backend meters paid calls in `.local/usage.json` and refuses them at `REVRANK_MARKETCHECK_MONTHLY_CALLS`
   (default 500) and `REVRANK_SEARCH_MONTHLY_CREDITS` (default 1000). It counts only this checkout's
   calls; `/api/health` reports the counts. Never reset the file to get around the limit.
