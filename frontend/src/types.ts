@@ -142,7 +142,7 @@ export interface ImportResult {
   message: string;
 }
 export interface SourceInfo { sources: { domain: string; name: string; status: string; reason: string }[]; live_fetch_enabled: boolean }
-export interface Health { status: string; api_revision?: number; llm_enabled: boolean; market_enabled: boolean; search_enabled?: boolean; search_provider?: string; licensed_inventory_enabled?: boolean; vin_decode_enabled?: boolean; neovin_msrp_enabled?: boolean; usage?: Record<string, ProviderUsage> }
+export interface Health { status: string; api_revision?: number; llm_enabled: boolean; market_enabled: boolean; search_enabled?: boolean; search_provider?: string; licensed_inventory_enabled?: boolean; vin_decode_enabled?: boolean; neovin_msrp_enabled?: boolean; compare_timeout_seconds?: number; usage?: Record<string, ProviderUsage> }
 export interface ProviderUsage { used: number; limit: number; unit: string; month: string }
 export interface ImportSlot {
   id: string;

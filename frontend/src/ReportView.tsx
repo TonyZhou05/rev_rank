@@ -469,9 +469,19 @@ export function ReportView({ report, preferences, setPreferences, onApply, onCan
         <span className="mode-pill">{report.analysis_mode === 'llm' ? 'AI assisted' : 'Rules-based'}</span>
       </div>
 
+      {ai && ai.status === 'partial' && ai.message && /time limit|timed out|stopped at the server/i.test(ai.message) &&
+        <div className="ai-timeout-note" role="status"><CircleAlert size={15}/><span>{ai.message}</span></div>}
       {ai && ai.status !== 'unavailable' ? <AIComparison ai={ai} cars={cars}/>
-        : <div className="ai-off"><Sparkles size={16}/><div><strong>AI comparison not generated</strong>
-            <p>{ai?.message || 'Add an LLM API key on the server to get a cited, side-by-side verdict.'} The table below is computed directly from your reviewed details.</p></div></div>}
+        : (() => {
+          const timedOut = Boolean(ai?.message && /time limit|timed out|stopped at the server/i.test(ai.message));
+          return <div className="ai-off"><Sparkles size={16}/><div>
+            <strong>{timedOut ? 'AI stopped at the server time limit' : 'AI comparison not generated'}</strong>
+            <p>{ai?.message || 'Add an LLM API key on the server to get a cited, side-by-side verdict.'}
+              {' '}{timedOut
+                ? 'The comparison, metrics and evidence below are complete — nothing was invented from the unfinished AI run.'
+                : 'The table below is computed directly from your reviewed details.'}</p>
+          </div></div>;
+        })()}
 
       <NhtsaSection report={report}/>
 

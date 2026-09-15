@@ -94,10 +94,23 @@ export const api = {
   sources: () => request<SourceInfo>('/sources'),
   demo: () => request<{ candidates: Candidate[] }>('/demo'),
   import: (body: ImportRequest) => request<ImportResult>('/import', body),
-  // AI tool loop can be slow; 90s soft-fails into a retry empty state rather than an endless spinner.
-  compare: (candidates: Candidate[], preferences: Preferences, signal?: AbortSignal) =>
-    request<Report>('/compare', { candidates, preferences }, 90_000, signal),
+  // Client abort sits just above health.compare_timeout_seconds (App passes the ms); fallback 90s.
+  compare: (candidates: Candidate[], preferences: Preferences, signal?: AbortSignal, timeoutMs = 90_000) =>
+    request<Report>('/compare', { candidates, preferences }, timeoutMs, signal),
   reports: () => request<{ reports: ReportSummary[] }>('/reports'),
   report: (id: string) => request<Report>(`/reports/${encodeURIComponent(id)}`),
 };
-export function errorMessage(error: unknown) { return error instanceof Error ? error.message : 'An unexpected error occurred. Please try again.'; }
+export function errorMessage(error: unknown) {
+  if (error instanceof ApiError) {
+    // Prefer the server detail string over a bare "503: …" status wrapper.
+    const stripped = error.message.replace(/^\d{3}:\s*/, '').trim();
+    return stripped || error.message;
+  }
+  return error instanceof Error ? error.message : 'An unexpected error occurred. Please try again.';
+}
+
+/** Client compare abort budget: a few seconds above the server limit so a 200 timed-out report wins the race. */
+export function compareClientTimeoutMs(serverSeconds?: number | null) {
+  const server = typeof serverSeconds === 'number' && serverSeconds > 0 ? serverSeconds : 85;
+  return Math.round((server + 5) * 1000);
+}
