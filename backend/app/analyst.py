@@ -29,6 +29,17 @@ MAX_TURNS, MAX_TOOL_CALLS, BUDGET_SECONDS = 24, 60, 170
 # How often finish may be turned away while nothing is recorded. A model that appends finish to
 # every batch still gets turns to record its findings, and one that only ever calls it still stops.
 MAX_FINISH_REFUSALS = 2
+# After evidence is in the workspace, finish-without-a-verdict is turned away more times so the
+# model can still be nudged into add_finding. Gathering batches do not spend this budget.
+MAX_RECORDING_REFUSALS = 4
+EVIDENCE_TOOLS = frozenset({
+    "get_vehicle_facts", "get_recalls", "get_complaints", "get_safety_rating", "get_comparison_metrics",
+})
+RECORD_FINDINGS = (
+    "Evidence is already in the tool results. Do not call finish yet. "
+    "Record an overall verdict with add_finding (kind 'verdict', car 'all', citations listing ids "
+    "from those results), then green_flag and red_flag statements, then call finish."
+)
 PROMPT_VERSION = "analyst-tools-v4"
 LIMITS = {"verdict": 1, "strength": 5, "risk": 5, "comparison": 5, "question": 2}
 # The model speaks in green and red flags; storage keeps the older strength/risk names, and both
@@ -508,11 +519,37 @@ def assemble(ws: Workspace, settings: Settings) -> AIAnalysis:
 
 def next_step(ws: Workspace) -> str:
     """What the model still owes before finish is honoured, named from what it has already done."""
-    if not ws.sources.keys() - {"P.buyer"}:
+    if not fetched_evidence(ws):
         return ("Nothing has been fetched yet. Call get_vehicle_facts for every car and get_comparison_metrics, "
                 "then record your statements with add_finding before calling finish.")
     return ("Record the overall verdict first: add_finding with kind 'verdict', car 'all' and citations listing ids "
             "from the results you already fetched, then your green_flag and red_flag statements per car.")
+
+
+def verdict_recorded(ws: Workspace) -> bool:
+    return any(f["kind"] == "verdict" for f in ws.findings)
+
+
+def fetched_evidence(ws: Workspace) -> bool:
+    return bool(ws.sources.keys() - {"P.buyer"})
+
+
+def decide_finish(ws: Workspace, refusals: int, gathered: bool) -> tuple[bool, dict, int]:
+    """Whether finish ends the run, the tool result, and the updated refusal count.
+
+    Finish tacked onto an evidence-gathering batch is never honoured and does not spend the
+    recording budget: that is how a live run fetched ~9 results and still exited empty. A
+    finish-only turn without a verdict is turned away up to the cap, then honoured so the
+    budget is not spent on an endless refusal loop.
+    """
+    if verdict_recorded(ws):
+        return True, {"ok": True}, refusals
+    cap = MAX_RECORDING_REFUSALS if fetched_evidence(ws) else MAX_FINISH_REFUSALS
+    if gathered or refusals < cap:
+        if not gathered:
+            refusals += 1
+        return False, {"ok": False, "reason": next_step(ws)}, refusals
+    return True, {"ok": True}, refusals
 
 
 def parse_arguments(raw) -> dict:
@@ -539,7 +576,7 @@ def analyze(report: Report, settings: Settings, token: CancelToken | None = None
     # Own budget, kept inside the request's remaining time so the loop stops before the hard wall.
     limit = BUDGET_SECONDS if token is None else max(0.0, min(BUDGET_SECONDS, token.remaining() - RESERVE_SECONDS))
     deadline = time.monotonic() + limit
-    nudged, stopped, refusals = False, False, 0
+    nudged, stopped, refusals, recording_nudge = False, False, 0, False
     try:
         for turn in range(MAX_TURNS):
             remaining = deadline - time.monotonic()
@@ -550,7 +587,7 @@ def analyze(report: Report, settings: Settings, token: CancelToken | None = None
             message = chat(settings, messages, tools, timeout=min(120, remaining), token=token)
             calls = [c for c in (message.get("tool_calls") or []) if isinstance(c, dict) and isinstance(c.get("function"), dict)]
             if not calls:
-                if nudged or ws.findings and any(f["kind"] == "verdict" for f in ws.findings):
+                if nudged or verdict_recorded(ws):
                     break
                 nudged = True
                 messages += [{"role": "assistant", "content": str(message.get("content") or "")[:4000]},
@@ -560,19 +597,29 @@ def analyze(report: Report, settings: Settings, token: CancelToken | None = None
                       "function": {"name": str(c["function"].get("name", "")), "arguments": c["function"].get("arguments") or "{}"}}
                      for i, c in enumerate(calls[:40])]
             messages.append({"role": "assistant", "content": str(message.get("content") or ""), "tool_calls": calls})
-            finished = False
+            # Run evidence and recording tools before evaluating finish so a batch that fetches
+            # then calls finish is judged on what it just gathered, not on the previous turn.
+            results: dict[str, dict] = {}
+            gathered = False
             for call in calls:
                 name, args = call["function"]["name"], parse_arguments(call["function"]["arguments"])
                 if name == "finish":
-                    # Counted on its own, not against the no-tool-call nudge: sharing one flag ended
-                    # the run on the second finish, which a model that appends finish to every batch
-                    # reaches while it is still fetching evidence and has recorded nothing.
-                    finished = any(f["kind"] == "verdict" for f in ws.findings) or refusals >= MAX_FINISH_REFUSALS
-                    refusals += not finished
-                    result = {"ok": True} if finished else {"ok": False, "reason": next_step(ws)}
-                else:
-                    result = ws.run(name, args)
-                messages.append({"role": "tool", "tool_call_id": call["id"], "content": json.dumps(result, default=str)[:7000]})
+                    continue
+                gathered = gathered or name in EVIDENCE_TOOLS
+                results[call["id"]] = ws.run(name, args)
+            finished, finish_result = False, None
+            for call in calls:
+                if call["function"]["name"] != "finish":
+                    continue
+                if finish_result is None:
+                    finished, finish_result, refusals = decide_finish(ws, refusals, gathered)
+                results[call["id"]] = finish_result
+            for call in calls:
+                messages.append({"role": "tool", "tool_call_id": call["id"],
+                                 "content": json.dumps(results[call["id"]], default=str)[:7000]})
+            if finish_result is not None and not finish_result.get("ok") and fetched_evidence(ws) and not recording_nudge:
+                recording_nudge = True
+                messages.append({"role": "user", "content": RECORD_FINDINGS})
             if finished:
                 break
     except LLMUnavailable as error:
