@@ -128,11 +128,14 @@ server enforces its own budget instead of trusting the disconnect.
 `GET /api/health` reports `import_timeout_seconds` (`REVRANK_IMPORT_TIMEOUT_SECONDS`, default 55)
 and `browser_recovery_enabled`. Every import response carries `X-RevRank-Request-Id`.
 
-- **Client abort.** Disconnect within about 250ms stops Direct, licensed lookup, private browse
-  (Chromium is closed), and search. Status `499`.
+- **Client abort.** Disconnect within about 250ms stops Direct, private browse
+  (Chromium is closed), licensed lookup, and search. Status `499`.
 - **Browse time cap.** One Playwright session is capped by `REVRANK_BROWSER_TIMEOUT_SECONDS`
   (default 20) inside the import token. A spent browse budget is recorded as a `browse` attempt
-  with status `timeout` and recovery may fall through to search.
+  with status `timeout` and recovery may fall through to MarketCheck, then search.
+  `REVRANK_BROWSER_RECOVERY_ENABLED` defaults off; enablement waits on Research rights
+  guidance and Tongli opt-in (not counsel clearance). Evidence `source` for browsed
+  fields starts with `user_vdp_browse`.
 - **Import budget spent before a result exists.** `503` with `{detail}`; nothing invented.
 - Concurrent imports share no cancellation state.
 

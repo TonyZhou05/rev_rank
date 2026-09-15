@@ -23,11 +23,15 @@ import time
 from .cancel import Cancelled, budget as cancel_budget, closing
 from .config import Settings
 from .fetch import ACCESS_CHALLENGE, FetchError, Page, check_robots, remaining, validated_url
-from .listing_url import same_listing
+from .listing_url import MARKETPLACES, bare_host, is_listing_url, same_listing
 from .sources import source_for
 
 log = logging.getLogger("revrank.browse")
 
+# v1 host allowlist: CarMax, Carvana, and hosts whose single-listing URL we already recognize.
+# Unknown hosts are blocked. This is not counsel clearance; the feature flag stays off until Tongli opts in.
+BROWSE_VDP_HOSTS = MARKETPLACES
+PASTE_HINT = "Paste the price, mileage, and VIN from the listing to continue."
 # Review, complaint, social and directory hosts. Marketplace VDPs (CarMax, Carvana, Cars.com, …)
 # are not in this list: those are the listing pages a buyer pastes. Dealer-signals uses a wider
 # deny list because it must not quote review platforms; this path must still open a CarMax VDP.
@@ -63,6 +67,20 @@ def is_review_host(host: str) -> bool:
     return registrable(host) in REVIEW_HOSTS or any(host.endswith("." + d) for d in REVIEW_HOSTS)
 
 
+def browse_vdp_allowed(url: str) -> tuple[bool, str]:
+    """Single buyer-supplied VDP on the v1 host allowlist, or a refused reason."""
+    host = bare_host(url)
+    if is_review_host(host):
+        return False, f"Review sites and dealer boards are not opened. {PASTE_HINT}"
+    if host not in BROWSE_VDP_HOSTS:
+        return False, ("This website is not on the private-browse allowlist "
+                       "(CarMax, Carvana, and recognized listing hosts). " + PASTE_HINT)
+    if is_listing_url(url) is not True:
+        return False, ("Private browse opens one vehicle listing page, not a search or category page. "
+                       + PASTE_HINT)
+    return True, ""
+
+
 def robots_decision(url: str, settings: Settings, deadline: float) -> tuple[bool, str]:
     """Whether this single URL may be opened, plus a note for the attempt log.
 
@@ -89,11 +107,9 @@ def browse_listing(url: str, settings: Settings, token=None, timeout: float = 20
     if token is not None:
         token.check()
     url, host, _ = validated_url(url)
-    if is_review_host(host):
-        raise BrowseError(
-            "refused",
-            "Review sites and dealer boards are not opened. Paste the seller's own listing URL, or the listing text.",
-        )
+    allowed_vdp, refused = browse_vdp_allowed(url)
+    if not allowed_vdp:
+        raise BrowseError("refused", refused)
     source = source_for(host, settings)
     if source["status"] != "allowed":
         raise BrowseError("refused", source["reason"])
@@ -107,7 +123,7 @@ def browse_listing(url: str, settings: Settings, token=None, timeout: float = 20
     try:
         left = remaining(deadline)
     except FetchError:
-        raise BrowseError("timeout", "Private browse exceeded its time limit. Paste the listing text, or try again.") from None
+        raise BrowseError("timeout", f"Private browse exceeded its time limit. {PASTE_HINT}") from None
     page = _playwright_open(url, host, token, cancel_budget(token, left, minimum=1.0) if token is not None else left)
     if robots_note:
         # Could not read robots.txt; the page was still opened. Callers log the browse attempt.
@@ -173,7 +189,7 @@ def _playwright_open(url: str, host: str, token, timeout: float) -> Page:
                     raise BrowseError(
                         "blocked",
                         f"The private browse received HTTP {status} (access denied or rate limited). "
-                        "No bypass was attempted. Paste the listing text to continue.",
+                        f"No bypass was attempted. {PASTE_HINT}",
                     )
                 if status in (404, 410):
                     raise BrowseError("failed", "Listing is unavailable or removed. This does not indicate a confirmed sale.")
@@ -193,14 +209,14 @@ def _playwright_open(url: str, host: str, token, timeout: float) -> Page:
                 )
             text = page.content()
             if CHALLENGE.search(text[:20000]):
-                raise BrowseError("blocked", "Source returned an access challenge; no bypass attempted. Paste listing text.")
+                raise BrowseError("blocked", f"Source returned an access challenge; no bypass was attempted. {PASTE_HINT}")
             return Page(text=text, url=final_url)
     except BrowseError:
         raise
     except Cancelled:
         raise
     except PlaywrightTimeout:
-        raise BrowseError("timeout", "Private browse exceeded its time limit. Paste the listing text, or try again.") from None
+        raise BrowseError("timeout", f"Private browse exceeded its time limit. {PASTE_HINT}") from None
     except PlaywrightError:
         raise BrowseError("failed", "Private browse could not open this listing.") from None
     finally:

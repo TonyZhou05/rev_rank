@@ -38,8 +38,9 @@ class Settings:
     # Hard wall for one POST /api/compare, just under the page's own 90s limit so the server
     # answers with an honest deterministic report before the browser gives up.
     compare_timeout_seconds: float = 85.0
-    # After Direct is blocked: a private headless session of the buyer-supplied listing URL.
-    # Off by default so CI and local pytest never launch Chromium; Render enables it.
+    # After Direct is blocked or thin: a private headless session of the buyer-supplied VDP.
+    # Off by default. Enablement waits on Research rights guidance and Tongli opt-in.
+    # This is not counsel clearance. Docker/Render must not set the flag on.
     browser_recovery_enabled: bool = False
     # Cap for one Playwright session. The import token is the outer wall.
     browser_timeout_seconds: float = 20.0

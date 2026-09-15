@@ -42,7 +42,7 @@ These are pre-set in the Dockerfile for try-out mode:
 | `REVRANK_MARKETCHECK_API_KEY` | Licensed inventory lookups |
 | `REVRANK_SEARCH_API_KEY` | Web search for vehicle recovery |
 | `REVRANK_SEARCH_PROVIDER` | `brave` or `tavily` |
-| `REVRANK_BROWSER_RECOVERY_ENABLED` | `true` to open the buyer-supplied listing URL in a private headless session after Direct is blocked |
+| `REVRANK_BROWSER_RECOVERY_ENABLED` | Leave unset/`false`. Tongli opt-in only after Research rights guidance; not counsel clearance. When `true`, opens the buyer-supplied VDP in a private headless session after Direct is blocked, failed, or thin |
 | `REVRANK_IMPORT_TIMEOUT_SECONDS` | Import cancel/timeout wall (default 55) |
 
 ### Model provider

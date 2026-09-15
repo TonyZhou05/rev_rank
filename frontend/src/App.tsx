@@ -190,9 +190,11 @@ function SourceSwitch({ value, onChange, health }: { value: RecoverySource; onCh
   // One more MarketCheck call decodes a known VIN for the factory MSRP; say so, the quota is small.
   const neovin = health?.neovin_msrp_enabled ? ' One extra call decodes a known VIN for its original MSRP.' : '';
   const options: { key: RecoverySource; label: string; ready: boolean; hint: string }[] = [
-    { key: 'auto', label: 'Auto', ready: true, hint: `MarketCheck first; private browse of your listing URL when MarketCheck has no match; ${search} only after that.${neovin}` },
+    { key: 'auto', label: 'Auto', ready: true, hint: health?.browser_recovery_enabled
+      ? `Private browse of your listing URL first; MarketCheck and ${search} only if browse misses.${neovin}`
+      : `MarketCheck first, then ${search}. Private browse is off (Tongli opt-in; not counsel clearance).${neovin}` },
     { key: 'marketcheck', label: 'MarketCheck', ready: Boolean(health?.licensed_inventory_enabled), hint: `Only MarketCheck is called: usually 1 call per import, at most 3.${neovin}` },
-    { key: 'browse', label: 'Private browse', ready: Boolean(health?.browser_recovery_enabled), hint: 'Opens only the listing URL you pasted in a server-side headless session. No review sites. Bot-manager blocks are reported, not bypassed.' },
+    { key: 'browse', label: 'Private browse', ready: Boolean(health?.browser_recovery_enabled), hint: 'Off by default. When enabled, opens only the listing URL you pasted. No review sites. Bot-manager blocks are reported, not bypassed. Enablement waits on Research rights guidance and Tongli opt-in; not counsel clearance.' },
     { key: 'search', label: search, ready: Boolean(health?.search_enabled), hint: `Only ${search} is called: up to 4 searches per import. Excerpts can be stale.` },
   ];
   const chosen = options.find(o => o.key === value) ?? options[0];
@@ -233,10 +235,15 @@ function reviewItems(car: Candidate): string[] {
 }
 
 
-const PASTE_STATUSES = new Set(['blocked', 'restricted', 'failed', 'unsupported']);
+const PASTE_STATUSES = new Set(['blocked', 'restricted', 'failed', 'unsupported', 'partial']);
+const PASTE_RECOVERY = new Set(['failed', 'not_found', 'unavailable']);
 
 function needsPasteFallback(slot: ImportSlot): boolean {
-  return !slot.candidate && Boolean(slot.message) && Boolean(slot.status && PASTE_STATUSES.has(slot.status));
+  if (slot.candidate || !slot.message) return false;
+  // Identity conflict is a VIN disagreement, not a silent miss — do not swap it for paste.
+  if (slot.recovery_status === 'identity_conflict') return false;
+  if (slot.recovery_status && PASTE_RECOVERY.has(slot.recovery_status)) return true;
+  return Boolean(slot.status && PASTE_STATUSES.has(slot.status));
 }
 
 function pasteFallbackTitle(status: ImportSlot['status'] | undefined): string {
@@ -252,10 +259,10 @@ function buyerImportMessage(message: string | undefined): string | null {
   if (!message) return null;
   const m = message.toLowerCase();
   if (m.includes('operator opt-in') || m.includes('live fetch') || m.includes('allowlist')) {
-    return 'We couldn’t open this listing page — paste the text you see, or add the VIN.';
+    return 'We couldn’t open this listing page — paste the asking price, mileage, and VIN.';
   }
   if (m.includes('robot') || m.includes('blocked') || m.includes('403')) {
-    return 'We couldn’t open this listing page — paste the text you see, or add the VIN.';
+    return 'We couldn’t open this listing page — paste the asking price, mileage, and VIN.';
   }
   return message;
 }
@@ -296,7 +303,7 @@ function ImportCard({ slot, index, busy, loading, canRemove, onChange, onImport,
     {showForm ? <>
       {pasteNeeded && <div className="paste-callout" role="status">
         <strong><CircleAlert size={15}/> {pasteFallbackTitle(slot.status)}</strong>
-        <p>Paste the listing text you see, or add the VIN, then import again.</p>
+        <p>Paste the asking price, mileage, and VIN from the listing, then import again.</p>
         {buyerImportMessage(slot.message) && <p className="paste-callout-detail">{buyerImportMessage(slot.message)}</p>}
       </div>}
       <label>Listing URL <span>optional</span><input value={slot.url} onChange={e => onChange({ url: e.target.value })} placeholder="https://…" /></label>

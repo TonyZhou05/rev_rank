@@ -59,16 +59,17 @@ See [API_CONTRACT.md](API_CONTRACT.md) for the shared JSON interface.
 
 ## Agent ownership
 
-Implemented, opt-in: [listing recovery](search-pipeline-investigation.md)
-after blocked or incomplete direct imports (`backend/app/retrieval.py`). Order:
-licensed inventory by listing URL/stock/VIN (`vehicle_data.py`, MarketCheck), then a
-private in-app headless browse of the **buyer-supplied listing URL only** (`browse.py`,
-Playwright, `REVRANK_BROWSER_RECOVERY_ENABLED`), then search excerpts (`search.py`,
-Brave/Tavily), then an optional NHTSA VIN decode that cross-checks year/make/model.
-Browse is skipped unless Direct was blocked. It refuses review sites and dealer boards,
-does not scrape dealer-signals targets, and reports bot-manager challenges as blocked
-rather than bypassing them. Licensed and search still do not re-request the blocked page.
-With none of these configured, recovery reports `unavailable`.
+Implemented, **flag-off by default**: [listing recovery](search-pipeline-investigation.md)
+after blocked, failed, or thin direct imports (`backend/app/retrieval.py`). When
+`REVRANK_BROWSER_RECOVERY_ENABLED` is on, order for an allowlisted pasted VDP is a
+private in-app headless browse of **that URL only** (`browse.py`, Playwright), then
+licensed inventory (`vehicle_data.py`, MarketCheck), then search excerpts (`search.py`,
+Brave/Tavily), then an optional NHTSA VIN decode. The flag stays off until Research
+rights guidance and Tongli opt-in; this is not counsel clearance. Browse refuses
+unknown hosts, review sites, dealer boards, and search/category pages; it does not
+scrape dealer-signals targets; a bot-manager challenge is reported as blocked and the
+buyer is asked to paste price, mileage, and VIN. Licensed and search still do not
+re-request the blocked page. With none of these configured, recovery reports `unavailable`.
 
 - Frontend: `frontend/` and [frontend brief](agents/frontend.md).
 - Backend: `backend/` and [data-processing brief](agents/data-processing.md).

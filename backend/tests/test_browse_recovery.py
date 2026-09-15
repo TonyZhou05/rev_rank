@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.app import browse, main, retrieval
-from backend.app.browse import BrowseError, is_review_host
+from backend.app.browse import BrowseError, browse_vdp_allowed, is_review_host
 from backend.app.cancel import DISCONNECTED, TIMEOUT, CancelToken, Cancelled
 from backend.app.config import Settings
 from backend.app.fetch import FetchError, Page, Response
@@ -31,7 +31,10 @@ VDP_HTML = """<!doctype html><html><head>
  "vehicleIdentificationNumber":"WBS1H9C50HV123456"}
 </script><title>2017 BMW M2</title></head>
 <body><h1>2017 BMW M2</h1><p>Price: $42,500 USD</p><p>Mileage: 18,000 miles</p>
-<p>VIN: WBS1H9C50HV123456</p><p>Location: Austin, TX</p></body></html>
+<p>VIN: WBS1H9C50HV123456</p><p>Location: Austin, TX</p>
+<p>Carfax One Owner. No accidents reported.</p>
+<p>Features: Navigation, Heated seats</p>
+<p>Engine: 3.0 liter I6 Twin Turbo</p></body></html>
 """
 
 CHALLENGE_HTML = "<html><body>Access Denied. Checking your browser. cf-chl-</body></html>"
@@ -91,6 +94,38 @@ def stub_search(monkeypatch, text, calls=None):
 
 
 # ---- policy (no Playwright) ------------------------------------------------------------------
+def test_browser_recovery_defaults_off(monkeypatch):
+    monkeypatch.delenv("REVRANK_BROWSER_RECOVERY_ENABLED", raising=False)
+    assert Settings().browser_recovery_enabled is False
+    assert Settings.from_env().browser_recovery_enabled is False
+
+
+def test_unknown_host_is_blocked_before_playwright(monkeypatch):
+    launched = []
+    monkeypatch.setattr(browse, "_playwright_open", lambda *a, **k: launched.append(1))
+    unknown = "https://www.example.com/car/1"
+    assert browse_vdp_allowed(unknown)[0] is False
+    with pytest.raises(BrowseError) as err:
+        browse.browse_listing(unknown, browsable())
+    assert err.value.status == "refused" and "allowlist" in err.value.message
+    assert launched == []
+    result = recover(browsable(), url=unknown, recovery_source="browse")
+    assert result.candidate is None
+    assert any(a.method == "browse" and a.status == "refused" for a in result.attempts)
+    assert "Paste the price, mileage, and VIN" in result.message
+
+
+def test_search_or_category_url_is_refused_before_playwright(monkeypatch):
+    launched = []
+    monkeypatch.setattr(browse, "_playwright_open", lambda *a, **k: launched.append(1))
+    srp = "https://www.carmax.com/cars/bmw"
+    assert browse_vdp_allowed(srp)[0] is False
+    with pytest.raises(BrowseError) as err:
+        browse.browse_listing(srp, browsable())
+    assert err.value.status == "refused" and "not a search" in err.value.message.lower()
+    assert launched == []
+
+
 def test_review_hosts_are_refused_before_playwright(monkeypatch):
     launched = []
     monkeypatch.setattr(browse, "_playwright_open", lambda *a, **k: launched.append(1))
@@ -144,7 +179,10 @@ def test_browse_recovers_core_fields_after_direct_blocked(monkeypatch):
     assert (car.year, car.make, car.model) == (2017, "BMW", "M2")
     assert car.price == 42500 and car.mileage == 18000
     assert car.evidence["vin"].value == VIN
-    assert any(a.method == "browse" and a.status == "completed" for a in result.attempts)
+    assert car.evidence["vin"].source.startswith("user_vdp_browse")
+    digest = __import__("hashlib").sha256(VDP_HTML.encode()).hexdigest()[:16]
+    assert any(a.method == "browse" and a.status == "completed" and digest in a.detail for a in result.attempts)
+    assert car.history is None and car.features == [] and car.engine is None
     assert "private browse" in result.message
 
 
@@ -168,10 +206,17 @@ def test_browse_blocked_falls_through_to_search(monkeypatch):
     assert any(a.method == "browse" and a.status == "blocked" for a in result.attempts)
 
 
-def test_licensed_hit_does_not_browse(monkeypatch):
+def test_browse_hit_skips_licensed(monkeypatch):
+    licensed = []
+    monkeypatch.setattr(retrieval, "inventory_search", lambda *a, **k: licensed.append(1) or [])
+    stub_browse(monkeypatch)
+    result = recover(browsable(marketcheck_api_key="test"))
+    assert result.candidate.retrieval_method == "browse" and licensed == []
+
+
+def test_browse_miss_falls_through_to_licensed(monkeypatch):
     from backend.app.vehicle_data import InventoryListing
-    browsed = []
-    monkeypatch.setattr(retrieval, "browse_listing", lambda *a, **k: browsed.append(1))
+    stub_browse(monkeypatch, error=BrowseError("blocked", "The private browse received HTTP 403."))
 
     def inventory_search(settings, timeout=10, **query):
         return [InventoryListing(vin=VIN, source_url=URL, stock_no=STOCK, heading="2017 BMW M2",
@@ -179,7 +224,8 @@ def test_licensed_hit_does_not_browse(monkeypatch):
 
     monkeypatch.setattr(retrieval, "inventory_search", inventory_search)
     result = recover(browsable(marketcheck_api_key="test"))
-    assert result.candidate.retrieval_method == "licensed" and browsed == []
+    assert result.candidate.retrieval_method == "licensed"
+    assert any(a.method == "browse" and a.status == "blocked" for a in result.attempts)
 
 
 def test_recovery_source_browse_skips_licensed_and_search(monkeypatch):
@@ -203,12 +249,19 @@ def test_marketcheck_source_does_not_browse_even_when_enabled(monkeypatch):
     assert result.candidate.retrieval_method == "licensed" and browsed == []
 
 
-def test_browse_not_used_unless_direct_was_blocked(monkeypatch):
+def test_browse_not_used_for_restricted_direct(monkeypatch):
     browsed = []
     monkeypatch.setattr(retrieval, "browse_listing", lambda *a, **k: browsed.append(1))
     result = recover(browsable(), original_status="restricted")
     assert browsed == []
     assert result.candidate is None
+
+
+def test_browse_runs_after_failed_or_thin_direct(monkeypatch):
+    stub_browse(monkeypatch)
+    failed = recover(browsable(), original_status="failed")
+    thin = recover(browsable(), original_status="partial")
+    assert failed.recovery_status == "recovered" and thin.recovery_status == "recovered"
 
 
 def test_review_url_recovery_is_refused_and_does_not_search_when_source_is_browse(monkeypatch):
@@ -302,6 +355,13 @@ def test_health_reports_browse_and_import_timeout(monkeypatch):
     assert health["browser_recovery_enabled"] is True
     assert health["import_timeout_seconds"] == 55
     assert health["api_revision"] == 9
+
+
+def test_health_defaults_browse_off(monkeypatch):
+    monkeypatch.setattr(main, "settings", Settings())
+    with TestClient(main.app) as client:
+        health = client.get("/api/health").json()
+    assert health["browser_recovery_enabled"] is False
 
 
 def test_api_revision_matches_frontend():

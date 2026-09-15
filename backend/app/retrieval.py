@@ -1,17 +1,19 @@
 """Listing recovery with conservative identity binding and explicit disagreements.
 
-Order: licensed inventory (structured, provider-dated) -> private browse of the buyer-supplied
-URL (rendered HTML, seller-primary) -> search excerpts (undated) -> NHTSA VIN decode as an
-identity cross-check. Licensed and search do not re-request the blocked page. Browse opens
-only that one user-supplied URL in a headless session; it is not a review-site scrape.
+Order for an allowlisted pasted VDP: private browse of that URL (rendered HTML, seller-primary)
+-> licensed inventory (structured, provider-dated) -> search excerpts (undated) -> NHTSA VIN
+decode as an identity cross-check. Browse runs only when the feature flag is on and Direct
+was blocked, failed, or thin. Licensed and search do not re-request the blocked page. Browse
+opens only that one user-supplied URL; it is not a review-site scrape.
 """
 from dataclasses import dataclass
+import hashlib
 import re
 import time
 from urllib.parse import urlsplit
 from uuid import uuid4
 
-from .browse import BrowseError, browse_listing, is_review_host
+from .browse import PASTE_HINT, BrowseError, browse_listing, browse_vdp_allowed
 from .cancel import DISCONNECTED, TIMEOUT, CancelToken, Cancelled
 from .config import Settings
 from .dealer import from_listing as dealer_from_listing
@@ -304,40 +306,71 @@ def search_records(url, host, stock, target, request, settings, attempts, deadli
 
 
 CORE_FIELDS = ('year', 'make', 'model', 'price', 'mileage')
+# Research checklist: listing fields only from a browsed VDP. History, options, and
+# drivetrain copy stay off this path so browse cannot become a review-body scrape.
+_BROWSE_EVIDENCE = frozenset((*CORE_FIELDS, 'trim', 'currency', 'mileage_unit', 'location',
+                             'vin', 'stock_no', 'listing_id'))
+_BROWSE_CLEAR = (
+    'generation', 'transmission', 'body', 'engine', 'drivetrain', 'fuel_type',
+    'features', 'history', 'msrp',
+)
+
+
+def _paste_detail(detail: str) -> str:
+    text = (detail or '').strip()
+    return text if PASTE_HINT in text else f'{text} {PASTE_HINT}'.strip()
+
+
+def _listing_fields_only(candidate: Candidate) -> Candidate:
+    """Keep YMMT, price, miles, location, and VIN evidence; drop the rest of the extract."""
+    candidate.generation = None
+    candidate.transmission = None
+    candidate.body = None
+    candidate.engine = None
+    candidate.drivetrain = None
+    candidate.fuel_type = None
+    candidate.features = []
+    candidate.history = None
+    candidate.msrp = None
+    candidate.dealer = None
+    candidate.dom = None
+    candidate.dom_active = None
+    candidate.evidence = {key: value for key, value in candidate.evidence.items() if key in _BROWSE_EVIDENCE}
+    return candidate
 
 
 def browse_records(url, host, target, request, settings, attempts, token, deadline):
-    """Open only the buyer-supplied listing URL; feed extracted fields into recovery as a primary record."""
-    if is_review_host(host):
-        attempts.append(RetrievalAttempt(
-            method='browse', status='refused',
-            detail='Review sites and dealer boards are not opened. Paste the seller\'s own listing URL, or the listing text.'))
+    """Open only the buyer-supplied listing URL; feed structured listing fields in as a primary record."""
+    allowed, refused = browse_vdp_allowed(url)
+    if not allowed:
+        attempts.append(RetrievalAttempt(method='browse', status='refused', detail=_paste_detail(refused)[:1000]))
         return [], target
     if time.monotonic() >= deadline:
         attempts.append(RetrievalAttempt(method='browse', status='timeout',
-                                         detail='Private browse was not started; the import time limit had already been reached.'))
+                                         detail=_paste_detail('Private browse was not started; the import time limit had already been reached.')))
         return [], target
     try:
         page = browse_listing(url, settings, token=token, timeout=budget(deadline, settings.browser_timeout_seconds))
     except Cancelled as stop:
         attempts.append(RetrievalAttempt(
             method='browse', status='timeout' if stop.reason == TIMEOUT else 'cancelled',
-            detail='Private browse was stopped because the request was cancelled or ran out of time.'))
+            detail=_paste_detail('Private browse was stopped because the request was cancelled or ran out of time.')))
         if stop.reason == DISCONNECTED:
             raise
         return [], target
     except BrowseError as error:
-        attempts.append(RetrievalAttempt(method='browse', status=error.status, detail=error.message[:1000]))
+        attempts.append(RetrievalAttempt(method='browse', status=error.status, detail=_paste_detail(error.message)[:1000]))
         return [], target
     except FetchError as error:
-        attempts.append(RetrievalAttempt(method='browse', status=error.status, detail=error.message[:1000]))
+        attempts.append(RetrievalAttempt(method='browse', status=error.status, detail=_paste_detail(error.message)[:1000]))
         return [], target
+    digest = hashlib.sha256(page.text.encode('utf-8', errors='replace')).hexdigest()[:16]
     candidate, _ = extract(page.text, page.url, fetched=True)
-    candidate = apply_market_units(candidate, page.url)
+    candidate = _listing_fields_only(apply_market_units(candidate, page.url))
     if any(w.startswith(('Conflicting vin:', 'Multiple structured products found')) for w in candidate.warnings):
         attempts.append(RetrievalAttempt(
             method='browse', status='failed',
-            detail='The browsed page shows several vehicles, so none of its details were used for this listing.'))
+            detail=_paste_detail('The browsed page shows several vehicles, so none of its details were used for this listing.')))
         return [], target
     vin_ev = candidate.evidence.get('vin')
     page_vin = vin_ev.value.upper() if vin_ev else None
@@ -348,17 +381,20 @@ def browse_records(url, host, target, request, settings, attempts, token, deadli
     if not any(getattr(candidate, field) is not None for field in CORE_FIELDS):
         attempts.append(RetrievalAttempt(
             method='browse', status='not_found',
-            detail='Private browse opened the listing but found no year, make, model, price or mileage.'))
+            detail=_paste_detail('Private browse opened the listing but found no year, make, model, price or mileage.')))
         return [], target
+    observed = now()
     for evidence in candidate.evidence.values():
-        evidence.source = (f'Private in-app browse of {page.url}; seller-reported, not independently verified. '
-                           + evidence.source)[:2000]
+        evidence.source = (
+            f'user_vdp_browse of {page.url} at {observed}; content_hash={digest}; '
+            f'seller-reported, not independently verified. {evidence.source}'
+        )[:2000]
     candidate.retrieval_method = 'browse'
     candidate.source_kind = 'listing'
     candidate.source_url = request.url
     attempts.append(RetrievalAttempt(
         method='browse', status='completed',
-        detail='Private browse extracted listing fields from the URL you supplied.'))
+        detail=f'user_vdp_browse extracted listing fields from {page.url} at {observed}; content_hash={digest}.'))
     return [Record(candidate, page.url, 'browse', primary=True)], target
 
 
@@ -446,7 +482,10 @@ def recover_listing(request: ImportRequest, settings: Settings, original: Import
     source = request.recovery_source
     use_licensed = settings.marketcheck_enabled and source in ('auto', 'marketcheck')
     browse_configured = settings.browser_recovery_enabled and source in ('auto', 'browse')
-    use_browse = browse_configured and original.status == 'blocked'
+    # Tongli: for an allowlisted pasted VDP, browse before MarketCheck/search when Direct
+    # was blocked, failed, or thin. Restricted/unsupported stay Direct-policy misses.
+    thin_or_blocked = original.status in ('blocked', 'failed', 'partial')
+    use_browse = browse_configured and (source == 'browse' or thin_or_blocked)
     use_search = settings.search_enabled and source in ('auto', 'search')
     if source != 'auto' and not (use_licensed or use_search or browse_configured):
         if source == 'browse':
@@ -482,31 +521,28 @@ def recover_listing(request: ImportRequest, settings: Settings, original: Import
     # failure is all the buyer reads, and a licensed lookup that held nothing reads as progress.
     preface = ''
     try:
-        if use_licensed:
+        if use_browse:
+            records, target = browse_records(url, host, target, request, settings, result.attempts, token, deadline)
+        if not records and use_licensed:
             records, target = licensed_records(url, host, stock, target, settings, result.attempts, deadline)
         if not records:
             licensed_failed = any(a.method == 'licensed' and a.status == 'failed' for a in result.attempts)
             licensed_used = use_licensed
-            if use_browse:
+            browse_attempt = next((a for a in reversed(result.attempts) if a.method == 'browse'), None)
+            if use_search:
                 if licensed_used and not licensed_failed:
                     preface = LICENSED_MISS + ' '
-                records, target = browse_records(url, host, target, request, settings, result.attempts, token, deadline)
-            if not records:
-                if use_search:
-                    if licensed_used and not licensed_failed:
-                        preface = LICENSED_MISS + ' '
-                    records, target = search_records(url, host, stock, target, request, settings, result.attempts, deadline)
-                elif licensed_failed:
-                    raise Stop('failed', 'Licensed inventory lookup failed. Paste the VIN and listing text.')
-                elif use_licensed and not use_browse:
-                    raise Stop('not_found', f'{LICENSED_MISS} Enter its VIN or paste listing text.')
-                elif use_browse:
-                    browse_attempt = next((a for a in reversed(result.attempts) if a.method == 'browse'), None)
-                    status = browse_attempt.status if browse_attempt else 'not_found'
-                    detail = browse_attempt.detail if browse_attempt else 'Private browse found no listing details.'
-                    if status in ('blocked', 'failed', 'timeout', 'cancelled'):
-                        raise Stop('failed', f'{detail} Paste the VIN and listing text.')
-                    raise Stop('not_found', f'{detail} Enter its VIN or paste listing text.')
+                records, target = search_records(url, host, stock, target, request, settings, result.attempts, deadline)
+            elif licensed_failed:
+                raise Stop('failed', _paste_detail('Licensed inventory lookup failed.'))
+            elif use_licensed:
+                raise Stop('not_found', _paste_detail(LICENSED_MISS))
+            elif use_browse:
+                status = browse_attempt.status if browse_attempt else 'not_found'
+                detail = _paste_detail(browse_attempt.detail if browse_attempt else 'Private browse found no listing details.')
+                if status in ('blocked', 'failed', 'timeout', 'cancelled'):
+                    raise Stop('failed', detail)
+                raise Stop('not_found', detail)
     except Stop as stop:
         # An identity conflict is about which car this is, not about who holds a record of it.
         detail = preface + stop.detail if stop.status in ('not_found', 'failed') else stop.detail
