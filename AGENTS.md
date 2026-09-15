@@ -8,7 +8,7 @@ without a live call.**
 | Provider | Remaining (set 2026-09-13) | Cost |
 | --- | --- | --- |
 | MarketCheck | 500 calls/month (free tier) | 1 call per request; an import uses 1, at most 3, plus 1 NeoVIN MSRP decode when the VIN is known (`REVRANK_NEOVIN_ENABLED=false` turns that off) |
-| Tavily | 1,000 credits | 2 credits per advanced search; an import uses up to 4 searches (8 credits) |
+| Tavily | 1,000 credits | 2 credits per advanced search; an import uses up to 4 searches (8 credits). A compare spends nothing unless `REVRANK_DEALER_SIGNALS_ENABLED=true`, which adds up to `REVRANK_DEALER_SIGNAL_SEARCHES` (default 2, max 3) searches per distinct dealer |
 
 - Default to offline work: stubbed tests (`backend/tests`), and saved real responses in `.local/eval/`
   (`probe-20260913/` holds MarketCheck and Tavily responses; `snippets.json` holds search excerpts).
