@@ -93,7 +93,6 @@ editing `.env`. Re-run the checks with `.venv/bin/python scripts/check_sources.p
   blocked, failed, or thin import it can recover the vehicle from other sources.
   When `REVRANK_BROWSER_RECOVERY_ENABLED` is on (default **off** until Tongli
   opts in; not counsel clearance), a private in-app browse of **only the listing
-<<<<<<< HEAD
   URL the buyer pasted** runs first (Playwright; allowlisted VDPs only).
   Licensed inventory and search are secondary (`REVRANK_MARKETCHECK_API_KEY`,
   `REVRANK_SEARCH_PROVIDER`). Active inventory drops a car the moment it stops
@@ -102,11 +101,6 @@ editing `.env`. Re-run the checks with `.venv/bin/python scripts/check_sources.p
   default on). Those rows bind the VIN and show a dated last-listed price; they
   never supply a current price or mileage, and a listing leaving the market is
   never reported as a sale.
-=======
-  URL the buyer pasted** runs first after Direct is blocked, failed, or thin.
-  Licensed inventory and search are secondary
-  (`REVRANK_MARKETCHECK_API_KEY`, `REVRANK_SEARCH_PROVIDER`).
->>>>>>> e342616 (docs: keep browse-primary flag off until Tongli opts in)
   `REVRANK_VIN_DECODE_ENABLED=true` adds a free NHTSA VIN decode that cross-checks
   year/make/model. See [recovery findings](docs/search-pipeline-investigation.md).
 - One `POST /api/import` is bounded by `REVRANK_IMPORT_TIMEOUT_SECONDS` (55s) and
