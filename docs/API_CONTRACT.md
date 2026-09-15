@@ -330,7 +330,8 @@ Never invent counts; null means data unavailable.
   source_domain: string|null,    // host of website, else of vdp_url
   source: string,                // provenance sentence naming the record and its last-seen date
   notes: string[],               // caveats, e.g. business-level scope, car listed elsewhere
-  links: [{label: string, url: string, note: string}]  // constructed lookup searches
+  links: [{label: string, url: string,                 // constructed lookup searches (the free path)
+           kind: 'records'|'news'|'boards'|'reviews'|'other', note: string}]
 }
 ```
 
@@ -348,10 +349,22 @@ URL-encoded>`. It is keyless and coordinate-free by design — the reported text
 search rather than resolved into a pin RevRank would then be asserting. When the record carried a name
 but no address, the query is the name alone and `notes` says so.
 
-`links` are constructed search URLs for the buyer's own diligence, never fetched or summarized here:
-- `https://www.bbb.org/search?find_country=USA&find_text=<name>&find_loc=<city, state>` when a name exists
-- `https://www.dealerrater.com/consumer/search/dealer/?PostalCode=<zip>&Type=ZIP&ManufacturerName=Used-Car-Dealer`
-  when a 5-digit ZIP exists; DealerRater has no name search, so this covers the area, not the dealer
+`links` are constructed search URLs for the buyer's own diligence — **the free path**: no key, no
+provider call, never fetched or summarised by RevRank, so dealer diligence works on a server with no
+search provider configured at all. Each carries a `kind` so the UI can word it for what it leads to:
+
+| kind | link | needs |
+| --- | --- | --- |
+| `reviews` | `https://www.bbb.org/search?find_country=USA&find_text=<name>&find_loc=<city, state>` | a name |
+| `reviews` | `https://www.dealerrater.com/consumer/search/dealer/?PostalCode=<zip>&Type=ZIP&ManufacturerName=Used-Car-Dealer` | a 5-digit ZIP; DealerRater has no name search, so this covers the area, not the dealer |
+| `records` | `https://www.google.com/search?q="<name>" <city> <state> ("attorney general" OR "consumer protection" OR DMV OR "dealer license")` | a name |
+| `news` | `https://news.google.com/search?q="<name>" <city> <state>` | a name |
+| `boards` | `https://www.google.com/search?q="<name>" <city> <state> (site:complaintsboard.com OR site:consumeraffairs.com OR site:reddit.com OR site:forums.autoguide.com)` | a name |
+
+Review platforms and boards appear **only** here, as outbound links a buyer clicks. Each note says the
+link is outbound and that RevRank does not read, quote or score the page; the records note adds that a
+filed case is an allegation, not a finding, and the boards note that unmoderated posts are opinions,
+not records. Nothing in `links` is ever read by the DealerSignals pass — see its deny list below.
 
 `POST /api/compare` rebuilds `address`, `maps_url` and `links` from the reported name and address on
 every candidate it receives, so a report never displays a link that arrived with the request. A block
@@ -403,7 +416,11 @@ excerpt, not a legal characterisation, and the UI shows it beside the source kin
 Rights and honesty guardrails:
 - **Nothing is fetched.** Only the provider's own title, snippet and date are stored, so no page is
   requested by RevRank and no site's terms are tested by a crawl. Excerpts are capped at 320 characters.
-  Each signal carries quote, source (title + host), date (or explicitly undated) and URL.
+  Each signal carries quote, source (title + host), date (or explicitly undated) and URL, and the UI
+  repeats that attribution under every flag that cites it.
+- **No dealer risk in ranking, and none forced onto a private sale.** A candidate with no `dealer`
+  block gets no DealerSignals at all and triggers no search, and dealer signals are never registered as
+  analyst evidence, so no shortlist position, metric or filter can rest on a dealer's record.
 - **No score.** `green`/`red` are capped, cited sentences. A claim is dropped unless it cites a returned
   signal id and every number in it appears in the cited excerpt, its title, or the date the provider
   supplied. A sentence that reads like a rating, star count, score or recommendation is dropped too.

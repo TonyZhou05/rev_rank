@@ -1,9 +1,9 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { Check, CircleAlert, LoaderCircle, Sparkles } from 'lucide-react';
+import { Check, CircleAlert, ExternalLink, LoaderCircle, Sparkles } from 'lucide-react';
 import { allSame, comparable, constraintMetrics, constraintTone, delta, isCrossModel, metric, mileageValue, msrpNeoVinKind, msrpOrigin, msrpPctDelta, msrpSourceNote, msrpValue, mustHaveMetrics, numberIn, pctOfMsrp, pctOfMsrpText, priceValue, sharedAnnual, tradeOff, type DeltaKind } from './compare';
 import { ConstraintPanel } from './ConstraintPanel';
 import { SourceTable } from './Review';
-import type { AIAnalysis, Candidate, Claim, DealerInfo, DealerSignals, NHTSASafetyData, Preferences, Report, SourceRef } from './types';
+import type { AIAnalysis, Candidate, Claim, DealerInfo, DealerSignal, DealerSignals, NHTSASafetyData, Preferences, Report, SourceRef } from './types';
 import { carName, dateLabel, hostOf, money, safeUrl, unresolvedConflicts } from './utils';
 
 interface Row {
@@ -210,18 +210,20 @@ function useNarrowViewport(query: string): boolean {
   return narrow;
 }
 
-function CompareTable({ report }: { report: Report }) {
+function CompareTable({ report, activeId, onActive }: {
+  report: Report; activeId?: string; onActive?: (id: string) => void;
+}) {
   const cars = report.candidates;
   const crossModel = report.cross_model ?? isCrossModel(cars);
   const narrow = useNarrowViewport(NARROW_COMPARE);
   const [benchId, setBenchId] = useState(cars[0]?.id);
-  const [focusId, setFocusId] = useState<string | null>(null);
   const [diffOnly, setDiffOnly] = useState(true);
   const bench = cars.find(c => c.id === benchId) ?? cars[0];
   const others = cars.filter(c => c.id !== bench.id);
-  // The car shown next to the benchmark on a narrow screen. Picking it as the benchmark drops it
-  // out of `others`, and the first remaining car takes over.
-  const focus = others.find(c => c.id === focusId) ?? others[0] ?? null;
+  // The car shown next to the benchmark on a narrow screen. It is the report's shared active car, so
+  // picking one here also moves the per-car sections below to that car. Choosing it as the benchmark
+  // drops it out of `others`, and the first remaining car takes over.
+  const focus = others.find(c => c.id === activeId) ?? others[0] ?? null;
   // The benchmark leads; the others keep their order. Indexes stay tied to report.candidates.
   const order = [cars.indexOf(bench), ...cars.map((_, i) => i).filter(i => cars[i] !== bench)];
   const columns = narrow && focus ? [order[0], cars.indexOf(focus)] : order;
@@ -245,8 +247,12 @@ function CompareTable({ report }: { report: Report }) {
     <div className="compare-controls">
       <span className="control-label">Compare against</span>
       <div className="segmented" role="radiogroup" aria-label="Benchmark car">
+        {/* On a narrow screen this is often the table's only car control — a shortlist of two never
+            earns the focus picker below — so choosing a benchmark also moves the per-car sections to
+            that car. Otherwise the reader can set a benchmark here and find the Dealer card still on
+            the previous car, with nothing on screen explaining the difference. */}
         {cars.map(c => <button key={c.id} type="button" role="radio" aria-checked={c.id === bench.id} className={c.id === bench.id ? 'on' : ''}
-          onClick={() => setBenchId(c.id)}>{carName(c)}</button>)}
+          onClick={() => { setBenchId(c.id); if (narrow) onActive?.(c.id); }}>{carName(c)}</button>)}
       </div>
       <label className="diff-toggle"><input type="checkbox" checked={diffOnly} onChange={e => setDiffOnly(e.target.checked)}/> Differences only</label>
     </div>
@@ -254,7 +260,7 @@ function CompareTable({ report }: { report: Report }) {
       <span className="control-label" id="compare-focus-label">Show one car against {carName(bench)}</span>
       <div className="segmented" role="radiogroup" aria-labelledby="compare-focus-label">
         {others.map(c => <button key={c.id} type="button" role="radio" aria-checked={c.id === pickable.id} className={c.id === pickable.id ? 'on' : ''}
-          onClick={() => setFocusId(c.id)}>{carName(c)}</button>)}
+          onClick={() => onActive?.(c.id)}>{carName(c)}</button>)}
       </div>
     </div>}
     <div className="table-scroll"><table className="compare-table">
@@ -401,6 +407,15 @@ function FlagList({ tone, label, claims, cites }: {
 // One caveat carried by the whole Dealer block. It is deliberately the first thing the section says:
 // a dealer's rating, address or phone is about the business, and says nothing about this car.
 const DEALER_CAVEAT = 'About the dealer, not this VIN.';
+// The backend sends this same fixed label with every dealer block; it is repeated here only so the
+// section can still state its scope when no car carried a dealer record at all.
+const DEALER_SCOPE = 'Dealer Business Information (not VIN-specific)';
+
+// What each free lookup leads to. Reviews are named as reviews so nobody mistakes an outbound
+// rating site for something RevRank read, and boards are named as opinions rather than records.
+const LOOKUP_KINDS: Record<string, string> = {
+  records: 'Official records', news: 'News', boards: 'Opinions', reviews: 'Reviews',
+};
 
 // A dialable string only; the reported text ("(512) 555-0100 ext 2") stays as the visible label.
 function dialable(phone: string): string | null {
@@ -419,12 +434,35 @@ const SIGNAL_NATURES: Record<string, string> = {
   action: 'Concluded action', allegation: 'Allegation', unclear: 'Unclear from the excerpt',
 };
 
-// A dealer flag is only ever a reading of the excerpts listed under it, so its citation numbers
-// point into that same card's list rather than into the vehicle analysis sources.
-function SignalCites({ claim, index }: { claim: Claim; index: Map<string, number> }) {
-  const shown = claim.citations.filter(id => index.has(id));
+// A dealer flag is only ever a reading of the excerpts listed under it, so it carries its own
+// attribution: the numbered chips point into that card's excerpt list, and under the sentence sits
+// the quote, source, date and link for each excerpt it used. A reader never has to take the flag on
+// trust or go hunting for what it was built from.
+function SignalCites({ claim, index, byId }: {
+  claim: Claim; index: Map<string, number>; byId: Map<string, DealerSignal>;
+}) {
+  const shown = claim.citations.filter(id => index.has(id) && byId.has(id));
   if (!shown.length) return <span className="cite missing" title="The excerpt behind this statement is not listed.">no source</span>;
-  return <>{shown.map(id => <span key={id} className="cite static" title={`Excerpt ${index.get(id)} below`}>{index.get(id)}</span>)}</>;
+  return <>
+    {shown.map(id => <span key={id} className="cite static" title={`Excerpt ${index.get(id)} below`}>{index.get(id)}</span>)}
+    <span className="dealer-flag-sources">
+      {shown.map(id => {
+        const signal = byId.get(id) as DealerSignal;
+        const url = safeUrl(signal.url);
+        const quote = signal.excerpt.length > 150 ? `${signal.excerpt.slice(0, 150)}…` : signal.excerpt;
+        return <span className="dealer-flag-source" key={id}>
+          <span className="dealer-flag-quote" title={signal.excerpt}>“{quote}”</span>
+          <span className="dealer-signal-meta">
+            {signal.label || signal.host} · {signal.host} · {signal.published || 'undated'} ·{' '}
+            {url
+              ? <a className="dealer-link" href={url} target="_blank" rel="noopener noreferrer">source</a>
+              : 'no usable link'}
+            {' · '}{SIGNAL_NATURES[signal.nature ?? 'unclear']}
+          </span>
+        </span>;
+      })}
+    </span>
+  </>;
 }
 
 function DealerFlagBlock({ signals }: { signals: DealerSignals | null | undefined }) {
@@ -442,7 +480,8 @@ function DealerFlagBlock({ signals }: { signals: DealerSignals | null | undefine
   }
   const list = signals.signals ?? [];
   const index = new Map(list.map((s, i) => [s.id, i + 1]));
-  const cites = (claim: Claim) => <SignalCites claim={claim} index={index}/>;
+  const byId = new Map(list.map(s => [s.id, s]));
+  const cites = (claim: Claim) => <SignalCites claim={claim} index={index} byId={byId}/>;
   const green = signals.green ?? [];
   const red = signals.red ?? [];
   return <div className="dealer-flags dealer-flags-live">
@@ -509,7 +548,11 @@ function DealerCard({ car, dealer, signals }: {
         <span className="dealer-label">Look up yourself</span>
         <ul className="dealer-lookup-list">
           {links.map(link => <li key={link.url}>
-            <a className="dealer-link" href={safeUrl(link.url)!} target="_blank" rel="noopener noreferrer">{link.label}</a>
+            <a className="dealer-link" href={safeUrl(link.url)!} target="_blank" rel="noopener noreferrer">
+              {link.label}<ExternalLink size={12} aria-hidden="true"/>
+              <span className="sr-only"> (opens on their site in a new tab)</span>
+            </a>
+            {link.kind && link.kind !== 'other' && <span className={`dealer-link-kind ${link.kind}`}>{LOOKUP_KINDS[link.kind]}</span>}
             {link.note && <span className="dealer-link-note">{link.note}</span>}
           </li>)}
         </ul>
@@ -523,26 +566,31 @@ function DealerCard({ car, dealer, signals }: {
   </article>;
 }
 
-function DealerSection({ report }: { report: Report }) {
+function DealerSection({ report, activeId, onActive }: {
+  report: Report; activeId?: string; onActive?: (id: string) => void;
+}) {
   const cars = report.candidates;
   // Same breakpoint as CompareTable one-car focus — not the Import side-panel hide.
   const narrow = useNarrowViewport(NARROW_COMPARE);
-  const [activeId, setActiveId] = useState(cars[0]?.id);
+  // One active car for the whole report on a narrow screen, so this section rides with the car the
+  // comparison is showing instead of keeping a second, silently different selection.
   const active = cars.find(c => c.id === activeId) ?? cars[0];
   const shown = narrow && active ? [active] : cars;
   return <section className="report-section dealer-section">
-    <h3>Dealer</h3>
+    <h3>Dealer{narrow && active ? `: ${carName(active)}` : ''}</h3>
+    <p className="dealer-scope-label">{cars.find(c => c.dealer?.scope)?.dealer?.scope ?? DEALER_SCOPE}</p>
     <p className="dealer-scope" role="note">
       <CircleAlert size={14}/>
-      <span>{DEALER_CAVEAT} Contact details are as the licensed listing record reported them — not verified by
-        RevRank, and not evidence about the car. Vehicle green/red flags elsewhere describe the car,
-        never the seller — and we won’t invent a dealer score here.</span>
+      <span>Who is selling the car, not the car itself. {DEALER_CAVEAT} Contact details are as the licensed
+        listing record reported them — not verified by RevRank, and not evidence about the vehicle. The
+        vehicle’s own green and red flags are above, with model-year safety; everything in this section
+        is about the business, and we won’t invent a dealer score.</span>
     </p>
     {narrow && cars.length > 1 && active && <div className="compare-controls dealer-focus">
       <span className="control-label" id="dealer-focus-label">Dealer for one car</span>
       <div className="segmented" role="radiogroup" aria-labelledby="dealer-focus-label">
         {cars.map(c => <button key={c.id} type="button" role="radio" aria-checked={c.id === active.id}
-          className={c.id === active.id ? 'on' : ''} onClick={() => setActiveId(c.id)}>{carName(c)}</button>)}
+          className={c.id === active.id ? 'on' : ''} onClick={() => onActive?.(c.id)}>{carName(c)}</button>)}
       </div>
     </div>}
     <div className={narrow ? 'dealer-grid dealer-grid-narrow' : 'dealer-grid'}>
@@ -639,6 +687,10 @@ export function ReportView({ report, preferences, setPreferences, onApply, onCan
 }) {
   const ai = report.ai_analysis;
   const cars = report.candidates;
+  // The one car the narrow layout is showing. Shared, so the comparison's one-car picker and the
+  // per-car sections below it can never drift onto different cars.
+  const [pickedCarId, setPickedCarId] = useState(cars[0]?.id);
+  const activeCarId = cars.some(c => c.id === pickedCarId) ? pickedCarId : cars[0]?.id;
   const aiQuestions = (id: string) => (ai?.questions ?? []).filter(q => q.candidate_id === id).map(q => q.text);
   const warnings = [...new Set(report.warnings)];
   const depCaveats = warnings.filter(w => /depreciat|resale|ownership|years kept|mileage when/i.test(w));
@@ -701,11 +753,14 @@ export function ReportView({ report, preferences, setPreferences, onApply, onCan
 
       <section className="report-section">
         <h3>Side by side</h3>
-        <CompareTable report={report}/>
+        <CompareTable report={report} activeId={activeCarId} onActive={setPickedCarId}/>
       </section>
 
+      {/* Per-car context, in one tier: model-year safety and then the seller. Both sit below the
+          vehicle green/red flags in the AI block, never above them, and the Dealer heading and its
+          own flag labels keep the seller's record from reading as a vehicle flag. */}
       <NhtsaSection report={report}/>
-      <DealerSection report={report}/>
+      <DealerSection report={report} activeId={activeCarId} onActive={setPickedCarId}/>
 
       <ComingModule title="Depreciation" body="ownership-horizon depreciation from cited market observations." caveats={depCaveats}/>
       <ComingModule title="Condition & feature vs price" body="condition and option content weighed against asking price with evidence." caveats={condCaveats}/>

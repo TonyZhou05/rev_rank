@@ -153,18 +153,45 @@ def test_address_line_uses_only_the_parts_present():
 
 def test_lookup_links_are_constructed_searches_not_ratings():
     links = dealer.lookup_links(DEALER["name"], DEALER["city"], DEALER["state"], DEALER["zip"])
-    bbb, dealerrater = links
+    bbb, dealerrater, records, news, boards = links
     assert bbb.url.startswith("https://www.bbb.org/search?")
     assert query_of(bbb.url)["find_text"] == [DEALER["name"]]
     assert query_of(bbb.url)["find_loc"] == ["Austin, TX"]
     assert query_of(dealerrater.url)["PostalCode"] == ["78701"]
+    # The whole free path: records, news and boards need no key and no provider call.
+    assert query_of(records.url)["q"] == ['"Synthetic Motors of Austin" Austin TX ("attorney general" '
+                                          'OR "consumer protection" OR DMV OR "dealer license")']
+    assert news.url.startswith("https://news.google.com/search?")
+    assert query_of(news.url)["q"] == ['"Synthetic Motors of Austin" Austin TX']
+    assert "site:forums.autoguide.com" in query_of(boards.url)["q"][0]
+    assert "site:complaintsboard.com" in query_of(boards.url)["q"][0]
+    # Each link is named for what it leads to, so a rating site is never mistaken for a record.
+    assert [link.kind for link in links] == ["reviews", "reviews", "records", "news", "boards"]
+    # The note says both things a buyer needs: the link leaves RevRank, and we read nothing there.
+    assert all("Outbound search link" in link.note for link in links)
     assert all("does not read, quote or score" in link.note for link in links)
+    assert "allegation, not a finding" in records.note
+    assert "opinions, not records" in boards.note
 
 
 def test_lookup_links_need_a_name_or_a_zip():
     assert dealer.lookup_links(city="Austin", state="TX") == []
     assert [link.label for link in dealer.lookup_links(postal_code="78701-1234")] == ["DealerRater dealers near 78701"]
     assert dealer.lookup_links(name=DEALER["name"], postal_code="not a zip")[0].label == "Look up on BBB"
+    # A name with no place still supports the free searches; they are simply unscoped.
+    named = dealer.lookup_links(name=DEALER["name"])
+    assert [link.kind for link in named] == ["reviews", "records", "news", "boards"]
+    assert query_of(named[2].url)["q"] == ['"Synthetic Motors of Austin"']
+
+
+def test_the_free_path_needs_no_search_provider(monkeypatch):
+    """Every diligence link is constructed, so the card works on a server with no keys at all."""
+    calls = stub_inventory(monkeypatch, {"vdp_url": [row()]})
+    candidate = recover(licensed()).candidate
+    assert calls == [("vdp_url", URL)]
+    kinds = {link.kind for link in candidate.dealer.links}
+    assert kinds == {"reviews", "records", "news", "boards"}
+    assert all(link.url.startswith("https://") for link in candidate.dealer.links)
 
 
 def test_unsafe_dealer_website_is_dropped_not_shown():
@@ -237,7 +264,9 @@ def test_import_response_exposes_the_dealer_block(monkeypatch):
     info = body["candidate"]["dealer"]
     assert info["name"] == DEALER["name"] and info["scope"] == DEALER_SCOPE
     assert info["maps_url"].startswith("https://www.google.com/maps/search/?api=1&query=")
-    assert [link["label"] for link in info["links"]] == ["Look up on BBB", "DealerRater dealers near 78701"]
+    assert [link["label"] for link in info["links"]] == [
+        "Look up on BBB", "DealerRater dealers near 78701", "Search official records", "Search news",
+        "Search owner forums and complaint boards"]
 
 
 # --- Report building -------------------------------------------------------------------------
@@ -260,7 +289,10 @@ def test_report_rebuilds_the_dealer_links_it_was_sent():
     info = report_for(candidate(dealer=sent), candidate(id="b", title="2018 BMW M2")).candidates[0].dealer
     assert query_of(info.maps_url)["query"] == ["Synthetic Motors of Austin Austin TX"]
     assert info.address == "Austin, TX"
-    assert [link.label for link in info.links] == ["Look up on BBB"]
+    # Every link is rebuilt from the reported name and place, so the client's "Dealer score" is gone.
+    assert [link.label for link in info.links] == [
+        "Look up on BBB", "Search official records", "Search news",
+        "Search owner forums and complaint boards"]
 
 
 def test_report_drops_an_empty_dealer_block():

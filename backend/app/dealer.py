@@ -17,7 +17,15 @@ MAPS_SEARCH = "https://www.google.com/maps/search/?"
 BBB_SEARCH = "https://www.bbb.org/search?"
 # DealerRater has no name-search URL, only an area search, so the link is offered as one.
 DEALERRATER_SEARCH = "https://www.dealerrater.com/consumer/search/dealer/?"
-LOOKUP_NOTE = "Constructed search link. RevRank does not read, quote or score these pages."
+WEB_SEARCH = "https://www.google.com/search?"
+NEWS_SEARCH = "https://news.google.com/search?"
+# Owner forums and consumer complaint boards, reached through a site-scoped search rather than each
+# site's own search path: those paths change, and a search engine's does not.
+BOARD_SITES = ("complaintsboard.com", "consumeraffairs.com", "reddit.com", "forums.autoguide.com")
+# What a records search asks for: the bodies that license and discipline dealers.
+RECORDS_TERMS = '"attorney general" OR "consumer protection" OR DMV OR "dealer license"'
+LOOKUP_NOTE = ("Outbound search link, opens on their site. RevRank does not read, quote or score "
+               "these pages.")
 SCOPE_NOTE = ("Dealer details are as the licensed inventory record reported them. They describe "
               "the business, not this VIN.")
 NAME_ONLY_NOTE = "The record carried no dealer address, so the map link searches the name alone."
@@ -72,27 +80,46 @@ def maps_url(name=None, street=None, city=None, state=None, postal_code=None) ->
 
 
 def lookup_links(name=None, city=None, state=None, postal_code=None) -> list[DealerLink]:
-    """Public search pages for the dealer, constructed from its name and place.
+    """Free, constructed diligence searches for the dealer, from its name and place.
 
-    These are starting points for the buyer's own diligence, not evidence RevRank has gathered.
+    This is the whole free path: five public search URLs a buyer clicks themselves, costing nothing
+    and requiring no key, so dealer diligence works on a server with no search provider configured at
+    all. RevRank fetches none of them — they are starting points for the buyer's own reading, not
+    evidence RevRank has gathered, which is exactly why the review platforms live here rather than in
+    anything a model reads.
     """
     name, city, state = clean(name, 200), clean(city, 120), clean(state, 40)
     zip_code = clean(postal_code, 20)
+    place = " ".join(part for part in (city, state) if part)
+    scoped = f'"{name}" {place}'.strip() if name else ""
     links: list[DealerLink] = []
     if name:
-        location = ", ".join(part for part in (city, state) if part)
         query = {"find_country": "USA", "find_text": name}
-        if location:
-            query["find_loc"] = location
-        links.append(DealerLink(label="Look up on BBB", url=BBB_SEARCH + urlencode(query),
-                                note=LOOKUP_NOTE))
+        if place:
+            query["find_loc"] = ", ".join(part for part in (city, state) if part)
+        links.append(DealerLink(label="Look up on BBB", kind="reviews",
+                                url=BBB_SEARCH + urlencode(query), note=LOOKUP_NOTE))
     if zip_code and len(zip_code) >= US_ZIP_LENGTH and zip_code[:US_ZIP_LENGTH].isdigit():
         area = zip_code[:US_ZIP_LENGTH]
         links.append(DealerLink(
-            label=f"DealerRater dealers near {area}",
+            label=f"DealerRater dealers near {area}", kind="reviews",
             url=DEALERRATER_SEARCH + urlencode({"PostalCode": area, "Type": "ZIP",
                                                 "ManufacturerName": "Used-Car-Dealer"}),
             note=f"{LOOKUP_NOTE} DealerRater has no name search, so this covers the {area} area."))
+    if scoped:
+        links.append(DealerLink(
+            label="Search official records", kind="records",
+            url=WEB_SEARCH + urlencode({"q": f"{scoped} ({RECORDS_TERMS})"}),
+            note=f"{LOOKUP_NOTE} Looks for attorney general, consumer protection and licensing pages; "
+                 "a filed case is an allegation, not a finding."))
+        links.append(DealerLink(
+            label="Search news", kind="news",
+            url=NEWS_SEARCH + urlencode({"q": scoped}),
+            note=f"{LOOKUP_NOTE} Dated coverage of the business, which is not coverage of your car."))
+        links.append(DealerLink(
+            label="Search owner forums and complaint boards", kind="boards",
+            url=WEB_SEARCH + urlencode({"q": f"{scoped} (" + " OR ".join(f"site:{s}" for s in BOARD_SITES) + ")"}),
+            note=f"{LOOKUP_NOTE} Unmoderated posts by strangers: read them as opinions, not records."))
     return links
 
 
@@ -120,7 +147,7 @@ def dealer_info(*, name=None, website=None, phone=None, street=None, city=None, 
         maps_url=maps_url(name, street, city, state, postal_code),
         vdp_url=vdp_url, source_domain=host_of(website) or host_of(vdp_url),
         source=clean(source, 1000) or "", notes=notes[:8],
-        links=lookup_links(name, city, state, postal_code)[:4])
+        links=lookup_links(name, city, state, postal_code)[:8])
 
 
 def from_listing(row) -> DealerInfo | None:

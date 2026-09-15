@@ -8,7 +8,7 @@ import socket
 
 import pytest
 
-from backend.app import dealer, dealer_signals
+from backend.app import analyst, dealer, dealer_signals
 from backend.app.cancel import DISCONNECTED, Cancelled, CancelToken
 from backend.app.config import Settings
 from backend.app.llm import LLMUnavailable
@@ -359,9 +359,30 @@ def test_two_cars_at_one_rooftop_share_a_single_search_set(monkeypatch):
     assert len(queries) == 1
 
 
-def test_cars_without_a_dealer_get_no_block(monkeypatch):
+def test_a_private_sale_is_never_given_dealer_flags(monkeypatch):
+    """No dealer record — a private sale, pasted listing or synthetic example — means no block.
+
+    `search` is stubbed to fail the test if called, so this also proves no name is searched for.
+    """
     report = report_with(candidate("a", dealer_block=None), candidate("b", dealer_block=None))
     assert dealer_signals.attach(report, enabled()) == {}
+
+
+def test_dealer_signals_never_reach_ranking_evidence(monkeypatch):
+    """A dealer's record must not move a car's position: the analyst never sees these ids."""
+    stub_search(monkeypatch, [AG])
+    stub_model(monkeypatch, flags(red=[
+        {"text": "A state attorney general release alleges deceptive advertising.", "citations": ["D1"]}]))
+    report = report_with(candidate("a"), candidate("b"))
+    report.dealer_signals = dealer_signals.attach(report, enabled(dealer_signal_searches=1))
+    assert report.dealer_signals["a"].red
+    workspace = analyst.Workspace(report)
+    workspace.get_comparison_metrics()
+    for label in list(workspace.cars):
+        workspace.get_vehicle_facts(label)
+    # Nothing the analyst can cite comes from the dealer pass, so no ranking reason can rest on it.
+    assert not any(source.startswith("D") for source in workspace.sources)
+    assert not any("dealer" in source.detail.lower() for source in workspace.sources.values())
 
 
 def test_distinct_dealers_are_searched_separately(monkeypatch):
