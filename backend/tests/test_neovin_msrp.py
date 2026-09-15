@@ -352,3 +352,35 @@ class TestCompareGate:
         assert report.candidates[0].percent_of_msrp is None
         metric = next(m for m in report.metrics if m.label == "% of original MSRP")
         assert metric.values[0] == "MSRP not confirmed"
+
+
+def _two_demo_cars():
+    from backend.app.demo import demo_candidates
+    return demo_candidates()[:2]
+
+
+def test_a_zero_msrp_is_withheld_rather_than_crashing_the_report():
+    from backend.app.comparison import create_report
+    from backend.app.config import Settings
+    from backend.app.models import Preferences
+    cars = _two_demo_cars()
+    cars[0].msrp, cars[0].verified_fields = 0, ["msrp"]
+    report = create_report(cars, Preferences(), Settings())
+    assert report.candidates[0].percent_of_msrp is None
+    assert next(m for m in report.metrics if m.label == "% of original MSRP").values[0] == "MSRP not usable"
+
+
+def test_a_usd_neovin_msrp_is_not_divided_into_a_non_usd_price():
+    from backend.app.comparison import create_report
+    from backend.app.config import Settings
+    from backend.app.models import Evidence, Preferences
+    from backend.app.vehicle_data import NEOVIN_SOURCE
+    cars = _two_demo_cars()
+    for car, currency in zip(cars, ("CAD", "USD")):
+        car.currency, car.msrp = currency, 50000
+        car.evidence["msrp"] = Evidence(value="50000", source=f"{NEOVIN_SOURCE} decode", status="extracted")
+    report = create_report(cars, Preferences(), Settings())
+    values = next(m for m in report.metrics if m.label == "% of original MSRP").values
+    assert values[0] == "Not calculated: MSRP is USD, price is CAD"
+    assert report.candidates[0].percent_of_msrp is None
+    assert report.candidates[1].percent_of_msrp == 103.8 and values[1] == "103.8%"

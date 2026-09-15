@@ -619,8 +619,16 @@ def create_report(candidates: list[Candidate], prefs: Preferences, settings: Set
     # one the buyer confirmed or one a NeoVIN decode of the VIN reported.
     msrp_values = []
     for c in candidates:
+        # NeoVIN reports the US-market factory MSRP in USD; no exchange rate is assumed.
+        foreign = "msrp" not in c.verified_fields and c.currency != "USD"
         if c.msrp is not None and c.price is not None and usable(c, "price") and c.currency != "UNK":
-            if msrp_sourced(c):
+            if not c.msrp:
+                c.percent_of_msrp = None
+                msrp_values.append("MSRP not usable")
+            elif msrp_sourced(c) and foreign:
+                c.percent_of_msrp = None
+                msrp_values.append(f"Not calculated: MSRP is USD, price is {c.currency}")
+            elif msrp_sourced(c):
                 pct = float((dec(c.price) / dec(c.msrp)) * 100)
                 c.percent_of_msrp = round(pct, 2)
                 msrp_values.append(f"{fmt(pct, 1)}%")

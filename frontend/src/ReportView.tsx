@@ -24,6 +24,8 @@ const priceText = (c: Candidate) => c.price === null ? (unresolvedConflicts(c).i
 const mileageText = (c: Candidate) => c.mileage === null ? (unresolvedConflicts(c).includes('mileage') ? 'Sources disagree' : 'Unknown')
   : `${c.mileage.toLocaleString()} ${c.mileage_unit}`;
 const text = (value: string | number | null | undefined) => value === null || value === undefined || value === '' ? '—' : String(value);
+// A computed "% of original MSRP" metric value; anything else there is the backend's reason it was withheld.
+const MSRP_PERCENT = /^\d[\d,]*(\.\d+)?%$/;
 
 function rowsFor(report: Report, bench: Candidate, crossModel: boolean): Row[] {
   const odometer = metric(report, 'Projected odometer after');
@@ -38,23 +40,24 @@ function rowsFor(report: Report, bench: Candidate, crossModel: boolean): Row[] {
       hint: 'you entered, or decoded from the VIN',
       text: (c, i) => {
         const fromMetric = metric(report, '% of original MSRP')?.values[i];
-        if (fromMetric && fromMetric !== 'N/A' && fromMetric !== 'MSRP not confirmed') return `${fromMetric} of original MSRP (${msrpSourceNote(c) ?? 'sourced'})`;
-        if (fromMetric === 'MSRP not confirmed') return 'MSRP not confirmed';
+        if (fromMetric && MSRP_PERCENT.test(fromMetric)) return `${fromMetric} of original MSRP (${msrpSourceNote(c) ?? 'sourced'})`;
+        if (fromMetric && fromMetric !== 'N/A') return fromMetric;
         return pctOfMsrpText(c) ?? 'MSRP not entered — add it on Review';
       },
       rank: (c, i) => {
         const fromMetric = metric(report, '% of original MSRP')?.values[i];
-        if (fromMetric && /\d/.test(fromMetric)) return numberIn(fromMetric);
+        if (fromMetric) return MSRP_PERCENT.test(fromMetric) ? numberIn(fromMetric) : null;
         return pctOfMsrp(c);
       },
       cell: (c, i) => {
         const fromMetric = metric(report, '% of original MSRP')?.values[i];
-        if (fromMetric && fromMetric !== 'N/A' && fromMetric !== 'MSRP not confirmed') {
+        if (fromMetric && MSRP_PERCENT.test(fromMetric)) {
           return <span className="msrp-pct">{fromMetric} of original MSRP ({msrpSourceNote(c) ?? 'sourced'})</span>;
         }
         if (fromMetric === 'MSRP not confirmed') {
           return <span className="muted-cell msrp-cta">MSRP present but not sourced — confirm it on Review</span>;
         }
+        if (fromMetric && fromMetric !== 'N/A') return <span className="muted-cell">{fromMetric}</span>;
         const t = pctOfMsrpText(c);
         if (t) return <span className="msrp-pct">{t}</span>;
         return <span className="muted-cell msrp-cta">No MSRP yet — go back to Review and enter original MSRP (optional) to unlock % of sticker</span>;

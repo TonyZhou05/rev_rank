@@ -127,15 +127,13 @@ export default function App() {
         const msrp = from?.msrp ?? c.msrp ?? null;
         const evidence = from?.evidence.msrp ?? c.evidence.msrp
           ?? (from?.msrp != null ? { value: String(msrp), source: 'Buyer-entered original MSRP', status: 'user_confirmed' as const } : null);
-        const withMsrp = msrp == null ? c : {
+        // percent_of_msrp stays as the backend derived it: a null there is deliberate (unsourced
+        // MSRP, or a USD MSRP against a non-USD price), so it is never recomputed here.
+        return msrp == null ? c : {
           ...c,
           msrp,
           evidence: { ...c.evidence, ...(evidence ? { msrp: evidence } : {}) },
         };
-        // Prefer backend-derived percent_of_msrp; FE fallback only when PR #2 fields absent.
-        if (withMsrp.percent_of_msrp != null) return withMsrp;
-        const percent = derivePercentOfMsrp(withMsrp);
-        return percent == null ? withMsrp : { ...withMsrp, percent_of_msrp: percent };
       });
       // Mirror contract: Report.cross_model until backend sets it.
       const makes = new Set(merged.map(c => (c.make ?? '').trim().toLowerCase()));
