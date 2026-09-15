@@ -70,10 +70,11 @@ async function request<T>(path: string, body?: unknown, timeoutMs?: number, exte
       || (error instanceof Error && error.name === 'AbortError');
     if (aborted) {
       const secs = Math.round(limit / 1000);
+      const spelled = `${secs} second${secs === 1 ? '' : 's'}`;
       const msg = timedOut || controller.signal.reason === 'timeout'
         ? (path === '/compare'
-          ? `Timed out after ${secs}s — try again. Your draft is intact.`
-          : `The request timed out after ${secs}s. Your draft is intact — please try again.`)
+          ? `Timed out after ${spelled} — try again. Your draft is intact.`
+          : `The request timed out after ${spelled}. Your draft is intact — please try again.`)
         : (path === '/compare'
           ? 'Report build cancelled. Your draft is intact.'
           : 'The request was cancelled. Your draft is intact.');

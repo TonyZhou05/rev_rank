@@ -178,10 +178,16 @@ def save(report: Report) -> None:
         db.execute("INSERT INTO reports VALUES (?, ?, ?, ?, ?)", (report.id, report.created_at, report.title, report.analysis_mode, body))
 
 
+def spell_seconds(seconds: float) -> str:
+    """Buyer-facing duration: "85 seconds", not "85 s"."""
+    whole = round(seconds)
+    return f"{whole:.0f} second{'' if whole == 1 else 's'}"
+
+
 def timed_out(report: Report, seconds: float) -> Report:
     """Report the deterministic comparison honestly, with no analysis inferred from an unfinished run."""
-    note = (f"AI analysis was stopped at the server time limit of {seconds:.0f} s; nothing was inferred from the "
-            "unfinished run. The comparison, metrics and evidence above are complete.")
+    note = (f"AI analysis was stopped at the server time limit of {spell_seconds(seconds)}; nothing was inferred "
+            "from the unfinished run. The comparison, metrics and evidence above are complete.")
     report.warnings = list(dict.fromkeys(report.warnings + [note]))
     report.analysis_mode = "rules"
     report.ai_analysis = AIAnalysis(status="unavailable", message=note)
@@ -222,8 +228,9 @@ async def compare(payload: CompareRequest, http_request: Request, response: Resp
     except Cancelled:
         if token.reason == DISCONNECTED:
             return abandoned()
-        return problem(503, f"The comparison did not finish within {settings.compare_timeout_seconds:.0f} s on the server. "
-                            "Nothing was invented; please try again.", "timed out before the comparison was built")
+        return problem(503, f"The comparison did not finish within {spell_seconds(settings.compare_timeout_seconds)} "
+                            "on the server. Nothing was invented; please try again.",
+                       "timed out before the comparison was built")
     try:
         report = await guarded(lambda: interpret(report, token), http_request, token)
     except Cancelled:
