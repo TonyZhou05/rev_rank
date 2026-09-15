@@ -412,8 +412,11 @@ function DealerRow({ label, children }: { label: string; children: ReactNode }) 
   return <p className="dealer-row"><span className="dealer-label">{label}</span><span>{children}</span></p>;
 }
 
-const SIGNAL_KINDS: Record<string, string> = {
-  regulator: 'Government page', board: 'Complaint board', news: 'Dated article',
+// What kind of page an excerpt came from, and how its own wording reads. Both are shown, because
+// "a state regulator concluded something" and "somebody alleged something" are different facts.
+const SIGNAL_KINDS: Record<string, string> = { official: 'Official page', news: 'Dated article' };
+const SIGNAL_NATURES: Record<string, string> = {
+  action: 'Concluded action', allegation: 'Allegation', unclear: 'Unclear from the excerpt',
 };
 
 // A dealer flag is only ever a reading of the excerpts listed under it, so its citation numbers
@@ -427,8 +430,12 @@ function SignalCites({ claim, index }: { claim: Claim; index: Map<string, number
 function DealerFlagBlock({ signals }: { signals: DealerSignals | null | undefined }) {
   // Nothing to interpret, or the operator has not turned the pass on: say which, and stop there.
   if (!signals || signals.status === 'disabled' || (!signals.signals?.length && !signals.green?.length && !signals.red?.length)) {
+    // An empty search is reported as an empty search. It is never rendered as a clean dealer.
+    const searched = Boolean(signals && signals.status !== 'disabled' && signals.searches > 0);
     return <div className="dealer-flags">
-      <span className="dealer-flags-label">Dealer green/red flags · {signals && signals.status !== 'disabled' ? 'nothing found' : 'coming'}</span>
+      <span className="dealer-flags-label">
+        Dealer green/red flags · {searched ? 'no official/news flags found' : signals ? 'not available' : 'coming'}
+      </span>
       <p>{signals?.message
         || 'Coming — we won’t invent a dealer score or cite chips yet. Nothing here is read from review sites, and this is never a VIN vehicle flag.'}</p>
     </div>;
@@ -451,8 +458,12 @@ function DealerFlagBlock({ signals }: { signals: DealerSignals | null | undefine
       <ol>
         {list.map((s, i) => {
           const url = safeUrl(s.url);
+          const nature = s.nature ?? 'unclear';
           return <li key={s.id} id={`dealer-signal-${i + 1}`}>
-            <span className="dealer-signal-kind">{SIGNAL_KINDS[s.category] ?? s.category}</span>
+            <span className="dealer-signal-kind">
+              {SIGNAL_KINDS[s.category] ?? s.category}
+              <span className={`dealer-nature ${nature}`}>{SIGNAL_NATURES[nature]}</span>
+            </span>
             {url ? <a className="dealer-link" href={url} target="_blank" rel="noopener noreferrer">{s.label || s.host}</a> : (s.label || s.host)}
             <span className="dealer-signal-meta">{s.host}{s.published ? ` · ${s.published}` : ' · undated'}</span>
             <span className="dealer-signal-excerpt">“{s.excerpt}”</span>

@@ -433,16 +433,21 @@ class DealerSignal(Model):
     """One search excerpt about the selling business, kept as the provider returned it.
 
     RevRank never fetches these pages: the title, snippet and date are the search provider's own,
-    which is why an excerpt is evidence of what a page says and nothing more. Review platforms are
-    excluded upstream, so no rating or review text reaches this model.
+    which is why an excerpt is evidence of what a page says and nothing more. Review and complaint
+    platforms are excluded upstream, so no rating or user submission reaches this model.
     """
     id: Nonempty
-    # regulator: a .gov page. board: a consumer complaint board. news: a dated article elsewhere.
-    category: Literal["regulator", "board", "news"]
+    # official: a public body's own page (state attorney general, DMV, licensing board, FTC).
+    # news: a dated, attributable article. Nothing else is read; see dealer_signals.DENY_HOSTS.
+    category: Literal["official", "news"]
     label: Short
     url: Link
     host: Short
     excerpt: Short
+    # How the excerpt's own wording reads: a concluded "action" (settlement, order, licence action),
+    # an "allegation" (filed suit, complaint, investigation), or "unclear". A keyword reading of the
+    # excerpt, never a legal characterisation, and never upgraded from allegation to action.
+    nature: Literal["action", "allegation", "unclear"] = "unclear"
     # Only when the provider dated the page; search excerpts are otherwise undated.
     published: Short | None = None
     query: Short = ""

@@ -163,7 +163,11 @@
 .dealer-signal-list{margin-top:8px}
 .dealer-signal-list ol{margin:8px 0 0;padding-left:1.2rem;font-size:12px;color:#44566b}
 .dealer-signal-list li+li{margin-top:8px}
-.dealer-signal-kind{display:block;font:700 9.5px 'DM Mono',monospace;letter-spacing:.06em;text-transform:uppercase;color:#8896a5}
+.dealer-signal-kind{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font:700 9.5px 'DM Mono',monospace;letter-spacing:.06em;text-transform:uppercase;color:#8896a5}
+/* An allegation and a concluded action read differently, so they are never given the same chip. */
+.dealer-nature{padding:1px 6px;border-radius:999px;background:#eef1f4;color:#5b6b7e}
+.dealer-nature.action{background:#fdeceb;color:#8f3b34}
+.dealer-nature.allegation{background:#fff4d5;color:#73570c}
 .dealer-signal-meta{display:block;margin-top:2px;font-size:11px;color:#8896a5}
 .dealer-signal-excerpt{display:block;margin-top:3px;font-style:italic;color:#52677e}
 /* A dealer citation points at the excerpt list in the same card, so it is a label, not a control. */

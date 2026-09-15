@@ -72,11 +72,15 @@ export interface DealerInfo {
 // these pages, and review platforms are filtered out server-side, so no rating reaches this shape.
 export interface DealerSignal {
   id: string;
-  category: 'regulator' | 'board' | 'news';
+  // official: a public body's own page (attorney general, DMV, licensing board, FTC).
+  // news: a dated, attributable article. Review and complaint platforms stay link-outs, not signals.
+  category: 'official' | 'news';
   label: string;
   url: string;
   host: string;
   excerpt: string;
+  // How the excerpt reads: a concluded action, an allegation, or neither. Never upgraded.
+  nature?: 'action' | 'allegation' | 'unclear';
   published?: string | null;
   query?: string;
 }

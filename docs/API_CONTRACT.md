@@ -374,7 +374,8 @@ block. Server-authored during the report run; never accepted from a request. **O
   model: string,            // "<llm model> / dealer-signals-v1" when flags were interpreted
   searches: number,         // searches actually spent for this dealer
   credits: number,          // provider credits (Tavily advanced = 2 per search; Brave = 1)
-  signals: [{id, category: 'regulator'|'board'|'news', label, url, host, excerpt, published, query}],
+  signals: [{id, category: 'official'|'news', nature: 'action'|'allegation'|'unclear',
+             label, url, host, excerpt, published, query}],
   green: Claim[],           // <= 3, each citing signal ids
   red: Claim[],             // <= 3, each citing signal ids
   caveats: string[],        // attached only when excerpts exist
@@ -383,28 +384,41 @@ block. Server-authored during the report run; never accepted from a request. **O
 ```
 
 Which sources are read, and which are refused:
-- `regulator`: a `.gov` or `.us` host (state attorney general, consumer protection, city and county pages).
-- `board`: a consumer complaint board from a fixed list (BBB, ComplaintsBoard, ConsumerAffairs, Reddit,
-  PissedConsumer).
+- `official`: a public body's own page, by host suffix (`.gov`, `.us`, `.mil`) — state attorneys general,
+  DMVs and motor vehicle boards, state consumer-protection offices, the FTC.
 - `news`: any other host, but **only** when the search provider returned a publication date — the one
-  signal available that a page is an article rather than an undated directory or profile.
+  signal available that a page is an attributable article rather than an undated directory or profile.
 - Refused before the model sees anything: review platforms (Google, Yelp, DealerRater, Trustpilot,
-  Birdeye), marketplaces (Cars.com, CarGurus, CarMax, Carvana, Autotrader, TrueCar, Edmunds, KBB, Carfax),
-  social networks and directories. No review text or star rating can therefore be quoted or reproduced.
+  Birdeye), complaint platforms (BBB, ConsumerAffairs, ComplaintsBoard, PissedConsumer, Reddit),
+  marketplaces (Cars.com, CarGurus, CarMax, Carvana, Autotrader, TrueCar, Edmunds, KBB, Carfax), social
+  networks, directories and wikis. Review and complaint platforms stay **link-outs** on the dealer card
+  (`DealerInfo.links`), so no rating, review text or unmoderated post is quoted or reproduced here.
+
+`nature` labels how the excerpt's own wording reads, so an accusation is never rendered as a finding:
+`action` for a settlement, consent order, fine, restitution or licence action; `allegation` for a filed
+suit, complaint, charge or investigation; `unclear` when neither is present. `action` wins when both
+appear, because a settlement resolving allegations is a concluded step. It is a keyword reading of one
+excerpt, not a legal characterisation, and the UI shows it beside the source kind.
 
 Rights and honesty guardrails:
 - **Nothing is fetched.** Only the provider's own title, snippet and date are stored, so no page is
   requested by RevRank and no site's terms are tested by a crawl. Excerpts are capped at 320 characters.
+  Each signal carries quote, source (title + host), date (or explicitly undated) and URL.
 - **No score.** `green`/`red` are capped, cited sentences. A claim is dropped unless it cites a returned
   signal id and every number in it appears in the cited excerpt, its title, or the date the provider
   supplied. A sentence that reads like a rating, star count, score or recommendation is dropped too.
   Rejections are counted in `dropped_claims`, never quietly kept.
-- **An empty result is stated as one.** No signals means "an absence of search results, not a clean
-  record"; a missing search provider, a missing dealer name, a spent time budget, a search failure and a
-  model failure each set `status` and say so in `message`.
+- **An empty result is stated as one.** No signals gives `status: 'unavailable'` and a message that
+  begins "No official/news flags found" and ends "an absence of search results, not a clean dealer".
+  A missing search provider, a missing dealer name, a spent time budget, a search failure and a model
+  failure each set `status` and say so in `message`.
 - Standing caveats: excerpts are unverified, a dealer name plus a city is not an identifier (a
-  same-name business elsewhere can surface), a complaint or lawsuit is an allegation, a regulator page
-  is a public record and not a finding about your sale, and none of this is evidence about the VIN.
+  same-name business elsewhere can surface), an allegation is not a concluded action and neither is a
+  finding about your sale, and none of this is evidence about the VIN.
+- **Metered and cancellable.** Searches go through the same `search()` adapter as listing recovery, so
+  `usage.py` counts them against `REVRANK_SEARCH_MONTHLY_CREDITS` and refuses them at the cap. The pass
+  is cancel-token aware: it does not start a search once the client is gone or the remaining budget is
+  short, and the model call carries the same token.
 - Two cars at the same rooftop share one search set, so a report never pays twice for one dealer.
 
 ### Metrics
