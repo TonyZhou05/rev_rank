@@ -200,17 +200,22 @@ Record the per-site results in `docs/source-tests/marketcheck.md` and keep this 
 | `price` | `price` (USD) | US market; label as the provider's last-seen price |
 | `miles` | `mileage` (mi) | the odometer rule in `parsing-notes.md` still applies |
 | `build.year/make/model/trim/transmission` | same fields | NHTSA decode cross-checks year/make/model |
-| `dealer.city` + `dealer.state` | `location` | normalized to `City, ST` |
+| `dealer.city` + `dealer.state` | `location` | normalized to `City, ST`; `car_location` wins when present |
+| `dealer.name/website/street/city/state/zip/phone` | `dealer` (DealerInfo) | the selling rooftop, business level only; see below |
 | `carfax_1_owner`, `carfax_clean_title` | `history` (seller claim) | "if mentioned on dealer website": never verification |
 | `last_seen_at_date` | observation `observed_at` | the only real freshness signal |
+| `dom` / `dom_active`, `first_seen_at_date` | same fields | days on market, shown as context |
+
+The dealer block is business-level identity and contact detail, never a rating: RevRank constructs a
+keyless Google Maps search and BBB/DealerRater lookup URLs from the reported name and address and stops
+there. It rides on the payload already fetched for the listing, so it costs no extra call. Only the
+seller's own record supplies it, because a syndicated copy may name a marketplace instead of the
+rooftop. Shape and rules: `docs/API_CONTRACT.md`, "DealerInfo".
 
 Add these fields:
 
 - `stock_no`, as evidence;
-- `exterior_color` and `interior_color`, which need new Candidate fields;
-- `dom` / `dom_active` (days on market), shown as context;
-- `first_seen_at_date`;
-- `dealer.name`, as the seller name.
+- `exterior_color` and `interior_color`, which need new Candidate fields.
 
 ### 5. Add History by VIN (not built yet)
 

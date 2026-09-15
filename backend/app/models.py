@@ -9,6 +9,21 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_vali
 Short = Annotated[str, StringConstraints(strip_whitespace=True, max_length=1000)]
 Nonempty = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=300)]
 Scalar = Annotated[float, Field(ge=0, le=1_000_000_000, allow_inf_nan=False)]
+Link = Annotated[str, StringConstraints(strip_whitespace=True, max_length=2048)]
+
+
+def reference_url(value: str | None) -> str | None:
+    """Accept only a credential-free HTTP(S) URL; anything else is refused rather than shown."""
+    if not value:
+        return None
+    from urllib.parse import urlsplit
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        raise ValueError("Link must be an HTTP(S) URL without credentials")
+    if parts.scheme not in ("http", "https") or not parts.hostname or parts.username or parts.password:
+        raise ValueError("Link must be an HTTP(S) URL without credentials")
+    return value
 
 
 class Model(BaseModel):
@@ -35,6 +50,60 @@ class RetrievalAttempt(Model):
     method: Short
     status: Short
     detail: Short
+
+
+# Fixed label carried with every dealer block, the way NHTSA data carries its model-year scope.
+DEALER_SCOPE = "Dealer Business Information (not VIN-specific)"
+
+
+class DealerLink(Model):
+    """A search URL built from the dealer's own name and place.
+
+    RevRank constructs the link and stops there: it does not fetch these pages, quote reviews or
+    turn them into a score.
+    """
+    label: Nonempty
+    url: Link
+    note: Short = ""
+
+    @field_validator("url")
+    @classmethod
+    def link_is_reference(cls, value):
+        return reference_url(value)
+
+
+class DealerInfo(Model):
+    """The selling business as the licensed inventory record described it, plus keyless link-outs.
+
+    Business level only: nothing here is evidence about the individual vehicle. Every field is
+    copied from a payload that was already fetched for the listing, so an absent field stays null
+    instead of being guessed — a dealer name is never derived from a URL, and coordinates are
+    never invented (the map link is a search query, not a pin).
+    """
+    scope: str = DEALER_SCOPE
+    name: Short | None = None
+    website: Link | None = None
+    phone: Short | None = None
+    street: Short | None = None
+    city: Short | None = None
+    state: Short | None = None
+    postal_code: Short | None = None
+    # Single-line rendering of whichever address parts are present; null when none are.
+    address: Short | None = None
+    # Where the record put the car, which is not always the selling rooftop (transfers, hubs).
+    vehicle_location: Short | None = None
+    maps_url: Link | None = None
+    # The licensed listing this dealer record came with.
+    vdp_url: Link | None = None
+    source_domain: Short | None = None
+    source: Short = ""
+    notes: Annotated[list[Short], Field(max_length=8)] = Field(default_factory=list)
+    links: Annotated[list[DealerLink], Field(max_length=4)] = Field(default_factory=list)
+
+    @field_validator("website", "maps_url", "vdp_url")
+    @classmethod
+    def links_are_references(cls, value):
+        return reference_url(value)
 
 
 class Candidate(Model):
@@ -77,6 +146,9 @@ class Candidate(Model):
     percent_of_msrp: Annotated[float, Field(ge=0, le=10000, allow_inf_nan=False)] | None = None
     # A5: NHTSA model-year safety data attached at compare time
     nhtsa_safety: dict | None = None
+    # The selling business from the licensed inventory payload already fetched for this listing;
+    # null for every other retrieval path. Never a vehicle-level fact and never a dealer rating.
+    dealer: DealerInfo | None = None
 
     @field_validator("price", "mileage", mode="before")
     @classmethod

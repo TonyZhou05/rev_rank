@@ -140,6 +140,25 @@
 .nhtsa-link:hover{color:#14406f}
 .tag.recovery-tag{background:#eef5ff;color:#355275}
 
+/* Dealer link-out shell. One card per car, so it collapses into the one-car mobile flow. */
+.dealer-scope{display:flex;gap:8px;align-items:flex-start;margin:0 0 12px;padding:10px 12px;border-radius:10px;background:#fff7e8;border:1px solid #f0d9a8;color:#5c4a1e;font-size:12.5px;line-height:1.45}
+.dealer-scope svg{flex:none;margin-top:2px}
+.dealer-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
+.dealer-card{display:flex;flex-direction:column;padding:14px;border-radius:12px;border:1px solid #e3e9ef;background:#fff}
+.dealer-card h4{margin:0 0 6px}
+.dealer-name{margin:0 0 8px;font:700 14px Manrope;color:#1f2d3a}
+.dealer-row{display:flex;gap:8px;margin:0 0 5px;font-size:12.5px;color:#44566b;line-height:1.45}
+.dealer-label{flex:none;min-width:84px;font:600 10px 'DM Mono',monospace;letter-spacing:.04em;text-transform:uppercase;color:#8896a5;padding-top:2px}
+.dealer-link{color:#1d5fa8;text-decoration:underline;text-underline-offset:2px}
+.dealer-link:hover{color:#14406f}
+.dealer-lookups{display:flex;flex-direction:column;gap:6px;margin:8px 0 0;font-size:12.5px}.dealer-lookup-list{list-style:none;margin:0;padding:0;display:grid;gap:6px}.dealer-lookup-list li{display:flex;flex-direction:column;gap:2px;align-items:flex-start}.dealer-link-note{font-size:11px;color:#73570c;line-height:1.35}.dealer-grid-narrow{grid-template-columns:1fr}.dealer-focus{margin:0 0 12px}
+.dealer-notes{margin:8px 0 0;padding-left:1.1rem;font-size:12px;color:#73570c}
+.dealer-notes li+li{margin-top:4px}
+.dealer-flags{margin-top:auto;padding:10px 12px;border-radius:8px;border:1px dashed #d5dee7;background:#f7f9fa}
+.dealer-flags-label{display:block;font:700 10px 'DM Mono',monospace;letter-spacing:.06em;text-transform:uppercase;color:#7b8997}
+.dealer-flags p{margin:4px 0 0;font-size:12px;color:#52677e}
+@media print{.dealer-card{break-inside:avoid}}
+
 
 /* Constraint panel — secondary re-rank controls (not Import side-panel; stay visible <850px). */
 .review-layout,.report-layout{display:grid;grid-template-columns:minmax(0,1fr) min(320px,34%);gap:20px;align-items:start;padding-bottom:52px}

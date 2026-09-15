@@ -46,6 +46,11 @@ Days-on-market fields (from licensed inventory payload only):
 NHTSA safety data (attached at compare time):
 - `nhtsa_safety: object|null` - Model-year safety data (not VIN-specific); see NHTSASafetyData schema
 
+Dealer fields (from the licensed inventory payload only):
+- `dealer: DealerInfo|null` - The selling business as the MarketCheck record described it; see DealerInfo
+  below. Populated ONLY from a payload already fetched for the listing: 0 extra paid calls, nothing
+  scraped, and no review site read.
+
 Candidate fields editable in frontend. Corrections mark corresponding field user_confirmed;
 this confirms user input, NOT independent factual verification of seller claims.
 
@@ -302,6 +307,52 @@ public page and returns "Page not found".
 
 This is model-year level data from NHTSA. VIN-level recall status is OUT OF SCOPE.
 Never invent counts; null means data unavailable.
+
+### DealerInfo
+
+```
+{
+  scope: "Dealer Business Information (not VIN-specific)",  // Fixed label, always present
+  name: string|null,             // dealer.name from the inventory payload; never derived from a URL
+  website: string|null,          // dealer.website, kept only when it is a plain HTTP(S) URL
+  phone: string|null,            // dealer.phone as reported (formatting preserved)
+  street: string|null,           // dealer.street
+  city: string|null,             // dealer.city
+  state: string|null,            // dealer.state
+  postal_code: string|null,      // dealer.zip
+  address: string|null,          // one line built from whichever parts above are present
+  vehicle_location: string|null, // where the record put the car, which can differ from the rooftop
+  maps_url: string|null,         // constructed Google Maps search (see below)
+  vdp_url: string|null,          // the licensed listing this dealer record came with
+  source_domain: string|null,    // host of website, else of vdp_url
+  source: string,                // provenance sentence naming the record and its last-seen date
+  notes: string[],               // caveats, e.g. business-level scope, car listed elsewhere
+  links: [{label: string, url: string, note: string}]  // constructed lookup searches
+}
+```
+
+Scope and provenance:
+- Business level only. Nothing in this block is evidence about the individual vehicle, and no field is
+  a rating: RevRank has no dealer score, and none is inferred, quoted or planned in this slice.
+- Every field is copied from the `dealer` object of the MarketCheck inventory row already fetched for
+  the listing. A field the payload omitted stays null instead of being guessed.
+- The block travels with the seller's **own** licensed record. A syndicated copy of the same VIN may
+  name a marketplace rather than the selling rooftop, so recovery leaves `dealer` null in that case.
+  Search, direct, paste and synthetic imports have no dealer block at all.
+
+`maps_url` shape: `https://www.google.com/maps/search/?api=1&query=<name + street + city + state + zip,
+URL-encoded>`. It is keyless and coordinate-free by design — the reported text is handed to Maps as a
+search rather than resolved into a pin RevRank would then be asserting. When the record carried a name
+but no address, the query is the name alone and `notes` says so.
+
+`links` are constructed search URLs for the buyer's own diligence, never fetched or summarized here:
+- `https://www.bbb.org/search?find_country=USA&find_text=<name>&find_loc=<city, state>` when a name exists
+- `https://www.dealerrater.com/consumer/search/dealer/?PostalCode=<zip>&Type=ZIP&ManufacturerName=Used-Car-Dealer`
+  when a 5-digit ZIP exists; DealerRater has no name search, so this covers the area, not the dealer
+
+`POST /api/compare` rebuilds `address`, `maps_url` and `links` from the reported name and address on
+every candidate it receives, so a report never displays a link that arrived with the request. A block
+whose name, address, website and phone are all empty is returned as `null` rather than an empty card.
 
 ### Metrics
 

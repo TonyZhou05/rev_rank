@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from .cancel import CancelToken
 from .config import Settings
+from .dealer import sanitize as sanitize_dealer
 from .models import (Candidate, ConstraintCheck, Evidence, Finding, Market, Metric, NHTSAComplaint, NHTSARecall,
                      NHTSASafetyData, Preferences, Questions, Report, ShortlistEntry, now, value_text)
 from .vehicle_data import NEOVIN_SOURCE, ProviderError, get_json
@@ -236,6 +237,10 @@ def normalize(candidate: Candidate) -> Candidate:
         c.evidence["observed_at"] = Evidence(value=now(), source="Report input received; original observation date unknown", status="extracted")
     if "price_type" not in c.evidence:
         c.evidence["price_type"] = Evidence(value="asking", source="Candidate input interpreted as an asking price, never a sale", status="extracted")
+    # Address line, map link and lookup links are rebuilt from the reported name and address, so a
+    # report never shows a dealer link that arrived with the request. A block with no business left
+    # in it becomes null rather than an empty card.
+    c.dealer = sanitize_dealer(c.dealer)
     c.warnings = list(dict.fromkeys(c.warnings))[:100]
     return c
 
