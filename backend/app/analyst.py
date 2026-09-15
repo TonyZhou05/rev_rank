@@ -79,8 +79,9 @@ Process:
    and why; fix and retry rejected statements. If a paraphrase would introduce a new number, call cite_evidence
    with that tool-result id instead — it copies the result text so the numbers stay exact.
 5. Call set_ranking once: order every car best-first for this buyer, with one cited reason per car. Lead with the
-   buyer's stated constraints (the M.*.fit and M.*.check.* results) and use the other metrics to break ties. A
-   rejected ranking tells you why; fix and retry it.
+   buyer's stated constraints (the M.*.fit and M.*.check.* results) and use the other metrics to break ties. A car
+   that conflicts with more stated constraints may never rank above one that conflicts with fewer. A rejected
+   ranking tells you why; fix and retry it.
 6. After the tools return, you MUST record with add_finding or cite_evidence. Do not write the analysis as
    assistant text, and do not call finish until a verdict has been accepted. Do not leave a car with neither a
    flag nor a seller question if the tool results already contain one.
@@ -535,6 +536,13 @@ class Workspace:
             label = str(item.get("car", "")).strip().upper().removeprefix("CAR ").strip()
             if label in self.cars:
                 by_car.setdefault(label, item)
+        # A stated requirement is not a tiebreak: a car that fails more of them never outranks one that fails fewer.
+        conflicts = {entry.candidate_id: entry.conflicts for entry in self.report.shortlist}
+        for above, below in zip(order, order[1:]):
+            if conflicts.get(self.cars[above].id, 0) > conflicts.get(self.cars[below].id, 0):
+                return self.refuse(f"Car {above} conflicts with more of the buyer's stated constraints than Car {below}, "
+                                   f"so it cannot rank above it (see M.{above}.fit and M.{below}.fit). "
+                                   "The whole ranking was discarded.")
         ranked, rejected = [], []
         for label in order:
             item = by_car.get(label)
@@ -733,7 +741,7 @@ def assemble(ws: Workspace, settings: Settings) -> AIAnalysis:
     used = list(dict.fromkeys(cite for claim in kept for cite in claim.citations))
     status = "unavailable" if not kept else "complete" if verdict else "partial"
     ranking_note = (
-        " The shortlist order below is the model's, and each position cites its evidence." if ranking else
+        " The shortlist order is the model's, and each position cites its evidence." if ranking else
         " No model ranking survived the evidence checks, so the shortlist keeps its computed constraint-fit order.")
     if kept:
         message = (RESTATED + ranking_note) if ws.restated_verdict else (
@@ -1070,7 +1078,7 @@ def analyze(report: Report, settings: Settings, token: CancelToken | None = None
         log.exception("analyst could not store a finding")
         return AIAnalysis(
             status="unavailable",
-            message="AI analysis produced a statement that could not be stored. The comparison, metrics and evidence above are complete.",
+            message="AI analysis produced a statement that could not be stored. The comparison, metrics and evidence in this report are complete.",
             tool_calls=ws.tool_calls,
         )
     if fetched_evidence(ws):
@@ -1081,7 +1089,7 @@ def analyze(report: Report, settings: Settings, token: CancelToken | None = None
         log.exception("analyst could not assemble the stored findings")
         return AIAnalysis(
             status="unavailable",
-            message="AI analysis produced a statement that could not be stored. The comparison, metrics and evidence above are complete.",
+            message="AI analysis produced a statement that could not be stored. The comparison, metrics and evidence in this report are complete.",
             tool_calls=ws.tool_calls,
         )
     if stopped:

@@ -207,6 +207,11 @@ def test_a_fully_cited_ranking_is_kept(report, monkeypatch):
     ({"order": ["A", "B"], "reasons": [
         {"car": "A", "text": "A better buy overall.", "citations": ["B.price"]},
         {"car": "B", "text": "Second.", "citations": ["B.price"]}]}, "own evidence"),
+    # Car B is automatic and the buyer requires a manual: a cited reason cannot lift it above Car A.
+    ({"order": ["B", "A"], "reasons": [
+        {"car": "B", "text": "Car B is 48,000 USD and its transmission is automatic.", "citations": ["B.price", "B.transmission"]},
+        {"car": "A", "text": "Car A meets 2 of the buyer's 2 stated constraints.", "citations": ["M.A.fit"]}]},
+     "cannot rank above"),
 ])
 def test_an_unsupported_ranking_is_discarded_whole(report, monkeypatch, bad, expected):
     chat, seen = scripted([EVIDENCE, [VERDICT, call("set_ranking", **bad)], [call("finish")]])

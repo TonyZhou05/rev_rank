@@ -231,7 +231,7 @@ def interpret(report: Report, token: CancelToken) -> Report:
 def analysis_failed(report: Report) -> Report:
     """Keep the deterministic comparison when optional model work crashes."""
     note = ("AI analysis failed while the comparison was being written; nothing was inferred from the "
-            "unfinished run. The comparison, metrics and evidence above are complete.")
+            "unfinished run. The comparison, metrics and evidence in this report are complete.")
     report.warnings = list(dict.fromkeys(report.warnings + [note]))
     report.analysis_mode = "rules"
     report.ai_analysis = AIAnalysis(status="unavailable", message=note)
@@ -253,7 +253,7 @@ def spell_seconds(seconds: float) -> str:
 def timed_out(report: Report, seconds: float) -> Report:
     """Report the deterministic comparison honestly, with no analysis inferred from an unfinished run."""
     note = (f"AI analysis was stopped at the server time limit of {spell_seconds(seconds)}; nothing was inferred "
-            "from the unfinished run. The comparison, metrics and evidence above are complete.")
+            "from the unfinished run. The comparison, metrics and evidence in this report are complete.")
     report.warnings = list(dict.fromkeys(report.warnings + [note]))
     report.analysis_mode = "rules"
     report.ai_analysis = AIAnalysis(status="unavailable", message=note)
