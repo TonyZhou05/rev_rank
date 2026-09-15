@@ -87,11 +87,79 @@ def test_findings_need_fetched_evidence_first(report, monkeypatch):
     assert seen[1][0]["ok"] is False
 
 
-def test_finish_requires_a_verdict_once(report, monkeypatch):
+def test_finish_is_refused_until_a_verdict_is_recorded(report, monkeypatch):
     chat, seen = scripted([[call("get_vehicle_facts", car="A"), call("finish")], []])
     monkeypatch.setattr(analyst, "chat", chat)
     analyst.analyze(report, SETTINGS)
-    assert seen[1][-1] == {"ok": False, "reason": "Record an overall verdict with add_finding first."}
+    refusal = seen[1][-1]
+    assert refusal["ok"] is False and "add_finding with kind 'verdict'" in refusal["reason"]
+
+
+def test_finish_before_any_fetch_names_the_tools_to_call(report, monkeypatch):
+    chat, seen = scripted([[call("finish")], []])
+    monkeypatch.setattr(analyst, "chat", chat)
+    analyst.analyze(report, SETTINGS)
+    assert "get_vehicle_facts" in seen[1][-1]["reason"]
+
+
+def test_finish_appended_to_every_batch_does_not_end_the_run_early(report, monkeypatch):
+    # A model that ends each batch with finish reaches the second one still fetching evidence.
+    # Refusing finish must not spend the same flag as the no-tool-call nudge, or the run stops
+    # before a single statement has been offered and the report shows an empty analysis.
+    chat, _ = scripted([
+        [call("get_vehicle_facts", car="A"), call("get_vehicle_facts", car="B"), call("finish")],
+        [call("get_comparison_metrics"), call("finish")],
+        [call("add_finding", kind="verdict", car="all", citations=["M.price_gap.AB"],
+              text="Car B is 3,496 USD cheaper than Car A."), call("finish")],
+    ])
+    monkeypatch.setattr(analyst, "chat", chat)
+    analysis = analyst.analyze(report, SETTINGS)
+    assert analysis.status == "complete"
+    assert analysis.verdict.text.startswith("2022 BMW M4 is 3,496 USD cheaper")
+
+
+def test_a_model_that_only_calls_finish_still_stops(report, monkeypatch):
+    turns = analyst.MAX_FINISH_REFUSALS + 1
+    chat, seen = scripted([[call("finish")]] * (turns + 4))
+    monkeypatch.setattr(analyst, "chat", chat)
+    analysis = analyst.analyze(report, SETTINGS)
+    # Refused while nothing is recorded, then honoured, rather than spending every remaining turn.
+    assert len(seen) == turns and analysis.status == "unavailable"
+
+
+def test_an_analysis_with_nothing_recorded_says_so_instead_of_blaming_the_checks(report, monkeypatch):
+    chat, _ = scripted([[call("get_vehicle_facts", car="A")], []])
+    monkeypatch.setattr(analyst, "chat", chat)
+    analysis = analyst.analyze(report, SETTINGS)
+    assert analysis.status == "unavailable" and analysis.dropped_claims == 0
+    assert analysis.message == "The model recorded no statement, so there was nothing to check."
+
+
+def test_malformed_findings_are_counted_as_dropped_claims(report, monkeypatch):
+    # kind/car refusals used to be silent, so an all-rejected run read as one that never tried.
+    chat, _ = scripted([
+        [call("get_vehicle_facts", car="A"), call("get_vehicle_facts", car="B"), call("get_comparison_metrics")],
+        [call("add_finding", kind="pro", car="A", citations=["A.price"], text="Car A asks 67,494 USD."),
+         call("add_finding", kind="green_flag", car="2021 Chevrolet Corvette", citations=["A.price"],
+              text="Car A asks 67,494 USD."),
+         call("add_finding", kind="verdict", car="all", citations=["M.price_gap.AB"]),
+         call("finish"), call("finish"), call("finish")],
+    ])
+    monkeypatch.setattr(analyst, "chat", chat)
+    analysis = analyst.analyze(report, SETTINGS)
+    assert analysis.status == "unavailable" and analysis.dropped_claims == 3
+    assert analysis.message.startswith("No statement passed the evidence checks. 3 unsupported statement(s)")
+
+
+def test_a_full_flag_slot_is_not_counted_as_a_rejected_claim(report):
+    ws = analyst.Workspace(report)
+    ws.run("get_vehicle_facts", {"car": "A"})
+    kept = ws.add_finding({"kind": "green_flag", "car": "A", "text": "Car A asks 67,494 USD.", "citations": ["A.price"]})
+    over = [ws.add_finding({"kind": "green_flag", "car": "A", "text": f"Car A asks 67,494 USD ({word}).",
+                            "citations": ["A.price"]})
+            for word in ("first", "second", "third", "fourth", "fifth", "sixth")]
+    assert kept == {"ok": True} and over[-1]["ok"] is False and "Limit reached" in over[-1]["reason"]
+    assert ws.rejected == 0
 
 
 def test_recall_tool_scopes_and_cites_model_year(report, monkeypatch):

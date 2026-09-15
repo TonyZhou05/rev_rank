@@ -26,6 +26,9 @@ FACT_FIELDS = ("year", "make", "model", "trim", "price", "currency", "mileage", 
                "engine", "drivetrain", "body", "fuel_type", "location", "features", "history")
 NHTSA = "https://api.nhtsa.gov"
 MAX_TURNS, MAX_TOOL_CALLS, BUDGET_SECONDS = 24, 60, 170
+# How often finish may be turned away while nothing is recorded. A model that appends finish to
+# every batch still gets turns to record its findings, and one that only ever calls it still stops.
+MAX_FINISH_REFUSALS = 2
 PROMPT_VERSION = "analyst-tools-v4"
 LIMITS = {"verdict": 1, "strength": 5, "risk": 5, "comparison": 5, "question": 2}
 # The model speaks in green and red flags; storage keeps the older strength/risk names, and both
@@ -315,17 +318,27 @@ class Workspace:
                                               for check in entry.checks)[:900] + ".")
         return {"metrics": items, "buyer": self.buyer, "buyer_id": "P.buyer"}
 
+    def refuse(self, reason: str) -> dict:
+        """A statement the model offered and did not get to keep.
+
+        Every refusal is counted, so a run whose statements were all thrown out is distinguishable
+        from one where the model never recorded a statement at all.
+        """
+        self.rejected += 1
+        return {"ok": False, "reason": reason}
+
     def add_finding(self, args: dict) -> dict:
         spoken = str(args.get("kind", "")).lower().strip()
         # green_flag/red_flag are the prompt's vocabulary; strength/risk is what storage calls them.
         kind = FLAG_KINDS.get(spoken, spoken)
         label = str(args.get("car", "all")).strip().upper().removeprefix("CAR ").strip()
         if kind not in LIMITS:
-            return {"ok": False, "reason": "kind must be verdict, green_flag, red_flag, comparison or question."}
+            return self.refuse("kind must be verdict, green_flag, red_flag, comparison or question.")
         named = "green_flag" if kind == "strength" else "red_flag" if kind == "risk" else kind
         if kind in ("strength", "risk", "question") and label not in self.cars:
-            return {"ok": False, "reason": f"A {named} must name one car: {', '.join(self.cars)}."}
+            return self.refuse(f"A {named} must name one car: {', '.join(self.cars)}.")
         scope = label if kind in ("strength", "risk", "question") else "all"
+        # A quota, not a rejected claim: the statement was fine, there is just no room for it.
         if sum(f["kind"] == kind and f["scope"] == scope for f in self.findings) >= LIMITS[kind]:
             return {"ok": False, "reason": f"Limit reached for {named} on car {scope}; move on or call finish."}
         reasons: list = []
@@ -333,14 +346,13 @@ class Workspace:
             text = CITATION_TOKEN.sub("", str(args.get("text", ""))).strip()[:300]
             # Questions are not claims, but they must not smuggle in invented figures.
             if not text or not numbers(text) <= numbers(" ".join(s.detail for s in self.sources.values())):
-                self.rejected += 1
-                return {"ok": False, "reason": "Questions may only use numbers from tool results."}
+                return self.refuse("Questions may only use numbers from tool results.")
             self.findings.append({"kind": kind, "scope": scope, "text": humanize(self, text)})
             return {"ok": True}
         claim = check(self, args.get("text"), args.get("citations"), reasons)
         if not claim:
-            self.rejected += bool(reasons)
-            return {"ok": False, "reason": reasons[0]["reason"] if reasons else "Empty statement."}
+            return self.refuse(reasons[0]["reason"] if reasons else
+                               "No text arrived with this call; send kind, car, text and citations together.")
         favors = str(args.get("favors", "")).strip().upper()
         self.findings.append({"kind": kind, "scope": scope, "claim": claim, "topic": str(args.get("topic") or kind)[:80],
                               "favors": favors if favors in self.cars else None})
@@ -373,13 +385,11 @@ class Workspace:
                 return {"ok": False, "reason": f"Car {label} is in the order but has no reason."}
             claim = check(self, item.get("text"), item.get("citations"), rejected)
             if not claim:
-                self.rejected += 1
                 reason = rejected[-1]["reason"] if rejected else "Empty statement."
-                return {"ok": False, "reason": f"Car {label}'s reason was rejected: {reason} The whole ranking was discarded."}
+                return self.refuse(f"Car {label}'s reason was rejected: {reason} The whole ranking was discarded.")
             if not any(covers(cite, label) for cite in claim.citations):
-                self.rejected += 1
-                return {"ok": False, "reason": f"Car {label}'s reason must cite Car {label}'s own evidence. "
-                                               "The whole ranking was discarded."}
+                return self.refuse(f"Car {label}'s reason must cite Car {label}'s own evidence. "
+                                   "The whole ranking was discarded.")
             ranked.append({"label": label, "claim": claim})
         self.ranking = ranked
         return {"ok": True, "ranked": order}
@@ -479,16 +489,30 @@ def assemble(ws: Workspace, settings: Settings) -> AIAnalysis:
     kept = [f["claim"] for f in ws.findings if "claim" in f] + [item["claim"] for item in ws.ranking]
     used = list(dict.fromkeys(cite for claim in kept for cite in claim.citations))
     status = "unavailable" if not kept else "complete" if verdict else "partial"
-    message = ("Every statement cites the evidence it came from." if kept else "No statement passed the evidence checks.") + (
-        " The shortlist order below is the model's, and each position cites its evidence." if ranking else
-        " No model ranking survived the evidence checks, so the shortlist keeps its computed constraint-fit order."
-        if kept else "") + (
-        f" {ws.rejected} unsupported statement(s) were rejected during analysis." if ws.rejected else "")
+    if kept:
+        message = "Every statement cites the evidence it came from." + (
+            " The shortlist order below is the model's, and each position cites its evidence." if ranking else
+            " No model ranking survived the evidence checks, so the shortlist keeps its computed constraint-fit order.")
+    else:
+        # An empty analysis has two different causes, and a reader cannot act on them the same way.
+        message = ("No statement passed the evidence checks." if ws.rejected else
+                   "The model recorded no statement, so there was nothing to check.")
+    if ws.rejected:
+        message += f" {ws.rejected} unsupported statement(s) were rejected during analysis."
     return AIAnalysis(status=status, message=message, model=f"{settings.llm_model} / {PROMPT_VERSION}", verdict=verdict,
                       vehicles=vehicles, comparisons=comparisons, questions=questions, ranking=ranking,
                       # Car labels are for the model; readers see names. Validation already ran on the raw text.
                       sources=[ws.sources[i].model_copy(update={"detail": humanize(ws, ws.sources[i].detail)}) for i in used],
                       tool_calls=ws.tool_calls, dropped_claims=ws.rejected)
+
+
+def next_step(ws: Workspace) -> str:
+    """What the model still owes before finish is honoured, named from what it has already done."""
+    if not ws.sources.keys() - {"P.buyer"}:
+        return ("Nothing has been fetched yet. Call get_vehicle_facts for every car and get_comparison_metrics, "
+                "then record your statements with add_finding before calling finish.")
+    return ("Record the overall verdict first: add_finding with kind 'verdict', car 'all' and citations listing ids "
+            "from the results you already fetched, then your green_flag and red_flag statements per car.")
 
 
 def parse_arguments(raw) -> dict:
@@ -515,7 +539,7 @@ def analyze(report: Report, settings: Settings, token: CancelToken | None = None
     # Own budget, kept inside the request's remaining time so the loop stops before the hard wall.
     limit = BUDGET_SECONDS if token is None else max(0.0, min(BUDGET_SECONDS, token.remaining() - RESERVE_SECONDS))
     deadline = time.monotonic() + limit
-    nudged, stopped = False, False
+    nudged, stopped, refusals = False, False, 0
     try:
         for turn in range(MAX_TURNS):
             remaining = deadline - time.monotonic()
@@ -540,9 +564,12 @@ def analyze(report: Report, settings: Settings, token: CancelToken | None = None
             for call in calls:
                 name, args = call["function"]["name"], parse_arguments(call["function"]["arguments"])
                 if name == "finish":
-                    finished = any(f["kind"] == "verdict" for f in ws.findings) or bool(nudged)
-                    result = {"ok": True} if finished else {"ok": False, "reason": "Record an overall verdict with add_finding first."}
-                    nudged = True
+                    # Counted on its own, not against the no-tool-call nudge: sharing one flag ended
+                    # the run on the second finish, which a model that appends finish to every batch
+                    # reaches while it is still fetching evidence and has recorded nothing.
+                    finished = any(f["kind"] == "verdict" for f in ws.findings) or refusals >= MAX_FINISH_REFUSALS
+                    refusals += not finished
+                    result = {"ok": True} if finished else {"ok": False, "reason": next_step(ws)}
                 else:
                     result = ws.run(name, args)
                 messages.append({"role": "tool", "tool_call_id": call["id"], "content": json.dumps(result, default=str)[:7000]})
