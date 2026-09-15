@@ -150,6 +150,15 @@ def test_numbers_must_come_from_the_cited_excerpt(monkeypatch):
     assert "No statement about this dealer passed the citation checks" in block.message
 
 
+def test_a_claim_may_repeat_the_date_the_provider_gave(monkeypatch):
+    stub_search(monkeypatch, [AG])
+    stub_model(monkeypatch, flags(red=[
+        {"text": "A Texas Attorney General release dated 2026-04-02 describes a deceptive-advertising suit.",
+         "citations": ["D1"]}]))
+    block = dealer_signals.for_dealer(DEALER, enabled(dealer_signal_searches=1))
+    assert len(block.red) == 1 and block.dropped_claims == 0
+
+
 @pytest.mark.parametrize("text", [
     "A review page gives the dealer 4.6 stars out of 5.",
     "The excerpts show a strong rating for this dealership.",
