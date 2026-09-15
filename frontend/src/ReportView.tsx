@@ -403,6 +403,15 @@ function FlagList({ tone, label, claims, cites }: {
 // One caveat carried by the whole Dealer block. It is deliberately the first thing the section says:
 // a dealer's rating, address or phone is about the business, and says nothing about this car.
 const DEALER_CAVEAT = 'About the dealer, not this VIN.';
+// The backend sends this same fixed label with every dealer block; it is repeated here only so the
+// section can still state its scope when no car carried a dealer record at all.
+const DEALER_SCOPE = 'Dealer Business Information (not VIN-specific)';
+
+// What each free lookup leads to. Reviews are named as reviews so nobody mistakes an outbound
+// rating site for something RevRank read, and boards are named as opinions rather than records.
+const LOOKUP_KINDS: Record<string, string> = {
+  records: 'Official records', news: 'News', boards: 'Opinions', reviews: 'Reviews',
+};
 
 // A dialable string only; the reported text ("(512) 555-0100 ext 2") stays as the visible label.
 function dialable(phone: string): string | null {
@@ -539,6 +548,7 @@ function DealerCard({ car, dealer, signals }: {
               {link.label}<ExternalLink size={12} aria-hidden="true"/>
               <span className="sr-only"> (opens on their site in a new tab)</span>
             </a>
+            {link.kind && link.kind !== 'other' && <span className={`dealer-link-kind ${link.kind}`}>{LOOKUP_KINDS[link.kind]}</span>}
             {link.note && <span className="dealer-link-note">{link.note}</span>}
           </li>)}
         </ul>
@@ -564,6 +574,7 @@ function DealerSection({ report, activeId, onActive }: {
   const shown = narrow && active ? [active] : cars;
   return <section className="report-section dealer-section">
     <h3>Dealer{narrow && active ? `: ${carName(active)}` : ''}</h3>
+    <p className="dealer-scope-label">{cars.find(c => c.dealer?.scope)?.dealer?.scope ?? DEALER_SCOPE}</p>
     <p className="dealer-scope" role="note">
       <CircleAlert size={14}/>
       <span>Who is selling the car, not the car itself. {DEALER_CAVEAT} Contact details are as the licensed

@@ -70,10 +70,13 @@ ACTION_WORDS = re.compile(r"\b(?:settle(?:d|ment|ments)|consent (?:order|judg(?:
 ALLEGATION_WORDS = re.compile(r"\b(?:alleg\w+|accus\w+|lawsuit|sues?|sued|suit|complaints?|"
                               r"investigat\w+|inquiry|probe|charges?|claims?)\b", re.I)
 
+# The free path never depends on this pass, so every degraded state points back at it.
+FREE_PATH = "The outbound record, news and board searches on this card work without it."
+
 # The only thing an empty search establishes is that the search was empty.
 NOTHING_FOUND = ("No official/news flags found: no state attorney general, DMV, licensing board, "
                  "consumer-protection or FTC page and no dated article about this dealer came back. "
-                 "That is an absence of search results, not a clean dealer.")
+                 "That is an absence of search results, not a clean dealer. " + FREE_PATH)
 
 CAVEATS = (
     "Search excerpts only: RevRank did not open these pages, and nothing here is verified.",
@@ -251,12 +254,13 @@ def for_dealer(dealer: DealerInfo, settings: Settings, token: CancelToken | None
     block = DealerSignals(status="disabled", dealer_name=dealer.name)
     if not settings.dealer_signals_enabled:
         block.message = ("Search-derived dealer flags are turned off on this server "
-                         "(REVRANK_DEALER_SIGNALS_ENABLED). Nothing was searched or inferred.")
+                         "(REVRANK_DEALER_SIGNALS_ENABLED). Nothing was searched or inferred. "
+                         + FREE_PATH)
         return block
     if not settings.search_enabled:
         block.status = "unavailable"
         block.message = ("Dealer flags need a search provider (REVRANK_SEARCH_PROVIDER and "
-                         "REVRANK_SEARCH_API_KEY) on the server.")
+                         "REVRANK_SEARCH_API_KEY) on the server. " + FREE_PATH)
         return block
     if not dealer.name:
         block.status = "unavailable"

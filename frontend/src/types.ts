@@ -45,7 +45,13 @@ export interface NHTSASafetyData {
 
 // A search URL the backend constructed from the dealer's own name and place. RevRank does not read
 // or score what these pages say, so there is never a rating to render beside them.
-export interface DealerLink { label: string; url: string; note?: string }
+export interface DealerLink {
+  label: string;
+  url: string;
+  // What the buyer will find there, so each link can be worded for what it actually is.
+  kind?: 'records' | 'news' | 'boards' | 'reviews' | 'other';
+  note?: string;
+}
 // The selling business as the licensed listing reported it — business level, never VIN level.
 // Every field can be null: an absent one means the record did not carry it, not that it is unknown
 // to the dealer. `maps_url` is a Google Maps search over the reported text, never a coordinate pin.

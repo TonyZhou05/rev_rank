@@ -60,10 +60,13 @@ class DealerLink(Model):
     """A search URL built from the dealer's own name and place.
 
     RevRank constructs the link and stops there: it does not fetch these pages, quote reviews or
-    turn them into a score.
+    turn them into a score. This is the free path — no key, no provider call — which is why the
+    review platforms belong here and nowhere else.
     """
     label: Nonempty
     url: Link
+    # What the buyer will find, so the UI can group the links and word each caveat for what it is.
+    kind: Literal["records", "news", "boards", "reviews", "other"] = "other"
     note: Short = ""
 
     @field_validator("url")
@@ -98,7 +101,7 @@ class DealerInfo(Model):
     source_domain: Short | None = None
     source: Short = ""
     notes: Annotated[list[Short], Field(max_length=8)] = Field(default_factory=list)
-    links: Annotated[list[DealerLink], Field(max_length=4)] = Field(default_factory=list)
+    links: Annotated[list[DealerLink], Field(max_length=8)] = Field(default_factory=list)
 
     @field_validator("website", "maps_url", "vdp_url")
     @classmethod

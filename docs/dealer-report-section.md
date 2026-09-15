@@ -29,9 +29,16 @@ the whole slice costs zero extra provider calls. `backend/app/dealer.py` maps it
 - A keyless Google Maps **search** over the reported name and address:
   `https://www.google.com/maps/search/?api=1&query=…`. A search, not a pin: resolving coordinates
   would be RevRank asserting a location the record did not give.
-- Constructed lookups the buyer runs themselves: a BBB name search, and a DealerRater ZIP-area
-  search (that site has no name search, and the link says so). **Review and complaint platforms stay
-  here, as link-outs** — never as machine-read signals.
+- Constructed lookups the buyer runs themselves — **the free path, and the one that always works**,
+  because none of it needs a key or a provider call: a BBB name search, a DealerRater ZIP-area search
+  (that site has no name search, and the link says so), a web search for official records (attorney
+  general, consumer protection, DMV, dealer licence), a Google News search, and a site-scoped search
+  across owner forums and complaint boards (ComplaintsBoard, ConsumerAffairs, Reddit, AutoGuide
+  forums). Each link carries a `kind` — records, news, boards or reviews — so the UI can word it for
+  what it leads to, and each note says it is outbound and unread by RevRank; records add that a filed
+  case is an allegation, boards that unmoderated posts are opinions rather than records.
+- **Review and complaint platforms live here and only here**, as outbound links, never as machine-read
+  signals. Slice B's deny list enforces the other half of that rule.
 - Refusals: a dealer name is never derived from a hostname or listing URL; a missing field stays
   null and the card shows an honest empty state; a syndicated copy of the listing never supplies the
   dealer, because it may name a marketplace instead of the selling rooftop.
@@ -39,6 +46,9 @@ the whole slice costs zero extra provider calls. `backend/app/dealer.py` maps it
   cannot display a link that arrived with the request.
 
 ## Slice B — thin cited signals (opt-in, spends search credits)
+
+Slice B is an addition to the free path, never a replacement for it: with the pass off, unavailable or
+empty, the card still carries the five constructed searches above, and every degraded message says so.
 
 `backend/app/dealer_signals.py` runs up to `REVRANK_DEALER_SIGNAL_SEARCHES` (default 2, max 3)
 searches per distinct dealer and asks the configured model to read the excerpts back as at most three
