@@ -25,6 +25,14 @@ class SearchError(Exception):
     pass
 
 
+# What a refusal means, so nobody has to look the code up. A spent key is the operator's to fix, and
+# it is invisible in RevRank's own meter: that counts only the calls this checkout sent.
+HTTP_REASON = {401: 'the API key was rejected',
+               403: 'the account may not make this request',
+               429: 'the provider is rate limiting this server; try again shortly',
+               432: "the account's usage limit is exhausted; add credits or raise the plan limit"}
+
+
 def search(query: str, settings: Settings, timeout: float = 10, domain: str | None = None) -> list[SearchResult]:
     # domain scopes results to one site (the seller); it is a bare hostname, never user text.
     if not settings.search_enabled:
@@ -50,7 +58,9 @@ def search(query: str, settings: Settings, timeout: float = 10, domain: str | No
                           follow_redirects=False, trust_env=False) as client:
             with client.stream(method, url, **kwargs) as response:
                 if response.status_code != 200:
-                    raise SearchError(f'Search provider returned HTTP {response.status_code}.')
+                    reason = HTTP_REASON.get(response.status_code)
+                    raise SearchError(f'The search provider returned HTTP {response.status_code}'
+                                      + (f': {reason}.' if reason else '.'))
                 chunks, size = [], 0
                 for chunk in response.iter_bytes(chunk_size=8192):
                     size += len(chunk)

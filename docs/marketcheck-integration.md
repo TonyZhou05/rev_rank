@@ -63,6 +63,28 @@ What we learned:
 - Tavily crawl (`POST /crawl`, limit 3) returned no pages for the CarMax and Carvana listing URLs, and
   billed 0 credits. Its crawler is blocked like ours.
 
+## Live results (2026-09-15, 2 MarketCheck calls): a CarMax stock the index does not hold
+
+`https://www.carmax.com/car/70199979`, probed against the deployed app in `recovery_source=marketcheck`
+mode. Both lookups answered HTTP 200 with **zero** listings: `vdp_url=https://www.carmax.com/car/70199979`
+and `stock_no=70199979`. The stock lookup is not scoped to CarMax, so no dealer in the active index
+carries that number.
+
+The URL pattern is the same one that matched stock 70181882 two days earlier, so this is a per-listing
+coverage gap, not a parsing or filter problem. `/v2/search/car/active` holds active inventory only: a car
+that stops being listed leaves it. Never call that a sale.
+
+Consequence for recovery: when the URL, stock and VIN lookups all come back empty there is nothing left to
+try, and the honest outcome is "no active record; it may already be sold or removed". The candidate
+follow-up is the past-inventory endpoint below.
+
+**Proposed, not built: past inventory as a last licensed resort.** `GET /v2/search/car/recents` covers the
+last 90 days. For a delisted car it would bind the VIN, which unlocks the free NHTSA decode for
+year/make/model, and `Record(historical=True)` already keeps such rows out of current price and mileage
+while surfacing a dated `last_listed_price`. Two things must be settled first: it makes an import 4 paid
+calls rather than the 3 recorded in `AGENTS.md`, and one live probe of a known-delisted CarMax stock is
+needed to confirm the endpoint carries CarMax rows.
+
 ## What already exists
 
 Implemented, with offline tests, and verified live on 2026-09-13:
@@ -243,8 +265,10 @@ Use it the way vininspect is used today, but licensed and dated:
 
 - Done: `usage.py` counts calls per month in `.local/usage.json`, refuses them at the limit, and
   reports them on `/api/health`. In `auto` mode, a refused MarketCheck call falls back to search.
-- Respect 5 calls/s on Free and Basic. Handle `401` (bad key), `422` (pagination / bad parameters) and
-  `429` (rate limit) as distinct attempt messages.
+- Respect 5 calls/s on Free and Basic. Done: `401` (bad key), `403`, `422` (pagination / bad parameters)
+  and `429` (rate limit) carry their meaning in the attempt message instead of a bare status code.
+- The meter is not the remaining quota. It counts the calls this checkout sent, and on Render `.local/`
+  is ephemeral, so a deploy resets it. Only the provider's refusal is authoritative.
 - Cache responses per VIN for 24 hours, only if the license allows storage (step 8). The browser already
   caches whole imports for 24 hours by request.
 

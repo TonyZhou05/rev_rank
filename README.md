@@ -78,7 +78,10 @@ editing `.env`. Re-run the checks with `.venv/bin/python scripts/check_sources.p
 - Paid providers are metered per month in `.local/usage.json` and refused at
   `REVRANK_MARKETCHECK_MONTHLY_CALLS` / `REVRANK_SEARCH_MONTHLY_CREDITS`; see "Paid API
   budget" in [AGENTS.md](AGENTS.md). The import page's "Recovery source (debug)" switch
-  limits recovery to MarketCheck or to search, and shows this month's usage.
+  limits recovery to MarketCheck or to search, and shows this month's usage. That meter
+  counts only the calls this checkout sent, and on Render `.local/` is on the ephemeral
+  filesystem, so a deploy resets it to zero. A provider's own refusal (Tavily HTTP 432,
+  MarketCheck HTTP 401/429) is the authoritative signal, and it is reported as such.
 - Without an AI key, extraction and reports use explicitly labeled rules-based
   analysis. The app does not pretend to have called an AI model.
 - One `POST /api/compare` is bounded by `REVRANK_COMPARE_TIMEOUT_SECONDS` (85s, just under the

@@ -198,7 +198,9 @@ function SourceSwitch({ value, onChange, health }: { value: RecoverySource; onCh
         disabled={!o.ready} title={o.ready ? o.hint : `${o.label} is not configured on the server.`} onClick={() => onChange(o.key)}>{o.label}</button>)}
     </div>
     <small>{chosen.hint}{meter.length > 0 && <> This month: {meter.map(([key, u]) =>
-      <span key={key} className={u.used >= u.limit * .9 ? 'meter low' : 'meter'}>{providerName(key)} {u.used}/{u.limit} {u.unit}</span>)}</>}</small>
+      <span key={key} className={u.used >= u.limit * .9 ? 'meter low' : 'meter'}
+        title="Counted by this server only. The provider's own account may have spent more, and its own limit is the one that refuses a call.">
+        {providerName(key)} {u.used}/{u.limit} {u.unit}</span>)}</>}</small>
   </div>;
 }
 
@@ -258,9 +260,10 @@ function recoveryOutcomeLine(slot: ImportSlot): string | null {
   const attempts = slot.attempts ?? [];
   if (!attempts.length && !slot.recovery_status) return null;
   if (!attempts.length) return `Recovery status: ${readableField(slot.recovery_status!)}`;
-  const parts = attempts.map(a => `${readableField(a.method)} · ${a.status}`);
+  const parts = attempts.map(a => `${readableField(a.method)} · ${readableField(a.status).toLowerCase()}`);
   const last = attempts[attempts.length - 1];
-  const ok = ['success', 'ok', 'matched', 'found'].some(s => last.status.toLowerCase().includes(s));
+  // "not found" contains "found": a dead end must never be read as the step that worked.
+  const ok = last.status !== 'not_found' && ['success', 'ok', 'matched', 'found'].some(s => last.status.toLowerCase().includes(s));
   if (slot.candidate) {
     return ok
       ? `Tried ${parts.join(', then ')} — used ${METHOD_LABELS[slot.candidate.retrieval_method ?? ''] ?? readableField(slot.candidate.retrieval_method ?? 'recovery')}.`
@@ -416,6 +419,7 @@ function RecoveryAttempts({ slot }: { slot: ImportSlot }) {
   return <div className="recovery-details" aria-live="polite">
     <strong>Import attempts</strong>
     {slot.recovery_status && <p>Recovery status: {readableField(slot.recovery_status)}</p>}
-    <ol>{slot.attempts?.map((attempt, index) => <li key={index}><strong>{readableField(attempt.method)} · {attempt.status}</strong><p>{attempt.detail}</p></li>)}</ol>
+    <ol>{slot.attempts?.map((attempt, index) => <li key={index}>
+      <strong>{readableField(attempt.method)} · {readableField(attempt.status).toLowerCase()}</strong><p>{attempt.detail}</p></li>)}</ol>
   </div>;
 }
