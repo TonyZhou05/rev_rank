@@ -95,13 +95,13 @@ _NHTSA_CACHE: dict = {}
 _CACHE_LOCK = Lock()
 
 
-def nhtsa(url: str, params: dict, limit: int = 5_000_000, timeout: float = 10):
+def nhtsa(url: str, params: dict, limit: int = 5_000_000):
     key = (url, tuple(sorted(params.items())))
     with _CACHE_LOCK:
         # Public model-year data, so concurrent requests may share the answer, never a client.
         if key in _NHTSA_CACHE:
             return _NHTSA_CACHE[key]
-    value = get_json(url, params, timeout=timeout, limit=limit)
+    value = get_json(url, params, timeout=10, limit=limit)
     with _CACHE_LOCK:
         if len(_NHTSA_CACHE) > 128:
             _NHTSA_CACHE.clear()

@@ -1,10 +1,10 @@
 """Request-scoped cancellation for work a client may abandon.
 
 One token per HTTP request, created by the endpoint and passed down explicitly: nothing here is
-module state, so concurrent requests never cancel or time out one another. Blocking work checks
-the token at safe points, and a token cancelled from another thread (the event loop noticing a
-client disconnect) also closes the streams registered with it, so an in-flight read stops instead
-of waiting out its socket timeout.
+module state, so concurrent requests never cancel or time out one another. Blocking work checks the
+token at safe points, and a token cancelled from another thread (the event loop noticing a client
+disconnect) also runs the closers registered with it, so a read already blocked on a provider is
+aborted instead of waiting out its socket timeout.
 """
 from contextlib import contextmanager
 import logging
@@ -61,8 +61,7 @@ class CancelToken:
     def cancel(self, reason: str = DISCONNECTED) -> None:
         """Stop this request's work. Safe to call from another thread, and only ever once."""
         with self._lock:
-            first = not self._event.is_set()
-            if first:
+            if not self._event.is_set():
                 self._reason = reason
             self._event.set()
             closers, self._closers = self._closers, []

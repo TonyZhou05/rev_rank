@@ -128,6 +128,14 @@ def completion_body(content: dict) -> bytes:
     return json.dumps({"choices": [{"message": {"content": json.dumps(content)}}]}).encode()
 
 
+def test_a_completion_without_a_token_still_reads_normally(monkeypatch):
+    """The import path passes no token; nothing about cancellation may change its result."""
+    message = {"role": "assistant", "content": "", "tool_calls": [
+        {"id": "1", "type": "function", "function": {"name": "finish", "arguments": "{}"}}]}
+    stub_transport(monkeypatch, lambda request: httpx.Response(200, json={"choices": [{"message": message}]}))
+    assert llm.chat(LLM_SETTINGS, [], [], timeout=30) == message
+
+
 def test_a_cancel_mid_stream_beats_an_otherwise_usable_answer(monkeypatch):
     token = CancelToken(timeout=30)
 
