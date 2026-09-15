@@ -125,7 +125,12 @@ def test_searches_look_for_official_records_not_reviews():
     assert len(queries) == 3
     assert all(DEALER.name in query and "Austin TX" in query for query in queries)
     assert not any(word in query.lower() for query in queries for word in ("review", "rating", "stars"))
-    assert any("attorney general" in query.lower() for query in queries)
+    # The bodies that actually license and discipline dealers come first; news is the last resort.
+    assert "attorney general" in queries[0].lower() and "ftc" in queries[0].lower()
+    assert "motor vehicle board" in queries[1].lower() and "dealer license" in queries[1].lower()
+    assert "news" in queries[2].lower()
+    # The default of 2 searches keeps both official queries and skips the news one.
+    assert dealer_signals.queries(DEALER, 2) == queries[:2]
 
 
 def test_excerpts_keep_the_provider_date_and_are_capped(monkeypatch):

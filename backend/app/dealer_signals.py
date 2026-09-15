@@ -148,8 +148,8 @@ def queries(dealer: DealerInfo, limit: int) -> list[str]:
     place = " ".join(part for part in ((dealer.city or "").strip(), (dealer.state or "").strip()) if part)
     scoped = f'"{name}" {place}'.strip()
     plan = [f'{scoped} "attorney general" OR "consumer protection" OR DMV OR FTC action',
-            f'{scoped} dealership investigation OR lawsuit OR settlement news',
-            f'{scoped} license suspended OR revoked OR "cease and desist"']
+            f'{scoped} "motor vehicle board" OR "dealer license" suspended OR revoked OR "cease and desist"',
+            f'{scoped} dealership investigation OR lawsuit OR settlement news']
     return plan[:max(0, limit)]
 
 

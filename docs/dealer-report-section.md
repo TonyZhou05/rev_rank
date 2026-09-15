@@ -45,6 +45,10 @@ searches per distinct dealer and asks the configured model to read the excerpts 
 green and three red flags, each citing the excerpts it used. `Report.dealer_signals` carries the
 result per candidate; two cars at one rooftop share a single search set.
 
+The query plan puts the bodies that license and discipline dealers first — attorney general, consumer
+protection, DMV and FTC, then state motor vehicle boards and licence actions — and reaches for news
+last, so a report run at the default of two searches never spends a credit on coverage before records.
+
 Only two kinds of source are read:
 
 - **`official`** — a public body's own page, recognised by host suffix (`.gov`, `.us`, `.mil`): state
